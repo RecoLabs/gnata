@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gnata</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>G</text></svg>">
+<link rel="preload" href="gnata.wasm" as="fetch" type="application/wasm">
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --font-mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+  }
+
+  [data-theme="dark"] {
+    --bg: #0F2032;
+    --surface: #172A3E;
+    --surface-hover: rgba(255,255,255,0.05);
+    --text: #E1E2EF;
+    --text-strong: #FDF8F8;
+    --accent: #B5E600;
+    --accent-dim: rgba(181, 230, 0, 0.12);
+    --accent-hover: #c8f21a;
+    --accent-text: #0F2032;
+    --vista: #869CFF;
+    --error: #E55381;
+    --muted: #6b7a8d;
+    --border: #1f3348;
+    --border-light: #253d55;
+    --editor-bg: #0F2032;
+    --reco-logo: #B5E600;
+    color-scheme: dark;
+  }
+
+  [data-theme="light"] {
+    --bg: #d8dde5;
+    --surface: #e2e7ee;
+    --surface-hover: rgba(0,0,0,0.06);
+    --text: #2e2e3e;
+    --text-strong: #1a1a2a;
+    --accent: #2563eb;
+    --accent-dim: rgba(37, 99, 235, 0.10);
+    --accent-hover: #1d4ed8;
+    --accent-text: #ffffff;
+    --vista: #5b6aff;
+    --error: #d63362;
+    --muted: #6a6a7a;
+    --border: #c4cbd6;
+    --border-light: #b8c0cc;
+    --editor-bg: #e2e7ee;
+    --reco-logo: #0F2032;
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Onest', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    transition: background 0.25s, color 0.25s;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    transition: background 0.25s, border-color 0.25s;
+  }
+
+  header h1 {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    color: var(--text-strong);
+  }
+
+  header h1 span { color: var(--accent); font-family: 'Poppins', sans-serif; font-weight: 600; }
+
+  header .badge {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+
+  .header-links {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .header-links a {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 5px 10px;
+    border-radius: 6px;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .header-links a:hover {
+    color: var(--text-strong);
+    background: var(--surface-hover);
+  }
+
+  .header-links .sep {
+    width: 1px;
+    height: 16px;
+    background: var(--border-light);
+    margin: 0 2px;
+  }
+
+  .theme-toggle {
+    background: none;
+    border: 1px solid var(--border-light);
+    color: var(--muted);
+    padding: 5px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  .theme-toggle:hover {
+    color: var(--text-strong);
+    border-color: var(--muted);
+    background: var(--surface-hover);
+  }
+
+  .status {
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    padding-left: 8px;
+  }
+
+  .status .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+
+  .status.ready .dot { background: var(--accent); }
+  .status.ready { color: var(--accent); }
+
+  .progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 2px;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.2s ease;
+    z-index: 999;
+  }
+
+  .container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto 1fr auto;
+    gap: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+    transition: border-color 0.25s;
+  }
+
+  .panel:last-child { border-right: none; }
+
+  .panel-header {
+    padding: 10px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: background 0.25s, border-color 0.25s;
+  }
+
+  .expr-bar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    transition: background 0.25s, border-color 0.25s;
+  }
+
+  .expr-bar .panel-header {
+    border-bottom: none;
+    border-right: 1px solid var(--border);
+    min-width: 120px;
+  }
+
+  #expression {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-strong);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    padding: 12px 16px;
+    outline: none;
+    resize: none;
+  }
+
+  #expression::placeholder { color: var(--muted); }
+
+  textarea, pre {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    padding: 16px;
+    outline: none;
+    resize: none;
+    overflow: auto;
+    tab-size: 2;
+    white-space: pre;
+    transition: color 0.25s;
+  }
+
+  #result {
+    margin: 0;
+    line-height: 1.5;
+    min-height: 100%;
+  }
+
+  #result.error { color: var(--error); }
+  #result.success { color: var(--accent); }
+
+  .toolbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    transition: background 0.25s, border-color 0.25s;
+  }
+
+  button {
+    font-family: 'Onest', inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 20px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border-light);
+  }
+
+  .btn-ghost:hover {
+    color: var(--text);
+    border-color: var(--muted);
+  }
+
+  .timing {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--accent);
+  }
+
+  .toolbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .reco-link {
+    display: flex;
+    align-items: center;
+    text-decoration: none;
+    padding: 5px 10px;
+    border-radius: 6px;
+    transition: all 0.15s;
+    opacity: 0.5;
+  }
+
+  .reco-link:hover {
+    opacity: 0.85;
+    background: var(--surface-hover);
+  }
+
+  .reco-link svg { height: 20px; width: auto; }
+  .reco-link svg path { fill: var(--reco-logo); transition: fill 0.25s; }
+
+  kbd {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 12px;
+    padding: 3px 7px;
+    border-radius: 4px;
+    margin-left: 8px;
+    letter-spacing: 1px;
+  }
+
+  .btn-primary kbd {
+    background: rgba(255,255,255,0.2);
+    color: var(--accent-text);
+  }
+
+  .examples {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .example-chip {
+    font-family: 'Onest', sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: var(--border-light);
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.15s;
+    border: none;
+  }
+
+  .example-chip:hover {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .icon-ext {
+    width: 10px;
+    height: 10px;
+    opacity: 0.5;
+  }
+
+  @media (max-width: 768px) {
+    .container {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto 1fr 1fr auto;
+    }
+    .panel { border-right: none; border-bottom: 1px solid var(--border); }
+    .header-links { gap: 2px; }
+    .header-links a { font-size: 11px; padding: 4px 6px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="progress-bar" id="progressBar"></div>
+
+<header>
+  <h1><span>gnata</span></h1>
+  <span class="badge">JSONata 2.x &middot; WASM</span>
+
+  <div class="header-links">
+    <div class="status" id="status">
+      <span class="dot"></span>
+      <span>Loading&hellip;</span>
+    </div>
+    <div class="sep"></div>
+    <a href="https://docs.jsonata.org/overview" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1 2.5A2.5 2.5 0 013.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 010-1.5h1.75v-2h-8A1 1 0 002 11.5v.017c.001.147.03.29.076.42a.75.75 0 01-1.425.467A2.47 2.47 0 01.5 11.5V2.5zm1.5 0v6.563A2.5 2.5 0 013.5 9H11V1.5H3.5a1 1 0 00-1 1zm3.25 0a.75.75 0 01.75-.75h3a.75.75 0 010 1.5h-3a.75.75 0 01-.75-.75z"/></svg>
+      Docs
+    </a>
+    <a href="https://docs.jsonata.org/simple" target="_blank" rel="noopener">Paths</a>
+    <a href="https://docs.jsonata.org/expressions" target="_blank" rel="noopener">Expressions</a>
+    <a href="https://docs.jsonata.org/string-functions" target="_blank" rel="noopener">Functions</a>
+    <div class="sep"></div>
+    <a href="https://try.jsonata.org" target="_blank" rel="noopener">
+      try.jsonata.org
+      <svg class="icon-ext" viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 2h3.5a.75.75 0 010 1.5h-3.5a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25v-3.5a.75.75 0 011.5 0v3.5A1.75 1.75 0 0112.25 14h-8.5A1.75 1.75 0 012 12.25v-8.5C2 2.784 2.784 2 3.75 2zm6.854-1h4.146a.25.25 0 01.25.25v4.146a.25.25 0 01-.427.177L13.03 4.03 9.28 7.78a.751.751 0 01-1.042-.018.751.751 0 01-.018-1.042l3.75-3.75-1.543-1.543A.25.25 0 0110.604 1z"/></svg>
+    </a>
+    <div class="sep"></div>
+    <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">
+      <span class="theme-icon"></span>
+    </button>
+  </div>
+</header>
+
+<div class="container">
+  <div class="expr-bar">
+    <div class="panel-header">Expression</div>
+    <textarea id="expression" rows="1" placeholder="e.g. Account.Order.Product.(Price * Quantity)" spellcheck="false">$sum(Account.Order.Product.(Price * Quantity))</textarea>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      Input JSON
+      <div class="examples">
+        <button class="example-chip" data-example="invoice">Invoice</button>
+        <button class="example-chip" data-example="users">Users</button>
+        <button class="example-chip" data-example="simple">Simple</button>
+      </div>
+    </div>
+    <textarea id="input" spellcheck="false">{
+  "Account": {
+    "Name": "Firefly",
+    "Order": [
+      {
+        "OrderID": "order103",
+        "Product": [
+          { "Name": "Bowler Hat", "Price": 34.45, "Quantity": 2 },
+          { "Name": "Trilby hat", "Price": 21.67, "Quantity": 1 }
+        ]
+      },
+      {
+        "OrderID": "order104",
+        "Product": [
+          { "Name": "Cloak", "Price": 107.99, "Quantity": 1 }
+        ]
+      }
+    ]
+  }
+}</textarea>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      Result
+      <span id="timing" class="timing"></span>
+    </div>
+    <pre id="result"></pre>
+  </div>
+
+  <div class="toolbar">
+    <button class="btn-primary" id="runBtn" disabled>Run<kbd>&#8984;&#x21A9;</kbd></button>
+    <button class="btn-ghost" id="clearBtn">Clear</button>
+    <div class="toolbar-right">
+      <a href="https://www.reco.ai" target="_blank" rel="noopener" class="reco-link" title="Built by Reco">
+        <svg width="103" height="37" viewBox="0 0 103 37" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M20.2593 12.1156C19.3118 11.0363 18.2627 10.2338 17.1516 9.74675C16.0405 9.25969 14.7828 9.01062 13.4179 9.01062C9.53182 9.01062 7.41113 11.2688 6.58203 12.4256V9.5641H0V36.4465H6.57639V21.5137C6.57639 19.2942 7.12348 17.6504 8.20638 16.6265C9.28929 15.6025 10.6824 15.0823 12.3462 15.0823C13.1077 15.0823 13.7845 15.1874 14.3598 15.3978C14.9294 15.6081 15.4539 15.9623 15.9164 16.4549L16.0574 16.6043L20.3721 12.2485L20.2537 12.1156H20.2593Z"/>
+          <path d="M45.2733 15.9568C44.1002 13.765 42.5266 12.0437 40.592 10.8316C38.6574 9.61944 36.2547 9.00508 33.4572 9.00508C30.6597 9.00508 28.2514 9.63605 26.0743 10.8814C23.8972 12.1267 22.1544 13.8093 20.8854 15.8903C19.6164 17.9714 18.9734 20.3458 18.9734 22.9417C18.9734 25.5375 19.6051 27.9285 20.8572 30.0483C22.1093 32.1681 23.8634 33.8728 26.0743 35.1126C28.2852 36.358 30.8628 36.9889 33.7392 36.9889C36.0009 36.9889 38.1216 36.596 40.028 35.8156C41.94 35.0351 43.5869 33.8673 44.9123 32.3397L45.0251 32.2069L40.8176 28.017L40.6822 28.172C39.8813 29.0687 38.883 29.755 37.7155 30.2199C36.548 30.6848 35.1888 30.9228 33.6828 30.9228C32.5999 30.9228 31.596 30.7844 30.6879 30.5077L45.341 16.0785L45.2733 15.9568ZM26.4071 27.1093C25.7585 25.9194 25.4313 24.5191 25.4313 22.9472C25.4313 21.3753 25.7641 20.0138 26.4184 18.8127C27.0726 17.6172 28.0202 16.6652 29.2384 15.99C30.4623 15.3092 31.9118 14.966 33.5588 14.966C35.2057 14.966 36.6383 15.2871 37.614 15.9291C37.6479 15.9512 37.6817 15.9789 37.7155 16.001L26.4014 27.1038L26.4071 27.1093Z"/>
+          <path d="M66.3787 28.0724C65.6172 28.9635 64.681 29.6443 63.6094 30.0926C62.5321 30.5409 61.3364 30.7678 60.0561 30.7678C58.5614 30.7678 57.2191 30.4358 56.0741 29.7716C54.9292 29.1129 54.0268 28.1886 53.3894 27.0319C52.7521 25.8696 52.425 24.5135 52.425 23.0081C52.425 21.5026 52.7465 20.1023 53.3894 18.9566C54.0268 17.8165 54.9292 16.9032 56.0741 16.239C57.2191 15.5804 58.5614 15.2428 60.0561 15.2428C61.3364 15.2428 62.5321 15.4697 63.6094 15.918C64.681 16.3663 65.6116 17.0416 66.3787 17.9382L66.514 18.0987L70.84 13.7927L70.7272 13.6598C69.4356 12.171 67.8507 11.0142 66.0177 10.2172C64.1847 9.42019 62.1768 9.01062 60.0617 9.01062C57.377 9.01062 54.9123 9.63052 52.7352 10.8592C50.5581 12.088 48.8209 13.7705 47.5745 15.8682C46.328 17.9659 45.6907 20.368 45.6907 23.0025C45.6907 25.6371 46.3224 27.9894 47.5745 30.1092C48.8209 32.229 50.5581 33.9227 52.7352 35.1458C54.9123 36.3746 57.377 36.9945 60.0617 36.9945C62.1768 36.9945 64.1847 36.5904 66.0177 35.7879C67.8564 34.9909 69.4412 33.8286 70.7272 32.3397L70.84 32.2069L66.514 27.9008L66.3787 28.0613V28.0724Z"/>
+          <path d="M87.2076 9.18773C79.1874 8.08078 71.7763 13.3831 70.6821 21.0045C69.5879 28.6259 75.2167 35.727 83.237 36.834C91.2516 37.9409 98.6684 32.6441 99.7626 25.0227C100.857 17.4013 95.2223 10.2947 87.2076 9.18773ZM93.942 22.5155C93.3779 26.4452 89.6724 29.1794 85.6679 28.6259C81.6634 28.0724 78.8772 24.4416 79.4412 20.5119C80.0052 16.5822 83.7051 13.8425 87.7096 14.396C91.7141 14.9494 94.506 18.5858 93.942 22.5155Z"/>
+          <path d="M101.037 0.752736C98.9955 -0.603285 96.2149 -0.0830155 94.8331 1.92611C93.4513 3.9297 93.9814 6.65835 96.0288 8.01437C98.0705 9.37039 100.851 8.85012 102.233 6.84099C103.615 4.8374 103.085 2.10876 101.037 0.752736Z"/>
+        </svg>
+      </a>
+    </div>
+  </div>
+</div>
+
+<script src="wasm_exec.js"></script>
+<script>
+const THEME_KEY = 'gnata-playground-theme';
+
+function getPreferredTheme() {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored) return stored;
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem(THEME_KEY, theme);
+  const icon = document.querySelector('.theme-icon');
+  icon.textContent = theme === 'dark' ? '\u2600\uFE0F' : '\uD83C\uDF19';
+}
+
+applyTheme(getPreferredTheme());
+
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  applyTheme(current === 'dark' ? 'light' : 'dark');
+});
+
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', e => {
+  if (!localStorage.getItem(THEME_KEY)) {
+    applyTheme(e.matches ? 'light' : 'dark');
+  }
+});
+
+const examples = {
+  invoice: {
+    expr: '$sum(Account.Order.Product.(Price * Quantity))',
+    data: `{
+  "Account": {
+    "Name": "Firefly",
+    "Order": [
+      {
+        "OrderID": "order103",
+        "Product": [
+          { "Name": "Bowler Hat", "Price": 34.45, "Quantity": 2 },
+          { "Name": "Trilby hat", "Price": 21.67, "Quantity": 1 }
+        ]
+      },
+      {
+        "OrderID": "order104",
+        "Product": [
+          { "Name": "Cloak", "Price": 107.99, "Quantity": 1 }
+        ]
+      }
+    ]
+  }
+}`
+  },
+  users: {
+    expr: '$filter(users, function($u) { $u.age >= 21 }).name',
+    data: `{
+  "users": [
+    { "name": "Alice", "age": 30, "role": "admin" },
+    { "name": "Bob", "age": 17, "role": "viewer" },
+    { "name": "Carol", "age": 25, "role": "editor" },
+    { "name": "Dave", "age": 19, "role": "viewer" }
+  ]
+}`
+  },
+  simple: {
+    expr: 'event.action = "login" and event.severity > 3',
+    data: `{
+  "event": {
+    "action": "login",
+    "severity": 5,
+    "user": "admin@example.com",
+    "metadata": { "ip": "10.0.0.1", "geo": "US" }
+  }
+}`
+  }
+};
+
+const statusEl = document.getElementById('status');
+const exprEl = document.getElementById('expression');
+const inputEl = document.getElementById('input');
+const resultEl = document.getElementById('result');
+const timingEl = document.getElementById('timing');
+const runBtn = document.getElementById('runBtn');
+const clearBtn = document.getElementById('clearBtn');
+
+const go = new Go();
+const progressBar = document.getElementById('progressBar');
+
+async function loadWasm() {
+  // Stream the fetch so we can track download progress.
+  const resp = await fetch('gnata.wasm');
+  const total = parseInt(resp.headers.get('content-length') || '0', 10);
+  let loaded = 0;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const reader = resp.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        loaded += value.byteLength;
+        if (total > 0) {
+          const pct = Math.min(95, (loaded / total) * 100);
+          progressBar.style.width = pct + '%';
+          const kb = Math.round(loaded / 1024);
+          const totalKb = Math.round(total / 1024);
+          statusEl.querySelector('span:last-child').textContent =
+            `${kb} / ${totalKb} KB`;
+        }
+        controller.enqueue(value);
+      }
+      controller.close();
+    }
+  });
+
+  const tracked = new Response(stream, { headers: resp.headers });
+  const result = await WebAssembly.instantiateStreaming(tracked, go.importObject);
+  const wrapWasm = fn => (...args) => { const r = fn(...args); if (r instanceof Error) throw r; return r; };
+  window.gnataEval          = wrapWasm((...a) => window._gnataEval(...a));
+  window.gnataCompile       = wrapWasm((...a) => window._gnataCompile(...a));
+  window.gnataEvalHandle    = wrapWasm((...a) => window._gnataEvalHandle(...a));
+  window.gnataReleaseHandle = wrapWasm((...a) => window._gnataReleaseHandle(...a));
+
+  go.run(result.instance).catch(err => {
+    statusEl.classList.remove('ready');
+    statusEl.querySelector('span:last-child').textContent = 'Runtime crash';
+    resultEl.textContent = `WASM runtime exited unexpectedly: ${err}`;
+    resultEl.className = 'error';
+    runBtn.disabled = true;
+  });
+
+  progressBar.style.width = '100%';
+  setTimeout(() => { progressBar.style.opacity = '0'; progressBar.style.transition += ', opacity 0.4s'; }, 200);
+  statusEl.classList.add('ready');
+  statusEl.querySelector('span:last-child').textContent = 'Ready';
+  runBtn.disabled = false;
+  // Run the pre-filled example immediately once WASM is ready.
+  evaluate();
+}
+
+loadWasm().catch(err => {
+  statusEl.querySelector('span:last-child').textContent = 'Failed to load';
+  resultEl.textContent = `Failed to load WASM module: ${err.message || err}`;
+  resultEl.className = 'error';
+  console.error('WASM load error:', err);
+});
+
+function evaluate() {
+  const expr = exprEl.value.trim();
+  const jsonStr = inputEl.value.trim();
+
+  if (!expr) {
+    resultEl.textContent = '';
+    timingEl.textContent = '';
+    return;
+  }
+
+  try {
+    const t0 = performance.now();
+    const raw = gnataEval(expr, jsonStr || 'null');
+    const elapsed = performance.now() - t0;
+
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+    resultEl.textContent = typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2);
+    resultEl.className = 'success';
+    timingEl.textContent = elapsed < 1 ? `${(elapsed * 1000).toFixed(0)} \u00b5s` : `${elapsed.toFixed(2)} ms`;
+  } catch (e) {
+    resultEl.textContent = e.message || String(e);
+    resultEl.className = 'error';
+    timingEl.textContent = '';
+  }
+}
+
+// Live evaluation: debounce so we don't hammer the WASM on every keystroke.
+let debounceTimer = null;
+function scheduleEval() {
+  clearTimeout(debounceTimer);
+  timingEl.textContent = '';
+  debounceTimer = setTimeout(evaluate, 300);
+}
+
+exprEl.addEventListener('input', scheduleEval);
+inputEl.addEventListener('input', scheduleEval);
+
+runBtn.addEventListener('click', () => {
+  clearTimeout(debounceTimer);
+  evaluate();
+});
+
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    clearTimeout(debounceTimer);
+    evaluate();
+  }
+});
+
+clearBtn.addEventListener('click', () => {
+  clearTimeout(debounceTimer);
+  exprEl.value = '';
+  inputEl.value = '';
+  resultEl.textContent = '';
+  resultEl.className = '';
+  timingEl.textContent = '';
+});
+
+document.querySelectorAll('.example-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const ex = examples[chip.dataset.example];
+    if (ex) {
+      clearTimeout(debounceTimer);
+      exprEl.value = ex.expr;
+      inputEl.value = ex.data;
+      evaluate();
+    }
+  });
+});
+</script>
+</body>
+</html>

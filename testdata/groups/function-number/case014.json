@@ -1,0 +1,6 @@
+{
+    "expr": "$number(false)",
+    "dataset": null,
+    "bindings": {},
+    "result": 0
+}

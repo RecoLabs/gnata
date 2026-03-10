@@ -1,0 +1,102 @@
+version: "2"
+linters:
+  enable:
+  - asasalint
+  - asciicheck
+  - bidichk
+  - copyloopvar
+  - decorder
+  - dogsled
+  - dupl
+  - dupword
+  - durationcheck
+  - errchkjson
+  - errname
+  - errorlint
+  - exhaustive
+  - exptostd
+  - fatcontext
+  - funlen
+  - goconst
+  - gocritic
+  - gocyclo
+  - goprintffuncname
+  - gosec
+  - gosmopolitan
+  - grouper
+  - iface
+  - intrange
+  - iotamixing
+  - lll
+  - makezero
+  - misspell
+  - modernize
+  - nakedret
+  - nilerr
+  - nilnesserr
+  - nolintlint
+  - nosprintfhostport
+  - prealloc
+  - predeclared
+  - reassign
+  - recvcheck
+  - revive
+  - sloglint
+  - staticcheck
+  - testableexamples
+  - testifylint
+  - unconvert
+  - unparam
+  - usestdlibvars
+  - usetesting
+  - wastedassign
+  - whitespace
+  settings:
+    funlen:
+      lines: 100
+      statements: 50
+    gocritic:
+      enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    lll:
+      line-length: 140
+    revive:
+      rules:
+      - name: var-naming
+        disabled: true
+  exclusions:
+    presets:
+    - comments
+    - common-false-positives
+    - legacy
+    - std-error-handling
+    rules:
+    - path: (.+)\.go$
+      text: G101
+    - path: (.+)\.go$
+      text: G404
+    - path: (.+)\.go$
+      text: G115
+    - path: (.+)\.go$
+      text: Error return value of `.*log.*ger.*\.Log` is not checked
+    paths:
+    - third_party$
+    - builtin$
+    - examples$
+issues:
+  fix: true
+formatters:
+  enable:
+  - gci
+  - gofmt
+  - gofumpt
+  - goimports
+  exclusions:
+    paths:
+    - third_party$
+    - builtin$
+    - examples$

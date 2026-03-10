@@ -1,0 +1,370 @@
+[
+    {
+        "function": "#toMillis",
+        "category": "undefined value",
+        "description": "should return undefined",
+        "expr": "$toMillis(undefined, 'pic')",
+        "data": {},
+        "undefinedResult": true
+    },
+    {
+        "function": "#toMillis",
+        "category": "basic date patterns",
+        "description": "should parse string literal",
+        "expr": "$toMillis('Hello', 'Hello')",
+        "data": {},
+        "undefinedResult": true
+    },
+    {
+        "function": "#toMillis",
+        "category": "basic date patterns",
+        "description": "should parse year",
+        "expr": "$toMillis('2018', '[Y1]')",
+        "data": {},
+        "result": 1514764800000
+    },
+    {
+        "function": "#toMillis",
+        "category": "basic date patterns",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('2018-03-27', '[Y1]-[M01]-[D01]')",
+        "data": {},
+        "result": 1522108800000
+    },
+    {
+        "function": "#toMillis",
+        "category": "basic date patterns",
+        "description": "should parse ISO 8601 format",
+        "expr": "$toMillis('2018-03-27T14:03:00.123Z', '[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01].[f001]Z')",
+        "data": {},
+        "result": 1522159380123
+    },
+    {
+        "function": "#toMillis",
+        "category": "ordinal numeric dates",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('27th 3 1976', '[D1o] [M#1] [Y0001]')",
+        "data": {},
+        "result": 196732800000
+    },
+    {
+        "function": "#toMillis",
+        "category": "ordinal numeric dates",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('21st 12 1881', '[D1o] [M01] [Y0001]')",
+        "data": {},
+        "result": -2777932800000
+    },
+    {
+        "function": "#toMillis",
+        "category": "ordinal numeric dates",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('2nd 12 2012', '[D1o] [M01] [Y0001]')",
+        "data": {},
+        "result": 1354406400000
+    },
+    {
+        "function": "#toMillis",
+        "category": "roman numeral dates",
+        "description": "should parse year",
+        "expr": "$toMillis('MCMLXXXIV', '[YI]')",
+        "data": {},
+        "result": 441763200000
+    },
+    {
+        "function": "#toMillis",
+        "category": "roman numeral dates",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('27 03 MMXVIII', '[D1] [M01] [YI]')",
+        "data": {},
+        "result": 1522108800000
+    },
+    {
+        "function": "#toMillis",
+        "category": "roman numeral dates",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('27 iii MMXVIII', '[D1] [Mi] [YI]')",
+        "data": {},
+        "result": 1522108800000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates with letters instead of numbers",
+        "description": "day/month in letters, year in roman numerals",
+        "expr": "$toMillis('w C mmxviii', '[Da] [MA] [Yi]')",
+        "data": {},
+        "result": 1521763200000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates with letters instead of numbers",
+        "description": "day/month in letters, year in roman numerals",
+        "expr": "$toMillis('ae C mmxviii', '[Da] [MA] [Yi]')",
+        "data": {},
+        "result": 1522454400000
+    },
+    {
+        "function": "#toMillis",
+        "category": "months in words",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('27th April 2008', '[D1o] [MNn] [Y0001]')",
+        "data": {},
+        "result": 1209254400000
+    },
+    {
+        "function": "#toMillis",
+        "category": "months in words",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('21 August 2017', '[D1] [MNn] [Y0001]')",
+        "data": {},
+        "result": 1503273600000
+    },
+    {
+        "function": "#toMillis",
+        "category": "months in words",
+        "description": "should parse year/month/day",
+        "expr": "$toMillis('2 Feb 2012', '[D1] [MNn,3-3] [Y0001]')",
+        "data": {},
+        "result": 1328140800000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates/years in words",
+        "description": "should parse year in words",
+        "expr": "$toMillis('one thousand, nine hundred and eighty-four', '[Yw]')",
+        "data": {},
+        "result": 441763200000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates/years in words",
+        "description": "should parse year in words",
+        "expr": "$toMillis('nineteen hundred and eighty-four', '[Yw]')",
+        "data": {},
+        "result": 441763200000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates/years in words",
+        "description": "should parse date/month in words",
+        "expr": "$toMillis('twenty-seven April 2008', '[Dw] [MNn] [Y0001]')",
+        "data": {},
+        "result": 1209254400000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates/years in words",
+        "description": "should parse date/month in ordinal words",
+        "expr": "$toMillis('twenty-seventh April 2008', '[Dw] [MNn] [Y0001]')",
+        "data": {},
+        "result": 1209254400000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates/years in words",
+        "description": "should parse ordinal date/month/year",
+        "expr": "$toMillis('twenty-first August two thousand and seventeen', '[Dw] [MNn] [Yw]')",
+        "data": {},
+        "result": 1503273600000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates/years in words",
+        "description": "should parse ordinal date/month/year",
+        "expr": "$toMillis('TWENTY-SECOND August two thousand and seventeen', '[DW] [MNn] [Yw]')",
+        "data": {},
+        "result": 1503360000000
+    },
+    {
+        "function": "#toMillis",
+        "category": "dates/years in words",
+        "description": "should parse ordinal date/month/year",
+        "expr": "$toMillis('Twentieth of August, two thousand and seventeen', '[DW] of [MNn], [Yw]')",
+        "data": {},
+        "result": 1503187200000
+    },
+    {
+        "function": "#toMillis",
+        "category": "12 hour clock",
+        "description": "just after midnight",
+        "expr": "$toMillis('4/4/2018 12:06 am', '[D1]/[M1]/[Y0001] [h]:[m] [P]')",
+        "data": {},
+        "result": 1522800360000
+    },
+    {
+        "function": "#toMillis",
+        "category": "12 hour clock",
+        "description": "breakfast time",
+        "expr": "$toMillis('4/4/2018 06:30 am', '[D1]/[M1]/[Y0001] [h]:[m] [P]')",
+        "data": {},
+        "result": 1522823400000
+    },
+    {
+        "function": "#toMillis",
+        "category": "12 hour clock",
+        "description": "just after midday",
+        "expr": "$toMillis('4/4/2018 12:06 pm', '[D1]/[M1]/[Y0001] [h]:[m] [P]')",
+        "data": {},
+        "result": 1522843560000
+    },
+    {
+        "function": "#toMillis",
+        "category": "12 hour clock",
+        "description": "just before midnight",
+        "expr": "$toMillis('4/4/2018 11:30 pm', '[D1]/[M1]/[Y0001] [h]:[m] [P]')",
+        "data": {},
+        "result": 1522884600000
+    },
+    {
+        "function": "#toMillis",
+        "category": "derive the date",
+        "description": "ordinal date: day 94 of the year 2018",
+        "expr": "$toMillis('2018-094', '[Y0001]-[d001]')",
+        "data": {},
+        "result": 1522800000000
+    },
+    {
+        "function": "#toMillis",
+        "category": "default unspecified parts",
+        "description": "time only defaults to todays date",
+        "expr": "$toMillis('13:45', '[H]:[m]') ~> $fromMillis() ~> $substringBefore('T') = $substringBefore($now(), 'T')",
+        "data": {},
+        "result": true
+    },
+    {
+        "function": "#toMillis",
+        "category": "default unspecified parts",
+        "description": "hours/minutes only defaults seconds to zero",
+        "expr": "$toMillis('13:45', '[H]:[m]') ~> $fromMillis() ~> $substringAfter('T')",
+        "data": {},
+        "result": "13:45:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "default unspecified parts",
+        "description": "date only defaults time to midnight",
+        "expr": "$toMillis('Wednesday, 14th November 2018', '[FNn], [D1o] [MNn] [Y]') ~> $fromMillis()",
+        "data": {},
+        "result": "2018-11-14T00:00:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "default unspecified parts",
+        "description": "date only defaults time to midnight",
+        "expr": "$toMillis('Mon, Twelfth November 2018', '[FNn,*-3], [DWwo] [MNn] [Y]') ~> $fromMillis()",
+        "data": {},
+        "result": "2018-11-12T00:00:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "parsing day-of-year",
+        "description": "180th day of 2018 is 29th June",
+        "expr": "$toMillis('2018--180', '[Y]--[d]') ~> $fromMillis()",
+        "data": {},
+        "result": "2018-06-29T00:00:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "parsing day-of-year",
+        "description": "365th day of 2018 is 31st December",
+        "expr": "$toMillis('three hundred and sixty-fifth day of 2018', '[dwo] day of [Y]') ~> $fromMillis()",
+        "data": {},
+        "result": "2018-12-31T00:00:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "nothing matches",
+        "description": "parsing a non-date string returns undefined",
+        "expr": "$toMillis('irrelevent string', '[Y]-[M]-[D]')",
+        "data": {},
+        "undefinedResult": true
+    },
+    {
+        "function": "#toMillis",
+        "category": "nothing matches",
+        "description": "picture string contains an unknown component",
+        "expr": "$toMillis('2018-05-22', '[Y]-[M]-[q]')",
+        "data": {},
+        "code": "D3132"
+    },
+    {
+        "function": "#toMillis",
+        "category": "nothing matches",
+        "description": "picture string contains a named year",
+        "expr": "$toMillis('2018-05-22', '[YN]-[M]-[D]')",
+        "data": {},
+        "code": "D3133"
+    },
+    {
+        "function": "#toMillis",
+        "category": "date/time underspecified (gaps)",
+        "description": "year/date with no month",
+        "expr": "$toMillis('2018-22', '[Y]-[D]')",
+        "data": {},
+        "code": "D3136"
+    },
+    {
+        "function": "#toMillis",
+        "category": "date/time underspecified (gaps)",
+        "description": "month/date, min/sec with no hours",
+        "expr": "$toMillis('5-22 23:59', '[M]-[D] [m]:[s]')",
+        "data": {},
+        "code": "D3136"
+    },
+    {
+        "function": "#toMillis",
+        "category": "unsupported format",
+        "description": "currently no support for year/month-of-year/week-of-month/day-of-week",
+        "expr": "$toMillis('2018-3-2-5', '[X]-[x]-[w]-[F1]')",
+        "data": {},
+        "code": "D3136"
+    },
+    {
+        "function": "#toMillis",
+        "category": "unsupported format",
+        "description": "currently no support for year/week-of-year/day-of-week",
+        "expr": "$toMillis('2018-32-5', '[X]-[W]-[F1]')",
+        "data": {},
+        "code": "D3136"
+    },
+    {
+        "function": "#toMillis",
+        "category": "timezones",
+        "description": "should parse a date containing timezones",
+        "expr": "$toMillis('2020-09-09 08:00:00 +02:00', '[Y0001]-[M01]-[D01] [H01]:[m01]:[s01] [Z]') ~> $fromMillis() ",
+        "data": {},
+        "result": "2020-09-09T06:00:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "timezones",
+        "description": "should parse a date containing timezones",
+        "expr": "$toMillis('2020-09-09 08:00:00 GMT-05:00', '[Y0001]-[M01]-[D01] [H01]:[m01]:[s01] [z]') ~> $fromMillis() ",
+        "data": {},
+        "result": "2020-09-09T13:00:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "timezones",
+        "description": "should parse a date containing timezones",
+        "expr": "$toMillis('2020-09-09 12:00:00 +05:30', '[Y0001]-[M01]-[D01] [H01]:[m01]:[s01] [Z]') ~> $fromMillis() ",
+        "data": {},
+        "result": "2020-09-09T06:30:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "timezones",
+        "description": "should parse a date containing timezones",
+        "expr": "$toMillis('2020-09-09 12:00:00 GMT-5', '[Y0001]-[M01]-[D01] [H01]:[m01]:[s01] [z01]') ~> $fromMillis() ",
+        "data": {},
+        "result": "2020-09-09T17:00:00.000Z"
+    },
+    {
+        "function": "#toMillis",
+        "category": "timezones",
+        "description": "should parse a date containing timezones",
+        "expr": "$toMillis('2020-09-09 12:00:00 +0530', '[Y0001]-[M01]-[D01] [H01]:[m01]:[s01] [Z0001]') ~> $fromMillis() ",
+        "data": {},
+        "result": "2020-09-09T06:30:00.000Z"
+    }
+]

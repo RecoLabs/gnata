@@ -1,0 +1,3 @@
+*.wasm
+.secret
+.DS_Store
