@@ -11,7 +11,6 @@ import (
 
 	"github.com/recolabs/gnata/internal/evaluator"
 	"github.com/recolabs/gnata/internal/parser"
-	"github.com/tidwall/gjson"
 )
 
 // StreamEvaluator manages compiled expressions for high-throughput streaming evaluation.
@@ -216,6 +215,25 @@ func (se *StreamEvaluator) Reset() {
 // Returns results[i] = evaluation of expressions[exprIndices[i]], or nil for undefined.
 func (se *StreamEvaluator) EvalMany(
 	ctx context.Context, data json.RawMessage, schemaKey string, exprIndices []int,
+) ([]any, error) {
+	return se.evalInternal(ctx, data, nil, nil, schemaKey, exprIndices)
+}
+
+// EvalMap evaluates the specified expressions against a map of raw JSON values.
+//   - data: map of field names to raw JSON-encoded values (decoded individually).
+//   - schemaKey: external key identifying the event schema. On first encounter, builds
+//     and caches a GroupPlan. Subsequent calls are lock-free. Pass "" to disable caching.
+//   - exprIndices: which compiled expressions to evaluate.
+//
+// Returns results[i] = evaluation of expressions[exprIndices[i]], or nil for undefined.
+func (se *StreamEvaluator) EvalMap(
+	ctx context.Context, data map[string]json.RawMessage, schemaKey string, exprIndices []int,
+) ([]any, error) {
+	return se.evalInternal(ctx, nil, nil, data, schemaKey, exprIndices)
+}
+
+func (se *StreamEvaluator) evalInternal(
+	ctx context.Context, data json.RawMessage, preparsed any, mapData map[string]json.RawMessage, schemaKey string, exprIndices []int,
 ) (results []any, err error) {
 	defer recoverEvalPanic(&err)
 	if len(exprIndices) == 0 {
@@ -247,7 +265,7 @@ func (se *StreamEvaluator) EvalMany(
 	}
 
 	results = make([]any, len(exprIndices))
-	batch := evalBatch{se: se, plan: plan, data: data}
+	batch := evalBatch{se: se, plan: plan, data: data, mapData: mapData, parsed: preparsed, parseAttempted: preparsed != nil}
 	for i, idx := range exprIndices {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -275,6 +293,7 @@ type evalBatch struct {
 	se             *StreamEvaluator
 	plan           *GroupPlan
 	data           json.RawMessage
+	mapData        map[string]json.RawMessage
 	parsed         any
 	parsedErr      error
 	parseAttempted bool
@@ -300,18 +319,17 @@ func (b *evalBatch) evalSingleExpr(ctx context.Context, i, idx int, expr *Expres
 // or (nil, true, err) on error.
 func (b *evalBatch) tryFastPaths(i, idx int, start time.Time) (result any, done bool, err error) {
 	if b.plan != nil && i < len(b.plan.ExprFastPath) && b.plan.ExprFastPath[i] && b.plan.FastPaths[i] != "" {
-		r := gjson.GetBytes(b.data, b.plan.FastPaths[i])
+		r := resolveGjsonPath(b.data, b.mapData, b.plan.FastPaths[i])
 		if r.Exists() {
 			if b.se.metrics != nil {
 				b.se.metrics.OnEval(idx, true, time.Since(start), nil)
 			}
 			return gjsonValueToAny(&r), true, nil
 		}
-		// gjson miss — fall through to full evaluator (handles array auto-mapping)
 	}
 
 	if b.plan != nil && i < len(b.plan.CmpFast) && b.plan.CmpFast[i] != nil {
-		if result, handled, err := evalComparisonBytes(b.plan.CmpFast[i], b.data); err != nil {
+		if result, handled, err := evalComparison(b.plan.CmpFast[i], b.data, b.mapData); err != nil {
 			if b.se.metrics != nil {
 				b.se.metrics.OnEval(idx, true, time.Since(start), err)
 			}
@@ -325,7 +343,7 @@ func (b *evalBatch) tryFastPaths(i, idx int, start time.Time) (result any, done 
 	}
 
 	if b.plan != nil && i < len(b.plan.FuncFast) && b.plan.FuncFast[i] != nil {
-		if result, handled, err := evalFuncBytes(b.plan.FuncFast[i], b.data); err != nil {
+		if result, handled, err := evalFunc(b.plan.FuncFast[i], b.data, b.mapData); err != nil {
 			if b.se.metrics != nil {
 				b.se.metrics.OnEval(idx, true, time.Since(start), err)
 			}
@@ -345,7 +363,11 @@ func (b *evalBatch) tryFastPaths(i, idx int, start time.Time) (result any, done 
 func (b *evalBatch) fullEval(ctx context.Context, idx int, expr *Expression, start time.Time) (any, error) {
 	if !b.parseAttempted {
 		b.parseAttempted = true
-		b.parsed, b.parsedErr = evaluator.DecodeJSON(b.data)
+		if len(b.mapData) > 0 {
+			b.parsed, b.parsedErr = evaluator.DecodeRawMap(b.mapData)
+		} else if len(b.data) > 0 {
+			b.parsed, b.parsedErr = evaluator.DecodeJSON(b.data)
+		}
 	}
 	if b.parsedErr != nil {
 		return nil, b.parsedErr

@@ -72,8 +72,8 @@ var funcFastHandlers = map[parser.FuncFastKind]funcFastHandler{
 	parser.FuncFastAverage:   evalFuncAverage,
 }
 
-func evalFuncBytes(f *parser.FuncFastPath, data json.RawMessage) (result any, handled bool, err error) {
-	r := gjson.GetBytes(data, f.Path)
+func evalFunc(f *parser.FuncFastPath, data json.RawMessage, mapData map[string]json.RawMessage) (result any, handled bool, err error) {
+	r := resolveGjsonPath(data, mapData, f.Path)
 	if !r.Exists() {
 		// Fall through to full evaluator — gjson doesn't auto-map through
 		// arrays, so the path might still resolve via the AST walker.

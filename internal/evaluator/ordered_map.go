@@ -3,6 +3,7 @@ package evaluator
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 )
@@ -145,6 +146,21 @@ func DecodeJSON(b json.RawMessage) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
 	return decodeValue(dec)
+}
+
+// DecodeRawMap converts a map of field names to raw JSON values into an
+// *OrderedMap by decoding each value individually via DecodeJSON. Objects
+// in the values preserve key insertion order, consistent with DecodeJSON.
+func DecodeRawMap(m map[string]json.RawMessage) (*OrderedMap, error) {
+	om := NewOrderedMapWithCapacity(len(m))
+	for key, raw := range m {
+		val, err := DecodeJSON(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode key %q: %w", key, err)
+		}
+		om.Set(key, val)
+	}
+	return om, nil
 }
 
 func decodeValue(dec *json.Decoder) (any, error) {

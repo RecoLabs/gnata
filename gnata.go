@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/recolabs/gnata/functions"
 	"github.com/recolabs/gnata/internal/evaluator"
@@ -206,12 +207,12 @@ func (e *Expression) EvalBytes(ctx context.Context, data json.RawMessage) (resul
 		// which handles auto-mapping through arrays correctly.
 	}
 	if e.cmpFast != nil {
-		if res, handled, evalErr := evalComparisonBytes(e.cmpFast, data); handled || evalErr != nil {
+		if res, handled, evalErr := evalComparison(e.cmpFast, data, nil); handled || evalErr != nil {
 			return res, evalErr
 		}
 	}
 	if e.funcFast != nil {
-		if res, handled, evalErr := evalFuncBytes(e.funcFast, data); handled || evalErr != nil {
+		if res, handled, evalErr := evalFunc(e.funcFast, data, nil); handled || evalErr != nil {
 			return res, evalErr
 		}
 	}
@@ -222,14 +223,44 @@ func (e *Expression) EvalBytes(ctx context.Context, data json.RawMessage) (resul
 	return e.Eval(ctx, v)
 }
 
-// evalComparisonBytes evaluates a pre-compiled comparison fast path against raw JSON bytes.
-// Returns (result, true, nil) on success. Returns (nil, false, nil) when the expression
-// cannot safely short-circuit (e.g. the LHS is a JSON array that requires auto-mapping),
-// signalling the caller to fall back to full evaluation.
+// resolveGjsonPath resolves a gjson path from either raw bytes or a pre-decoded map.
+// When data is available (EvalMany), it delegates to gjson.GetBytes on the full blob.
+// When mapData is available (EvalMap), it does an O(1) map lookup for the top-level
+// key, then uses gjson on the nested value bytes — skipping sibling keys entirely.
+// Paths containing gjson special characters fall through to return an empty result,
+// letting the caller fall back to full AST evaluation.
+func resolveGjsonPath(data json.RawMessage, mapData map[string]json.RawMessage, path string) gjson.Result {
+	if data != nil {
+		return gjson.GetBytes(data, path)
+	}
+	if mapData == nil {
+		return gjson.Result{}
+	}
+	if strings.ContainsAny(path, `\#*?@`) {
+		return gjson.Result{}
+	}
+	key, rest, hasDot := strings.Cut(path, ".")
+	raw, ok := mapData[key]
+	if !ok {
+		return gjson.Result{}
+	}
+	if !hasDot {
+		return gjson.ParseBytes(raw)
+	}
+	return gjson.GetBytes(raw, rest)
+}
+
+// evalComparison evaluates a pre-compiled comparison fast path against raw JSON
+// bytes or a pre-decoded map. Returns (result, true, nil) on success. Returns
+// (nil, false, nil) when the expression cannot safely short-circuit (e.g. the
+// LHS is a JSON array that requires auto-mapping), signalling the caller to
+// fall back to full evaluation.
 //
 //nolint:unparam // err is part of the funcFastHandler contract; always nil for now
-func evalComparisonBytes(c *parser.ComparisonFastPath, data json.RawMessage) (result any, handled bool, err error) {
-	lhs := gjson.GetBytes(data, c.LHSPath)
+func evalComparison(
+	c *parser.ComparisonFastPath, data json.RawMessage, mapData map[string]json.RawMessage,
+) (result any, handled bool, err error) {
+	lhs := resolveGjsonPath(data, mapData, c.LHSPath)
 	if !lhs.Exists() {
 		// gjson couldn't resolve the path. This could be because the path is
 		// truly undefined OR because an intermediate element is a JSON array
