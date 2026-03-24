@@ -1,0 +1,9 @@
+{
+    "expr": "$match('hello', /l/)",
+    "data": {},
+    "bindings": {},
+    "result": [
+        {"match": "l", "start": 2, "end": 3, "groups": []},
+        {"match": "l", "start": 3, "end": 4, "groups": []}
+    ]
+}

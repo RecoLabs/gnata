@@ -73,11 +73,15 @@ func makeFnMatch(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 				return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", matchErr)}
 			}
 		}
-		if len(result) == 0 {
-			return nil, nil
-		}
-		return result, nil
+		return matchResultSeq(result), nil
 	}
+}
+
+func matchResultSeq(result []any) any {
+	if len(result) == 0 {
+		return nil
+	}
+	return &evaluator.Sequence{Values: result}
 }
 
 func matchWithCustomMatcher(s string, matcherFn any, limit int, evalFn EvalFn, env *evaluator.Environment) (any, error) {
@@ -119,10 +123,7 @@ func matchWithCustomMatcher(s string, matcherFn any, limit int, evalFn EvalFn, e
 		}
 	}
 
-	if len(result) == 0 {
-		return nil, nil
-	}
-	return result, nil
+	return matchResultSeq(result), nil
 }
 
 // ── $replace ──────────────────────────────────────────────────────────────────

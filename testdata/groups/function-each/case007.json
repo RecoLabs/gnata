@@ -1,0 +1,6 @@
+{
+    "expr": "$each({'a': 1}, function($v, $k) { [1, 2, 3] })[]",
+    "data": {},
+    "bindings": {},
+    "result": [[1, 2, 3]]
+}

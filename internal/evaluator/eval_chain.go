@@ -38,20 +38,7 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 		if err != nil {
 			return nil, err
 		}
-		if right.KeepArray {
-			if seq, ok := result.(*Sequence); ok {
-				result = CollapseSequence(seq)
-			}
-			switch result.(type) {
-			case []any:
-				return result, nil
-			case nil:
-				return nil, nil
-			default:
-				return []any{result}, nil
-			}
-		}
-		return result, nil
+		return CollapseAndKeep(result, right.KeepArray), nil
 	}
 	// Right is a function reference or other expression.
 	fn, err := Eval(right, input, env)
@@ -87,10 +74,19 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 			if err != nil {
 				return nil, err
 			}
-			return callFunction(fn, []any{intermediate}, focus, env)
+			intermediate = CollapseAndKeep(intermediate, false)
+			res, err := callFunction(fn, []any{intermediate}, focus, env)
+			if err != nil {
+				return nil, err
+			}
+			return CollapseAndKeep(res, false), nil
 		}), nil
 	}
-	return callFunction(fn, []any{piped}, input, env)
+	result, err := callFunction(fn, []any{piped}, input, env)
+	if err != nil {
+		return nil, err
+	}
+	return CollapseAndKeep(result, false), nil
 }
 
 func evalBlock(node *parser.Node, input any, env *Environment) (any, error) {

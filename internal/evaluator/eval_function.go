@@ -76,23 +76,7 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Normalize Sequence results: jsonata-js collapses Sequence values
-	// after every function call. Single-element → scalar, multi → []any.
-	// Functions returning *Sequence ($keys, $distinct) rely on this.
-	if seq, ok := result.(*Sequence); ok {
-		result = CollapseSequence(seq)
-	}
-	if node.KeepArray {
-		switch result.(type) {
-		case []any:
-			return result, nil
-		case nil:
-			return nil, nil
-		default:
-			return []any{result}, nil
-		}
-	}
-	return result, nil
+	return CollapseAndKeep(result, node.KeepArray), nil
 }
 
 func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {

@@ -65,6 +65,32 @@ func CollapseSequence(s *Sequence) any {
 	}
 }
 
+// CollapseAndKeep normalizes a function call result for callers that need
+// KeepArray (the [] suffix) support. Builtins returning *Sequence rely on
+// CollapseSequence; when keepArray is true, singletons are preserved as
+// one-element arrays instead of being unwrapped.
+func CollapseAndKeep(result any, keepArray bool) any {
+	if seq, ok := result.(*Sequence); ok {
+		if keepArray {
+			s := *seq
+			s.KeepSingleton = true
+			seq = &s
+		}
+		result = CollapseSequence(seq)
+	}
+	if keepArray {
+		switch result.(type) {
+		case []any:
+			return result
+		case nil:
+			return nil
+		default:
+			return []any{result}
+		}
+	}
+	return result
+}
+
 // IsArray returns true for []any values (not *Sequence).
 func IsArray(v any) bool {
 	_, ok := v.([]any)

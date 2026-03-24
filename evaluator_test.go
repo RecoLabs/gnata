@@ -495,6 +495,79 @@ func TestRegressionExpr(t *testing.T) {
 	}
 }
 
+// TestSingletonUnwrapEdgeCases covers scenarios the JSON suite cannot:
+// error expectations and chain operator (~>) paths.
+func TestSingletonUnwrapEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		expr      string
+		data      string
+		want      any
+		wantError bool
+	}{
+		{
+			name: "join_nested_each_single_key_errors",
+			expr: `$join($each({"x": {"p": "hi", "q": "lo"}},` +
+				` function($obj, $name) { $each($obj,` +
+				` function($v, $k) { $name & "." & $k & "=" & $v }) })[], ', ')`,
+			data:      `{}`,
+			wantError: true,
+		},
+		{
+			name: "chain_each_single_key",
+			expr: `{"a": 1} ~> $each(function($v, $k) { $k })`,
+			data: `{}`,
+			want: "a",
+		},
+		{
+			name: "chain_spread_single_key",
+			expr: `{"a": 1} ~> $spread()`,
+			data: `{}`,
+			want: map[string]any{"a": float64(1)},
+		},
+		{
+			name: "chain_bare_spread_single_key",
+			expr: `{"a": 1} ~> $spread`,
+			data: `{}`,
+			want: map[string]any{"a": float64(1)},
+		},
+		{
+			name: "composition_spread_merge",
+			expr: `($spread ~> $merge)({"a": 1, "b": 2})`,
+			data: `{}`,
+			want: map[string]any{"a": float64(1), "b": float64(2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var data any
+			if err := json.Unmarshal([]byte(tt.data), &data); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			e, err := gnata.Compile(tt.expr)
+			if err != nil {
+				t.Fatalf("compile %q: %v", tt.expr, err)
+			}
+			result, err := e.Eval(context.Background(), data)
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("expected error, got %v", result)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("eval %q: %v", tt.expr, err)
+			}
+			if tt.want != nil && !gnata.DeepEqual(result, tt.want) {
+				got, _ := json.Marshal(result)
+				want, _ := json.Marshal(tt.want)
+				t.Fatalf("got %s, want %s", got, want)
+			}
+		})
+	}
+}
+
 // TestRegressionBytes covers regressions requiring direct EvalBytes
 // access (e.g. large integers that exceed float64 precision).
 func TestRegressionBytes(t *testing.T) {

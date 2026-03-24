@@ -113,7 +113,7 @@ func fnSpread(args []any, _ any) (any, error) {
 		return result
 	}
 	if evaluator.IsMap(args[0]) {
-		return spreadOne(args[0]), nil
+		return &evaluator.Sequence{Values: spreadOne(args[0])}, nil
 	}
 	if arr, ok := args[0].([]any); ok {
 		var result []any
@@ -241,7 +241,7 @@ func makeFnEach(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		}
 
 		keys := evaluator.MapKeys(objVal)
-		result := make([]any, 0, len(keys))
+		seq := evaluator.CreateSequence()
 		for _, ks := range keys {
 			val, _ := evaluator.MapGet(objVal, ks)
 			res, err := evalFn(fn, []any{val, ks}, focus, env)
@@ -249,10 +249,10 @@ func makeFnEach(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 				return nil, err
 			}
 			if res != nil {
-				result = append(result, res)
+				seq.Values = append(seq.Values, res)
 			}
 		}
-		return result, nil
+		return seq, nil
 	}
 }
 
