@@ -1,0 +1,15 @@
+gnata is an independent Go implementation of the JSONata query and
+transformation language.
+
+JSONata was originally created by Andrew Coleman and is maintained by the
+jsonata-js project:
+https://github.com/jsonata-js/jsonata
+
+We are grateful to the JSONata authors and maintainers for the language,
+specification, and reference implementation, which served as important
+references for compatibility and behavior.
+
+The gnata source code in this repository was implemented independently in Go.
+Some materials in testdata/ are derived from the upstream jsonata-js test
+suite; attribution and the upstream MIT license text for those materials are
+included in testdata/NOTICE.
