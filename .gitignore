@@ -1,3 +1,7 @@
 *.wasm
 .secret
 .DS_Store
+
+# npm package build artifacts
+npm/dist/
+npm/node_modules/

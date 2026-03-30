@@ -1,0 +1,43 @@
+{
+  "name": "gnata-js",
+  "version": "0.2.1",
+  "description": "Browser JSONata via gnata WASM for backend parity, not a performance optimization",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RecoLabs/gnata.git",
+    "directory": "npm"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./wasm/*": "./wasm/*"
+  },
+  "files": [
+    "dist/",
+    "wasm/gnata.wasm",
+    "wasm/wasm_exec.js"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  },
+  "keywords": [
+    "jsonata",
+    "wasm",
+    "webassembly",
+    "gnata",
+    "json",
+    "query",
+    "transformation"
+  ]
+}

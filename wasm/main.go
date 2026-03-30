@@ -157,6 +157,12 @@ func doEvalHandle(handle uint32, jsonData string) (result string, err error) {
 
 // evalAndMarshal evaluates expr against jsonData and marshals the result to JSON.
 // Shared by doEval and doEvalHandle to avoid duplicating unmarshal/eval/marshal logic.
+//
+// Return values:
+//   - ("", nil)    → expression evaluated to undefined (no match).
+//   - ("null", nil) → expression evaluated to JSON null (actual null value).
+//   - (json, nil)  → expression evaluated to a concrete value.
+//   - ("", err)    → evaluation or marshal error.
 func evalAndMarshal(e *gnata.Expression, jsonData string) (string, error) {
 	var data any
 	if jsonData != "" && jsonData != "null" {
@@ -168,6 +174,14 @@ func evalAndMarshal(e *gnata.Expression, jsonData string) (string, error) {
 	res, err := e.Eval(context.Background(), data)
 	if err != nil {
 		return "", err
+	}
+
+	// Eval returns (nil, nil) for undefined results (non-matching paths).
+	// Actual JSON null is the evaluator.Null sentinel (jsonNullType),
+	// which marshals to "null" via MarshalJSON. Returning "" here lets
+	// the JS wrapper map it to JavaScript undefined.
+	if res == nil {
+		return "", nil
 	}
 
 	out, err := json.Marshal(res)
