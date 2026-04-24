@@ -9,25 +9,42 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-// hofArgs trims the HOF callback argument list to the function's expected arity.
-// For lambdas, use the declared parameter count.
-// For built-in functions, default to 1 (value only) since they have their own
-// argument validation and may reject unexpected extra args.
-func hofArgs(fn, value, index any, arr []any) []any {
+// hofArity returns the callback argument count for the given HOF function.
+// For lambdas, uses the declared parameter count (capped at 3).
+// For built-in functions, defaults to 1 (value only).
+func hofArity(fn any) int {
 	if lambda, ok := fn.(*evaluator.Lambda); ok {
-		switch len(lambda.Params) {
-		case 0:
-			return []any{}
-		case 1:
-			return []any{value}
-		case 2:
-			return []any{value, index}
-		default:
-			return []any{value, index, arr}
+		n := len(lambda.Params)
+		if n > 3 {
+			return 3
 		}
+		return n
 	}
-	// For built-in functions pass (value) only to avoid arity rejections.
-	return []any{value}
+	return 1
+}
+
+// hofArgsBuf allocates a reusable buffer for HOF callback arguments.
+func hofArgsBuf(arity int) []any {
+	if arity == 0 {
+		return nil
+	}
+	return make([]any, arity)
+}
+
+// fillHofArgs populates a pre-allocated argument buffer for a HOF callback.
+func fillHofArgs(buf []any, value, index any, arr []any) {
+	switch len(buf) {
+	case 0:
+	case 1:
+		buf[0] = value
+	case 2:
+		buf[0] = value
+		buf[1] = index
+	default:
+		buf[0] = value
+		buf[1] = index
+		buf[2] = arr
+	}
 }
 
 // ── $map ──────────────────────────────────────────────────────────────────────
@@ -56,8 +73,9 @@ func makeFnMap(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 		seq := evaluator.CreateSequence()
 		arrAny := slices.Clone(arr)
+		callArgs := hofArgsBuf(hofArity(fn))
 		for i, item := range arr {
-			callArgs := hofArgs(fn, item, float64(i), arrAny)
+			fillHofArgs(callArgs, item, float64(i), arrAny)
 			val, err := evalFn(fn, callArgs, focus, env)
 			if err != nil {
 				return nil, err
@@ -94,8 +112,9 @@ func makeFnFilter(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 		seq := evaluator.CreateSequence()
 		arrAny := slices.Clone(arr)
+		callArgs := hofArgsBuf(hofArity(fn))
 		for i, item := range arr {
-			callArgs := hofArgs(fn, item, float64(i), arrAny)
+			fillHofArgs(callArgs, item, float64(i), arrAny)
 			val, err := evalFn(fn, callArgs, focus, env)
 			if err != nil {
 				return nil, err
@@ -151,8 +170,9 @@ func makeFnSingle(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		fn := args[1]
 		var matched []any
 		arrAny := slices.Clone(arr)
+		callArgs := hofArgsBuf(hofArity(fn))
 		for i, item := range arr {
-			callArgs := hofArgs(fn, item, float64(i), arrAny)
+			fillHofArgs(callArgs, item, float64(i), arrAny)
 			val, err := evalFn(fn, callArgs, focus, env)
 			if err != nil {
 				return nil, err
@@ -218,21 +238,23 @@ func makeFnReduce(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		}
 
 		arrAny := slices.Clone(arr)
+		var reduceArity int
+		if lambda, ok := fn.(*evaluator.Lambda); ok {
+			reduceArity = max(min(len(lambda.Params), 4), 1)
+		} else {
+			reduceArity = 2
+		}
+		callArgs := make([]any, reduceArity)
 		for i := startIdx; i < len(arr); i++ {
-			var callArgs []any
-			if lambda, ok := fn.(*evaluator.Lambda); ok {
-				switch len(lambda.Params) {
-				case 0, 1:
-					callArgs = []any{acc}
-				case 2:
-					callArgs = []any{acc, arr[i]}
-				case 3:
-					callArgs = []any{acc, arr[i], float64(i)}
-				default:
-					callArgs = []any{acc, arr[i], float64(i), arrAny}
-				}
-			} else {
-				callArgs = []any{acc, arr[i]}
+			callArgs[0] = acc
+			if reduceArity > 1 {
+				callArgs[1] = arr[i]
+			}
+			if reduceArity > 2 {
+				callArgs[2] = float64(i)
+			}
+			if reduceArity > 3 {
+				callArgs[3] = arrAny
 			}
 			val, err := evalFn(fn, callArgs, focus, env)
 			if err != nil {

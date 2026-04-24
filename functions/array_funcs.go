@@ -129,8 +129,11 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			// JSONata $sort comparator: fn(a, b) returns true when a should come
 			// before b. We call fn(b, a) and map true→-1 (a<b), false→0 (a>=b).
 			// SortItemsErr only tests < 0, so +1 is unnecessary.
+			sortArgs := make([]any, 2)
 			cmpFn = func(a, b any) (int, error) {
-				result, err := evalFn(fn, []any{b, a}, focus, env)
+				sortArgs[0] = b
+				sortArgs[1] = a
+				result, err := evalFn(fn, sortArgs, focus, env)
 				if err != nil {
 					return 0, err
 				}
