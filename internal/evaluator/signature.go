@@ -19,11 +19,12 @@ import (
 //
 //  3. Argument type validation: delegates to validateCallArgs, which returns
 //     T0410 on base-type mismatch or arity errors, and T0412 on array
-//     content-type violations.
+//     content-type violations.  Context specs ('-') that are missing receive
+//     the focus value instead of triggering T0410.
 //
 // It returns (coercedArgs, returnUndefined, err).
 // When returnUndefined is true the caller must return (nil, nil) immediately.
-func processCallArgs(specs []parser.ParamSpec, args []any) (coercedArgs []any, returnUndefined bool, err error) {
+func processCallArgs(specs []parser.ParamSpec, args []any, focus any) (coercedArgs []any, returnUndefined bool, err error) {
 	coerced := slices.Clone(args)
 
 	for i, spec := range specs {
@@ -50,16 +51,20 @@ func processCallArgs(specs []parser.ParamSpec, args []any) (coercedArgs []any, r
 		}
 	}
 
-	if err := validateCallArgs(specs, coerced); err != nil {
+	expanded, err := validateCallArgs(specs, coerced, focus)
+	if err != nil {
 		return nil, false, err
 	}
-	return coerced, false, nil
+	return expanded, false, nil
 }
 
 // validateCallArgs checks that args satisfy the compiled parameter specs.
 // It returns T0410 on a base-type mismatch or arity error, and T0412 when
 // an array content-type constraint is violated.
-func validateCallArgs(specs []parser.ParamSpec, args []any) error {
+// For context specs ('-') that have no corresponding argument, the focus
+// value is injected and appended to the returned slice.
+func validateCallArgs(specs []parser.ParamSpec, args []any, focus any) ([]any, error) {
+	result := slices.Clone(args)
 	si := 0 // spec index
 	ai := 0 // arg index
 
@@ -67,10 +72,18 @@ func validateCallArgs(specs []parser.ParamSpec, args []any) error {
 		spec := specs[si]
 
 		if spec.Variadic {
-			// Variadic spec: validate every remaining arg against it.
-			for ai < len(args) {
-				if err := validateOneCallArg(spec, args[ai], ai+1); err != nil {
-					return err
+			// Variadic spec: consume args up to maxConsume, stopping on type
+			// mismatch so subsequent mandatory specs can claim the remaining args.
+			mandatoryAfter := 0
+			for k := si + 1; k < len(specs); k++ {
+				if !specs[k].Optional && !specs[k].Context {
+					mandatoryAfter++
+				}
+			}
+			maxConsume := len(result) - mandatoryAfter
+			for ai < maxConsume {
+				if err := validateOneCallArg(spec, result[ai], ai+1); err != nil {
+					break
 				}
 				ai++
 			}
@@ -78,10 +91,12 @@ func validateCallArgs(specs []parser.ParamSpec, args []any) error {
 			continue
 		}
 
-		if ai >= len(args) {
-			// No arg for this spec position.
-			if !spec.Optional {
-				return &JSONataError{
+		if ai >= len(result) {
+			if spec.Context {
+				result = append(result, focus)
+				ai++
+			} else if !spec.Optional {
+				return nil, &JSONataError{
 					Code:    "T0410",
 					Message: fmt.Sprintf("argument %d does not match function signature: too few arguments", ai+1),
 				}
@@ -90,22 +105,26 @@ func validateCallArgs(specs []parser.ParamSpec, args []any) error {
 			continue
 		}
 
-		if err := validateOneCallArg(spec, args[ai], ai+1); err != nil {
-			return err
+		if err := validateOneCallArg(spec, result[ai], ai+1); err != nil {
+			if spec.Optional {
+				si++
+				continue
+			}
+			return nil, err
 		}
 		ai++
 		si++
 	}
 
 	// Extra args beyond all specs → T0410 (too many arguments).
-	if ai < len(args) {
-		return &JSONataError{
+	if ai < len(result) {
+		return nil, &JSONataError{
 			Code:    "T0410",
 			Message: fmt.Sprintf("argument %d does not match function signature: too many arguments", ai+1),
 		}
 	}
 
-	return nil
+	return result, nil
 }
 
 // validateOneCallArg checks a single argument against one parameter spec.
@@ -179,7 +198,7 @@ func sigTypeMatches(arg any, t byte) bool {
 		_, ok := arg.(bool)
 		return ok
 	case 'l':
-		return arg == nil
+		return arg == nil || IsNull(arg)
 	case 'a':
 		_, ok := arg.([]any)
 		return ok
@@ -191,6 +210,12 @@ func sigTypeMatches(arg any, t byte) bool {
 			return true
 		}
 		return false
+	case 'u': // union of primitives: Boolean, Number, String, or Null
+		switch arg.(type) {
+		case bool, float64, string, json.Number:
+			return true
+		}
+		return IsNull(arg)
 	}
 	return false
 }

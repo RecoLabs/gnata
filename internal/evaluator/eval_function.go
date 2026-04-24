@@ -53,7 +53,7 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 	// HOF callbacks bypass this (they go through ApplyFunction instead).
 	if sb, ok := fn.(*SignedBuiltin); ok {
 		specs, _ := parser.ParseSig(sb.Sig)
-		coerced, returnUndefined, sigErr := processCallArgs(specs, args)
+		coerced, returnUndefined, sigErr := processCallArgs(specs, args, input)
 		if sigErr != nil {
 			return nil, sigErr
 		}
@@ -176,7 +176,7 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 		case *Lambda:
 			if f.Sig != "" {
 				specs, _ := parser.ParseSig(f.Sig)
-				coerced, returnUndefined, err := processCallArgs(specs, args)
+				coerced, returnUndefined, err := processCallArgs(specs, args, focus)
 				if err != nil {
 					return nil, err
 				}

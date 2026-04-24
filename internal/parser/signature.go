@@ -7,10 +7,11 @@ import (
 
 // ParamSpec describes one parameter's type constraint parsed from a function signature.
 type ParamSpec struct {
-	Types       []byte // accepted base types: b n s l a o f j x
+	Types       []byte // accepted base types: b n s l a o f j x u
 	ContentType byte   // for 'a': element type constraint; 0 = any
 	Optional    bool   // ? — param may be omitted
 	Variadic    bool   // + — repeats; must be the last spec
+	Context     bool   // - — inject focus (context value) when the argument is missing
 }
 
 // ParseSig parses and validates a raw function-signature string (the content
@@ -53,6 +54,8 @@ func ParseSig(raw string) ([]ParamSpec, error) {
 				spec.Optional = true
 			case '+':
 				spec.Variadic = true
+			case '-':
+				spec.Context = true
 			}
 			i++
 		}
@@ -170,7 +173,7 @@ func sigStripReturnType(s string) string {
 
 func isValidSigType(c byte) bool {
 	switch c {
-	case 'b', 'n', 's', 'l', 'a', 'o', 'f', 'j', 'x':
+	case 'b', 'n', 's', 'l', 'a', 'o', 'f', 'j', 'x', 'u':
 		return true
 	}
 	return false
