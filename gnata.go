@@ -223,6 +223,62 @@ func (e *Expression) EvalBytes(ctx context.Context, data json.RawMessage) (resul
 	return e.Eval(ctx, v)
 }
 
+// EvalMap evaluates the expression against a map of field names to raw JSON values.
+// This enables O(1) top-level key lookup with gjson fast paths for nested access,
+// making it ideal for pre-destructured data (e.g. database columns, form fields).
+func (e *Expression) EvalMap(ctx context.Context, data map[string]json.RawMessage) (result any, err error) {
+	defer recoverEvalPanic(&err)
+	if e.fastPath && len(e.paths) == 1 {
+		if res := resolveGjsonPath(nil, data, e.paths[0]); res.Exists() {
+			return gjsonValueToAny(&res), nil
+		}
+	}
+	if e.cmpFast != nil {
+		if res, handled, evalErr := evalComparison(e.cmpFast, nil, data); handled || evalErr != nil {
+			return res, evalErr
+		}
+	}
+	if e.funcFast != nil {
+		if res, handled, evalErr := evalFunc(e.funcFast, nil, data); handled || evalErr != nil {
+			return res, evalErr
+		}
+	}
+	v, err := evaluator.DecodeRawMap(data)
+	if err != nil {
+		return nil, err
+	}
+	return e.Eval(ctx, v)
+}
+
+// EvalBytesWithVars evaluates the expression against raw JSON bytes with extra
+// variable bindings. Combines the gjson fast-path cascade from EvalBytes with
+// the variable support from EvalWithVars. Fast-path expressions never reference
+// $variables (excluded at compile time), so the fast-path result is independent
+// of the variable map; only the full-eval fallback uses vars.
+func (e *Expression) EvalBytesWithVars(ctx context.Context, data json.RawMessage, vars map[string]any) (result any, err error) {
+	defer recoverEvalPanic(&err)
+	if e.fastPath && len(e.paths) == 1 {
+		if res := gjson.GetBytes(data, e.paths[0]); res.Exists() {
+			return gjsonValueToAny(&res), nil
+		}
+	}
+	if e.cmpFast != nil {
+		if res, handled, evalErr := evalComparison(e.cmpFast, data, nil); handled || evalErr != nil {
+			return res, evalErr
+		}
+	}
+	if e.funcFast != nil {
+		if res, handled, evalErr := evalFunc(e.funcFast, data, nil); handled || evalErr != nil {
+			return res, evalErr
+		}
+	}
+	v, err := evaluator.DecodeJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	return e.evalCore(ctx, v, builtinEnv, vars)
+}
+
 // resolveGjsonPath resolves a gjson path from either raw bytes or a pre-decoded map.
 // When data is available (EvalMany), it delegates to gjson.GetBytes on the full blob.
 // When mapData is available (EvalMap), it does an O(1) map lookup for the top-level
