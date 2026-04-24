@@ -1,7 +1,10 @@
 // Package functions implements the JSONata 2.x standard library.
 package functions
 
-import "github.com/recolabs/gnata/internal/evaluator"
+import (
+	"github.com/recolabs/gnata/internal/evaluator"
+	"github.com/recolabs/gnata/internal/parser"
+)
 
 // EvalFn is a callback used by higher-order functions to invoke a lambda or
 // builtin function value without creating an import cycle. The env parameter
@@ -77,14 +80,19 @@ var builtinFuncs = []struct {
 	{"toMillis", fnToMillis},
 }
 
+func newSignedBuiltin(fn func([]any, any) (any, error), sig string) *evaluator.SignedBuiltin {
+	parsed, _ := parser.ParseSig(sig)
+	return &evaluator.SignedBuiltin{Fn: fn, Sig: sig, ParsedSig: parsed}
+}
+
 // RegisterAll binds every JSONata built-in function into env.
 // evalFn must call evaluator.ApplyFunction (supplied by gnata.go).
 func RegisterAll(env *evaluator.Environment, evalFn EvalFn) {
 	for _, b := range builtinFuncs {
 		env.Bind(b.name, evaluator.BuiltinFunction(b.fn))
 	}
-	env.Bind("uppercase", &evaluator.SignedBuiltin{Fn: fnUppercase, Sig: "s-:s"})
-	env.Bind("lowercase", &evaluator.SignedBuiltin{Fn: fnLowercase, Sig: "s-:s"})
+	env.Bind("uppercase", newSignedBuiltin(fnUppercase, "s-:s"))
+	env.Bind("lowercase", newSignedBuiltin(fnLowercase, "s-:s"))
 	env.Bind("match", makeFnMatch(evalFn))
 	env.Bind("replace", makeFnReplace(evalFn))
 	env.Bind("eval", makeFnEval())

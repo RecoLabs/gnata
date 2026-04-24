@@ -178,16 +178,18 @@ type EnvAwareBuiltin func(args []any, focus any, env *Environment) (any, error)
 // function via ApplyFunction bypass signature validation, allowing extra
 // arguments (key, index, array) to be passed silently.
 type SignedBuiltin struct {
-	Fn  BuiltinFunction
-	Sig string
+	Fn        BuiltinFunction
+	Sig       string
+	ParsedSig []parser.ParamSpec // pre-parsed signature; avoids re-parsing on every call
 }
 
 // Lambda represents a user-defined function (lambda expression).
 type Lambda struct {
-	Params        []string     // parameter names
-	Body          *parser.Node // function body AST node
-	Closure       *Environment // lexical scope at definition site
-	Thunk         bool         // for tail-call optimization
-	Sig           string       // type signature (Wave 5)
-	CapturedFocus any          // focus ($) captured at definition time for zero-param closures
+	Params        []string           // parameter names
+	Body          *parser.Node       // function body AST node
+	Closure       *Environment       // lexical scope at definition site
+	Thunk         bool               // for tail-call optimization
+	Sig           string             // type signature (Wave 5)
+	ParsedSig     []parser.ParamSpec // pre-parsed signature; avoids re-parsing per call
+	CapturedFocus any                // focus ($) captured at definition time for zero-param closures
 }

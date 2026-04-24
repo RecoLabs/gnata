@@ -52,8 +52,7 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 	// Validate signature for SignedBuiltins at the direct call site.
 	// HOF callbacks bypass this (they go through ApplyFunction instead).
 	if sb, ok := fn.(*SignedBuiltin); ok {
-		specs, _ := parser.ParseSig(sb.Sig)
-		coerced, returnUndefined, sigErr := processCallArgs(specs, args, input)
+		coerced, returnUndefined, sigErr := processCallArgs(sb.ParsedSig, args, input)
 		if sigErr != nil {
 			return nil, sigErr
 		}
@@ -85,8 +84,10 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 		params = append(params, arg.Value)
 	}
 	sig := ""
+	var parsedSig []parser.ParamSpec
 	if node.Signature != nil {
 		sig = node.Signature.Raw
+		parsedSig, _ = parser.ParseSig(sig)
 	}
 	return &Lambda{
 		Params:        params,
@@ -94,6 +95,7 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 		Closure:       env,
 		Thunk:         node.Thunk,
 		Sig:           sig,
+		ParsedSig:     parsedSig,
 		CapturedFocus: input,
 	}, nil
 }
@@ -175,8 +177,7 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 			return f(args, focus, env)
 		case *Lambda:
 			if f.Sig != "" {
-				specs, _ := parser.ParseSig(f.Sig)
-				coerced, returnUndefined, err := processCallArgs(specs, args, focus)
+				coerced, returnUndefined, err := processCallArgs(f.ParsedSig, args, focus)
 				if err != nil {
 					return nil, err
 				}
