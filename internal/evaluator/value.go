@@ -49,8 +49,8 @@ func IsSequence(v any) bool {
 
 // CollapseSequence applies JSONata singleton-collapsing rules:
 //   - len 0 → nil (undefined)
-//   - len 1 → elem[0] unless KeepSingleton
-//   - len > 1 → []any(seq.Values)
+//   - len 1 → elem[0] unless KeepSingleton is set
+//   - len > 1 → []any(seq.Values) — ownership transfer; callers must not mutate
 func CollapseSequence(s *Sequence) any {
 	switch len(s.Values) {
 	case 0:
@@ -61,7 +61,7 @@ func CollapseSequence(s *Sequence) any {
 		}
 		return s.Values[0]
 	default:
-		return slices.Clone(s.Values)
+		return slices.Clip(s.Values)
 	}
 }
 
@@ -98,8 +98,9 @@ func IsArray(v any) bool {
 }
 
 // CollapseToSlice returns the sequence values as a plain []any slice.
+// Ownership transfer; callers must not mutate the returned slice.
 func CollapseToSlice(s *Sequence) []any {
-	return slices.Clone(s.Values)
+	return slices.Clip(s.Values)
 }
 
 // ToFloat64 converts a numeric value to float64, handling both float64 and json.Number.
@@ -188,7 +189,20 @@ func normalizeNumber(v any) any {
 }
 
 // DeepEqual implements JSONata structural equality.
-func DeepEqual(a, b any) bool {
+func DeepEqual(a, b any) bool { //nolint:gocyclo // type-switch fast path adds branches but not real complexity
+	switch av := a.(type) {
+	case float64:
+		if bv, ok := b.(float64); ok {
+			return av == bv
+		}
+	case string:
+		bv, ok := b.(string)
+		return ok && av == bv
+	case bool:
+		bv, ok := b.(bool)
+		return ok && av == bv
+	}
+
 	a, b = normalizeNumber(a), normalizeNumber(b)
 	if a == nil || b == nil || IsNull(a) || IsNull(b) {
 		return a == nil && b == nil || IsNull(a) && IsNull(b)

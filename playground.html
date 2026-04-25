@@ -610,6 +610,8 @@ async function loadWasm() {
   window.gnataCompile       = wrapWasm((...a) => window._gnataCompile(...a));
   window.gnataEvalHandle    = wrapWasm((...a) => window._gnataEvalHandle(...a));
   window.gnataReleaseHandle = wrapWasm((...a) => window._gnataReleaseHandle(...a));
+  window.gnataEvalMap       = wrapWasm((...a) => window._gnataEvalMap(...a));
+  window.gnataEvalWithVars  = wrapWasm((...a) => window._gnataEvalWithVars(...a));
 
   go.run(result.instance).catch(err => {
     statusEl.classList.remove('ready');

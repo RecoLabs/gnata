@@ -424,7 +424,7 @@ func fnSplit(args []any, _ any) (any, error) {
 	}
 	s, ok := args[0].(string)
 	if !ok {
-		return nil, nil
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("$split: argument 1 must be a string, got %T", args[0])}
 	}
 	if len(args) < 2 {
 		return nil, &evaluator.JSONataError{Code: "D3006", Message: "$split: requires at least 2 arguments"}

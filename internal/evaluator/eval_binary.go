@@ -88,6 +88,13 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 	switch node.Value {
 	case "+", "-", "*", "/", "%", "**":
 		op := node.Value
+
+		if lf, ok := left.(float64); ok {
+			if rf, ok2 := right.(float64); ok2 {
+				return evalArithFloat64(lf, rf, op)
+			}
+		}
+
 		if left != nil {
 			if _, ok := ToFloat64(left); !ok {
 				code := "T2001"
@@ -114,35 +121,7 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 		}
 		l, _ := ToFloat64(left)
 		r, _ := ToFloat64(right)
-		var result float64
-		switch op {
-		case "+":
-			result = l + r
-		case "-":
-			result = l - r
-		case "*":
-			result = l * r
-		case "/":
-			// Division by zero produces +Inf which propagates to the caller.
-			// $string(1/0) → D3001 (via valueToString); other uses → D1001.
-			// We do NOT throw here so that the error code is context-dependent.
-			result = l / r
-			if !math.IsInf(result, 0) && !math.IsNaN(result) {
-				return result, nil
-			}
-			return result, nil // let Inf propagate without error
-		case "%":
-			if r == 0 {
-				return nil, &JSONataError{Code: "D3001", Message: "modulo by zero"}
-			}
-			result = math.Mod(l, r)
-		case "**":
-			result = math.Pow(l, r)
-		}
-		if math.IsInf(result, 0) || math.IsNaN(result) {
-			return nil, &JSONataError{Code: "D1001", Message: fmt.Sprintf("Number out of range: %g", result)}
-		}
-		return result, nil
+		return evalArithFloat64(l, r, op)
 
 	case "&":
 		ls, err := stringifyValue(left)
@@ -376,6 +355,35 @@ func selectByIndices(rightVal any, items []any) (any, bool) {
 		return nil, true
 	}
 	return result, true
+}
+
+// evalArithFloat64 performs arithmetic on two float64 values.
+// Extracted so the fast-path (both operands already float64) can bypass
+// ToFloat64 conversion overhead entirely.
+func evalArithFloat64(l, r float64, op string) (any, error) {
+	var result float64
+	switch op {
+	case "+":
+		result = l + r
+	case "-":
+		result = l - r
+	case "*":
+		result = l * r
+	case "/":
+		result = l / r
+		return result, nil // let Inf propagate without error
+	case "%":
+		if r == 0 {
+			return nil, &JSONataError{Code: "D3001", Message: "modulo by zero"}
+		}
+		result = math.Mod(l, r)
+	case "**":
+		result = math.Pow(l, r)
+	}
+	if math.IsInf(result, 0) || math.IsNaN(result) {
+		return nil, &JSONataError{Code: "D1001", Message: fmt.Sprintf("Number out of range: %g", result)}
+	}
+	return result, nil
 }
 
 func evalSubscriptBlockParent(node *parser.Node, input any, env *Environment) (any, error) {

@@ -8,10 +8,12 @@
 //
 // Raw WASM exports (registered on the JS global object with underscore prefix):
 //
-//	_gnataEval(expr, jsonData)            → string | Error
-//	_gnataCompile(expr)                   → number | Error
-//	_gnataEvalHandle(handle, jsonData)    → string | Error
-//	_gnataReleaseHandle(handle)           → undefined | Error
+//	_gnataEval(expr, jsonData)                → string | Error
+//	_gnataCompile(expr)                       → number | Error
+//	_gnataEvalHandle(handle, jsonData)        → string | Error
+//	_gnataReleaseHandle(handle)               → undefined | Error
+//	_gnataEvalMap(handle, jsonObject)          → string | Error
+//	_gnataEvalWithVars(handle, jsonData, vars) → string | Error
 //
 // playground.html wraps these with a wrapWasm factory that converts returned
 // Error values into thrown exceptions, exposing the public names without the
@@ -49,6 +51,8 @@ func main() {
 	js.Global().Set("_gnataCompile", js.FuncOf(jsCompile))
 	js.Global().Set("_gnataEvalHandle", js.FuncOf(jsEvalHandle))
 	js.Global().Set("_gnataReleaseHandle", js.FuncOf(jsReleaseHandle))
+	js.Global().Set("_gnataEvalMap", js.FuncOf(jsEvalMap))
+	js.Global().Set("_gnataEvalWithVars", js.FuncOf(jsEvalWithVars))
 
 	select {}
 }
@@ -155,8 +159,94 @@ func doEvalHandle(handle uint32, jsonData string) (result string, err error) {
 	return evalAndMarshal(e, jsonData)
 }
 
+// jsEvalMap: _gnataEvalMap(handle, jsonObject) → string | Error
+// Evaluates a compiled expression against a JSON object using EvalMap for O(1)
+// top-level key lookup with gjson fast paths for nested access.
+func jsEvalMap(_ js.Value, args []js.Value) any {
+	if len(args) < 2 {
+		return jsError("gnataEvalMap requires 2 arguments: handle, jsonObject")
+	}
+	if args[0].Type() != js.TypeNumber {
+		return jsError("gnataEvalMap: handle must be a number")
+	}
+	result, err := doEvalMap(uint32(args[0].Int()), args[1].String())
+	if err != nil {
+		return jsError(err.Error())
+	}
+	return js.ValueOf(result)
+}
+
+// jsEvalWithVars: _gnataEvalWithVars(handle, jsonData, varsJson) → string | Error
+// Evaluates a compiled expression with external variable bindings ($-prefixed
+// names accessible in the expression).
+func jsEvalWithVars(_ js.Value, args []js.Value) any {
+	if len(args) < 3 {
+		return jsError("gnataEvalWithVars requires 3 arguments: handle, jsonData, varsJson")
+	}
+	if args[0].Type() != js.TypeNumber {
+		return jsError("gnataEvalWithVars: handle must be a number")
+	}
+	result, err := doEvalWithVars(uint32(args[0].Int()), args[1].String(), args[2].String())
+	if err != nil {
+		return jsError(err.Error())
+	}
+	return js.ValueOf(result)
+}
+
+func doEvalMap(handle uint32, jsonObject string) (result string, err error) {
+	defer catchPanic(&err)
+
+	val, ok := compiledCache.Load(handle)
+	if !ok {
+		return "", fmt.Errorf("unknown handle %d", handle)
+	}
+	e := val.(*gnata.Expression)
+
+	var data map[string]json.RawMessage
+	if jsonObject != "" {
+		if err := json.Unmarshal([]byte(jsonObject), &data); err != nil {
+			return "", fmt.Errorf("invalid JSON object: %w", err)
+		}
+	}
+
+	res, evalErr := e.EvalMap(context.Background(), data)
+	if evalErr != nil {
+		return "", evalErr
+	}
+	return marshalResult(res)
+}
+
+func doEvalWithVars(handle uint32, jsonData, varsJSON string) (result string, err error) {
+	defer catchPanic(&err)
+
+	val, ok := compiledCache.Load(handle)
+	if !ok {
+		return "", fmt.Errorf("unknown handle %d", handle)
+	}
+	e := val.(*gnata.Expression)
+
+	var vars map[string]any
+	if varsJSON != "" && varsJSON != "{}" {
+		if unmarshalErr := json.Unmarshal([]byte(varsJSON), &vars); unmarshalErr != nil {
+			return "", fmt.Errorf("invalid vars JSON: %w", unmarshalErr)
+		}
+	}
+
+	var res any
+	var evalErr error
+	if jsonData == "" {
+		res, evalErr = e.EvalWithVars(context.Background(), nil, vars)
+	} else {
+		res, evalErr = e.EvalBytesWithVars(context.Background(), json.RawMessage(jsonData), vars)
+	}
+	if evalErr != nil {
+		return "", evalErr
+	}
+	return marshalResult(res)
+}
+
 // evalAndMarshal evaluates expr against jsonData and marshals the result to JSON.
-// Shared by doEval and doEvalHandle to avoid duplicating unmarshal/eval/marshal logic.
+// Uses EvalBytes to enable gjson fast paths (pure path, comparison, function).
 //
 // Return values:
 //   - ("", nil)    → expression evaluated to undefined (no match).
@@ -164,26 +254,27 @@ func doEvalHandle(handle uint32, jsonData string) (result string, err error) {
 //   - (json, nil)  → expression evaluated to a concrete value.
 //   - ("", err)    → evaluation or marshal error.
 func evalAndMarshal(e *gnata.Expression, jsonData string) (string, error) {
-	var data any
-	if jsonData != "" && jsonData != "null" {
-		if err := json.Unmarshal([]byte(jsonData), &data); err != nil {
-			return "", fmt.Errorf("invalid JSON input: %w", err)
-		}
+	var res any
+	var err error
+	if jsonData == "" {
+		res, err = e.Eval(context.Background(), nil)
+	} else {
+		res, err = e.EvalBytes(context.Background(), json.RawMessage(jsonData))
 	}
-
-	res, err := e.Eval(context.Background(), data)
 	if err != nil {
 		return "", err
 	}
+	return marshalResult(res)
+}
 
-	// Eval returns (nil, nil) for undefined results (non-matching paths).
-	// Actual JSON null is the evaluator.Null sentinel (jsonNullType),
-	// which marshals to "null" via MarshalJSON. Returning "" here lets
-	// the JS wrapper map it to JavaScript undefined.
+// marshalResult marshals an evaluation result to JSON.
+// Returns ("", nil) for undefined (Go nil), letting the JS wrapper map it to
+// JavaScript undefined. Actual JSON null is the evaluator.Null sentinel
+// which marshals to "null" via MarshalJSON.
+func marshalResult(res any) (string, error) {
 	if res == nil {
 		return "", nil
 	}
-
 	out, err := json.Marshal(res)
 	if err != nil {
 		return "", fmt.Errorf("cannot marshal result: %w", err)

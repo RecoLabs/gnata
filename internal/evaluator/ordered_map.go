@@ -153,8 +153,8 @@ func DecodeJSON(b json.RawMessage) (any, error) {
 // in the values preserve key insertion order, consistent with DecodeJSON.
 func DecodeRawMap(m map[string]json.RawMessage) (*OrderedMap, error) {
 	om := NewOrderedMapWithCapacity(len(m))
-	for key, raw := range m {
-		val, err := DecodeJSON(raw)
+	for _, key := range slices.Sorted(maps.Keys(m)) {
+		val, err := DecodeJSON(m[key])
 		if err != nil {
 			return nil, fmt.Errorf("decode key %q: %w", key, err)
 		}
@@ -246,7 +246,7 @@ func MapKeys(obj any) []string {
 	case *OrderedMap:
 		return m.Keys()
 	case map[string]any:
-		return slices.Collect(maps.Keys(m))
+		return slices.Sorted(maps.Keys(m))
 	}
 	return nil
 }
@@ -274,8 +274,8 @@ func MapRange(obj any, fn func(key string, val any) bool) {
 	case *OrderedMap:
 		m.Range(fn)
 	case map[string]any:
-		for k, v := range m {
-			if !fn(k, v) {
+		for _, k := range slices.Sorted(maps.Keys(m)) {
+			if !fn(k, m[k]) {
 				break
 			}
 		}

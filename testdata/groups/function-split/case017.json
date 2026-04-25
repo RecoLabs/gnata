@@ -2,5 +2,5 @@
     "expr": "$split(12345)",
     "dataset": null,
     "bindings": {},
-    "undefinedResult": true
+    "code": "T0410"
 }

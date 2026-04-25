@@ -148,7 +148,7 @@ Hot Path (millions/day, lock-free)
     ├── BoundedCache lookup (atomic pointer read)
     │   ├── HIT  ──> Immutable GroupPlan
     │   └── MISS ──> Build plan (merge GJSON paths, atomic CAS store)
-    ├── gjson.GetManyBytes: SINGLE scan for ALL expressions
+    ├── gjson.GetBytes per fast-path expression
     ├── Fast-path expressions: distribute extracted results (0 allocs)
     ├── Full-path expressions: selective unmarshal + AST eval
     └── results[]
@@ -156,7 +156,7 @@ Hot Path (millions/day, lock-free)
 
 ### Key Properties
 
-- **One JSON scan per event** — all field paths needed by all expressions are merged into a single `gjson.GetManyBytes` call.
+- **Efficient JSON field extraction** — fast-path expressions use `gjson.GetBytes` for zero-copy path lookups directly on raw JSON bytes.
 - **Schema-keyed caching** — the `GroupPlan` (merged paths, expression groupings, selective unmarshal targets) is computed once per schema key and reused immutably.
 - **Lock-free reads** — `BoundedCache` publishes an `atomic.Pointer` snapshot on every write; reads scan the snapshot without acquiring a lock. Writes are serialised by a mutex.
 - **Selective unmarshal** — full-path expressions unmarshal only the subtrees they need (e.g., just the `items` array from a 10KB event), not the entire document.
@@ -421,7 +421,7 @@ All standard regex features (character classes, quantifiers, alternation, groupi
 
 ```
 gnata/
-├── gnata.go                     # Public API: Compile, Eval, EvalBytes, EvalWithVars, CustomFunc
+├── gnata.go                     # Public API: Compile, Eval, EvalBytes, EvalBytesWithVars, EvalMap, EvalWithVars, CustomFunc
 ├── stream.go                    # StreamEvaluator, GroupPlan, EvalMany, EvalMap, MetricsHook
 ├── bounded_cache.go             # Lock-free FIFO ring-buffer plan cache
 ├── deep_equal.go                # JSONata-compatible deep equality
@@ -485,7 +485,18 @@ python3 -m http.server 8899
 caddy file-server --root . --listen :8899
 ```
 
-The WASM build exposes `gnataEval`, `gnataCompile`, and `gnataEvalHandle` functions for use from JavaScript, with a compiled-expression cache for repeated evaluations. A ready-made `playground.html` is included — build the WASM binary, copy the Go WASM support file, and serve the directory:
+The WASM build exposes six functions for use from JavaScript (the raw exports are underscore-prefixed; `playground.html` wraps them into clean public names):
+
+| Function | Description |
+|---|---|
+| `gnataEval(expr, jsonData)` | One-shot compile + evaluate (expressions are cached). |
+| `gnataCompile(expr)` | Compile an expression and return a numeric handle. |
+| `gnataEvalHandle(handle, jsonData)` | Evaluate a compiled handle against JSON data. Uses `EvalBytes` internally for gjson fast-path access. |
+| `gnataReleaseHandle(handle)` | Free a compiled handle. |
+| `gnataEvalMap(handle, jsonObject)` | Evaluate a compiled handle using `EvalMap` — O(1) top-level key lookup with gjson fast paths for nested access. Ideal for pre-destructured data. |
+| `gnataEvalWithVars(handle, jsonData, varsJson)` | Evaluate with external `$`-variable bindings (e.g. `{"$threshold": 100}`). |
+
+A ready-made `playground.html` is included — build the WASM binary, copy the Go WASM support file, and serve the directory:
 
 ```bash
 cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" .

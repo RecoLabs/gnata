@@ -43,7 +43,7 @@ Lexer → Parser → AST Processing → Fast-Path Analysis → Expression
 
 ### StreamEvaluator (stream.go)
 
-Batch-evaluates multiple expressions against events. Schema-keyed `GroupPlan` caching deduplicates field extraction across expressions. Lock-free reads via `atomic.Pointer` snapshot; writes serialized by `sync.Mutex`. Single JSON scan per event via `gjson.GetManyBytes`.
+Batch-evaluates multiple expressions against events. Schema-keyed `GroupPlan` caching classifies expressions into fast-path vs full-eval at plan-build time. Lock-free reads via `atomic.Pointer` snapshot; writes serialized by `sync.Mutex`. Fast-path expressions use `gjson.GetBytes` for zero-copy field extraction.
 
 ### Evaluator Dispatch (internal/evaluator/)
 
@@ -97,4 +97,4 @@ se := gnata.NewStreamEvaluator(nil, gnata.WithCustomFunctions(customFuncs))
 
 ## WASM
 
-`wasm/main.go` exports `gnataEval`, `gnataCompile`, `gnataEvalHandle` for browser use. Build with `GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o gnata.wasm ./wasm/`.
+`wasm/main.go` exports six JS functions: `gnataEval`, `gnataCompile`, `gnataEvalHandle`, `gnataReleaseHandle`, `gnataEvalMap` (O(1) top-level key lookup via `EvalMap`), and `gnataEvalWithVars` (external `$`-variable bindings). `gnataEval` and `gnataEvalHandle` use `EvalBytes`; `gnataEvalMap` uses `EvalMap`; `gnataEvalWithVars` uses `EvalBytesWithVars`. All paths leverage gjson fast-path access where applicable. Build with `GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o gnata.wasm ./wasm/`.
