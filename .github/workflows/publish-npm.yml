@@ -20,11 +20,8 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Install latest npm (required for trusted publishing)
-        run: npm install -g npm@latest
 
       - name: Build WASM and TypeScript
         run: bash scripts/build-npm.sh
