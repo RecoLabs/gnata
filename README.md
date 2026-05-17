@@ -400,6 +400,7 @@ gnata targets exact parity with the JSONata reference implementation ([jsonata-j
 |---|------|-------|------------|-------|
 | 1 | **Large integer precision** | `"123456789012345678"` (exact) | `"123456789012345680"` (float64 rounding) | Go's `json.Number` preserves full precision; JS loses it beyond 2^53. Compare with relative tolerance ~1e-12. |
 | 2 | **Null placeholders in auto-mapping** | `["ext1", "ext2"]` | `[null, "ext1", "ext2"]` | jsonata-js inserts `null` for groups with no predicate match. gnata omits them per spec. Strip `null` entries when comparing. |
+| 3 | **Datetime formatting in picture strings** | `"October 15, 2025"` | `"Oct 15, 2025"` | picture string modifiers like `[MNn,*-3]` (abbreviated month) are partially supported. gnata may default to the full name for complex modifiers. |
 
 ## Regex Engine: RE2 vs JavaScript RegExp
 

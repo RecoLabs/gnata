@@ -375,6 +375,8 @@ func formatIntegerWithGrouping(v int) string {
 }
 
 func formatMonthToken(m time.Month, modifier string) string {
+	// TODO: Support complex width modifiers like [MNn,*-3].
+	// Currently defaults to full name for range or wildcard modifiers.
 	switch {
 	case strings.HasPrefix(modifier, "Nn"):
 		name := monthNames[m-1]
