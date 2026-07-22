@@ -450,6 +450,16 @@ func IsNull(v any) bool {
 	return evaluator.IsNull(v)
 }
 
+type OrderedMap = evaluator.OrderedMap
+
+func NewOrderedMap() *OrderedMap {
+	return evaluator.NewOrderedMap()
+}
+
+func NewOrderedMapWithCapacity(n int) *OrderedMap {
+	return evaluator.NewOrderedMapWithCapacity(n)
+}
+
 // DecodeJSON decodes a JSON value using OrderedMap for objects, preserving
 // key insertion order. Use this instead of json.Unmarshal when key order
 // matters (which is always the case for JSONata evaluation).

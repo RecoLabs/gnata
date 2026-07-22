@@ -7,6 +7,12 @@ import (
 	"github.com/recolabs/gnata/internal/lexer"
 )
 
+const (
+	account = "Account"
+	foo     = "foo"
+	hello   = "hello"
+)
+
 // tokenizeAll is a helper that tokenizes a full expression, automatically
 // tracking infix state so callers don't have to pass it manually.
 // infix becomes true after a "value-producing" token, false otherwise.
@@ -112,7 +118,7 @@ func TestLexerStrings(t *testing.T) {
 		isErr   bool
 		errCode string
 	}{
-		{"double-quoted", `"hello"`, "hello", false, ""},
+		{"double-quoted", `"hello"`, hello, false, ""},
 		{"single-quoted", `'world'`, "world", false, ""},
 		{"escape-quote", `"say \"hi\""`, `say "hi"`, false, ""},
 		{"escape-backslash", `"a\\b"`, `a\b`, false, ""},
@@ -192,7 +198,7 @@ func TestLexerVariables(t *testing.T) {
 		value string
 	}{
 		{"$", ""},
-		{"$foo", "foo"},
+		{"$foo", foo},
 		{"$$", "$"},
 		{"$myVar123", "myVar123"},
 	}
@@ -250,12 +256,33 @@ func TestLexerRegex(t *testing.T) {
 		isErr   bool
 		errCode string
 	}{
-		{"simple", `/hello/`, "hello", "g", false, ""},
+		{"simple", `/hello/`, hello, "g", false, ""},
 		{"with flags i and m", `/^hello/im`, "^hello", "img", false, ""},
-		{"with flag i only", `/foo/i`, "foo", "ig", false, ""},
+		{"with flag i only", `/foo/i`, foo, "ig", false, ""},
 		{"with flag m only", `/bar/m`, "bar", "mg", false, ""},
 		{"escaped slash in pattern", `/a\/b/`, `a\/b`, "g", false, ""},
 		{"bracket depth", `/[a-z]/`, "[a-z]", "g", false, ""},
+		{"escaped optional open paren", `/\(?/`, `\(?`, "g", false, ""},
+		{"escaped open and close paren", `/\(foo\)/`, `\(foo\)`, "g", false, ""},
+		{"escaped char class brackets", `/\[a-z\]/`, `\[a-z\]`, "g", false, ""},
+		{"escaped braces", `/a\{1,2\}/`, `a\{1,2\}`, "g", false, ""},
+		{"escaped closer without open", `/foo\)/`, `foo\)`, "g", false, ""},
+		// Asymmetric escaping: only one side of a bracket pair is escaped.
+		{"asym escaped open bracket", `/a\[b]/`, `a\[b]`, "g", false, ""},
+		{"asym escaped open brace", `/a\{b}/`, `a\{b}`, "g", false, ""},
+		{"asym escaped open paren", `/\(a)/`, `\(a)`, "g", false, ""},
+		{"asym escaped close paren", `/(a\)/`, `(a\)`, "g", false, ""},
+		{"escaped ] inside class", `/[a\]b]/`, `[a\]b]`, "g", false, ""},
+		{"escaped ) inside class", `/[\)]/`, `[\)]`, "g", false, ""},
+		{"slash inside class", `/[a/b]/`, `[a/b]`, "g", false, ""},
+		{
+			"escaped paren after alternation",
+			`/(-foo|\bbar\b)\s*\(?\s*x\.y\s+-?eq\s+"z"/`,
+			`(-foo|\bbar\b)\s*\(?\s*x\.y\s+-?eq\s+"z"`,
+			"g", false, "",
+		},
+		// Even backslash count means a literal '\' then an unescaped '('.
+		{"even backslashes nest", `/\\(/x)/`, `\\(/x)`, "g", false, ""},
 		{"empty pattern", `//`, "", "", true, "S0301"},
 		{"unterminated", `/hello`, "", "", true, "S0302"},
 		{"invalid flag", `/foo/x`, "", "", true, "S0302"},
@@ -309,12 +336,12 @@ func TestLexerMisc(t *testing.T) {
 	}{
 		{"backtick name", "`hello world`", lexer.TokenName, "hello world", false, ""},
 		{"unterminated backtick", "`unterminated", 0, "", true, "S0105"},
-		{"block comment skipped", "/* comment */ hello", lexer.TokenName, "hello", false, ""},
+		{"block comment skipped", "/* comment */ hello", lexer.TokenName, hello, false, ""},
 		{"unclosed block comment", "/* unclosed", 0, "", true, "S0106"},
-		{"whitespace skipping", "   \t\n  foo", lexer.TokenName, "foo", false, ""},
+		{"whitespace skipping", "   \t\n  foo", lexer.TokenName, foo, false, ""},
 		{"EOF on empty input", "", lexer.TokenEOF, "", false, ""},
 		{"EOF after whitespace", "   ", lexer.TokenEOF, "", false, ""},
-		{"bare name", "Account", lexer.TokenName, "Account", false, ""},
+		{"bare name", account, lexer.TokenName, account, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -358,7 +385,7 @@ func TestLexerSequence(t *testing.T) { //nolint:funlen // test data table
 			name: "field path",
 			src:  "Account.Order.Product",
 			tokens: []tokSpec{
-				{lexer.TokenName, "Account"},
+				{lexer.TokenName, account},
 				{lexer.TokenDot, ""},
 				{lexer.TokenName, "Order"},
 				{lexer.TokenDot, ""},
@@ -515,7 +542,7 @@ func TestLexerSequence(t *testing.T) { //nolint:funlen // test data table
 			tokens: []tokSpec{
 				{lexer.TokenName, "hello world"},
 				{lexer.TokenDot, ""},
-				{lexer.TokenName, "foo"},
+				{lexer.TokenName, foo},
 			},
 		},
 	}
@@ -570,7 +597,7 @@ func TestLexerSequence(t *testing.T) { //nolint:funlen // test data table
 		if len(tokens) != 3 {
 			t.Fatalf("got %d tokens, want 3: %v", len(tokens), tokens)
 		}
-		if tokens[0].Type != lexer.TokenVariable || tokens[0].Value != "foo" {
+		if tokens[0].Type != lexer.TokenVariable || tokens[0].Value != foo {
 			t.Fatalf("token[0]: got type=%v value=%q", tokens[0].Type, tokens[0].Value)
 		}
 		if tokens[1].Type != lexer.TokenDot {

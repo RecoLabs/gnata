@@ -35,6 +35,16 @@ func isStopChar(ch byte) bool {
 	return false
 }
 
+// isEscapedAt reports whether src[pos] is escaped by an odd number of
+// immediately preceding backslashes within [start, pos).
+func isEscapedAt(src string, start, pos int) bool {
+	bsCount := 0
+	for i := pos - 1; i >= start && src[i] == '\\'; i-- {
+		bsCount++
+	}
+	return bsCount%2 == 1
+}
+
 // Next returns the next token.
 // infix=true means we are after a value (closing bracket, identifier, etc.).
 // infix=false means we are in prefix position; a '/' starts a regex literal.
@@ -70,52 +80,73 @@ func (l *Lexer) Next(infix bool) (Token, error) { //nolint:gocyclo,funlen // dis
 	if ch == '/' && !infix {
 		l.pos++ // consume opening '/'
 		patStart, depth := l.pos, 0
+		inClass := false
 		for l.pos < len(l.src) {
-			switch c := l.src[l.pos]; c {
-			case '(', '[', '{':
-				depth++
+			c := l.src[l.pos]
+			if isEscapedAt(l.src, patStart, l.pos) {
+				// Escaped \) / \} outside a class still reduce depth so
+				// /(a\)/ can terminate; escaped \] never closes a class.
+				if !inClass && depth > 0 && (c == ')' || c == '}') {
+					depth--
+				}
 				l.pos++
-			case ')', ']', '}':
-				depth--
+				continue
+			}
+			switch c {
+			case '[':
+				inClass = true
+				l.pos++
+			case ']':
+				inClass = false
+				l.pos++
+			case '(':
+				if !inClass {
+					depth++
+				}
+				l.pos++
+			case ')':
+				if !inClass && depth > 0 {
+					depth--
+				}
+				l.pos++
+			case '{':
+				if !inClass {
+					depth++
+				}
+				l.pos++
+			case '}':
+				if !inClass && depth > 0 {
+					depth--
+				}
 				l.pos++
 			case '/':
-				if depth == 0 {
-					// Count backslashes immediately before this '/'.
-					bsCount := 0
-					for i := l.pos - 1; i >= patStart && l.src[i] == '\\'; i-- {
-						bsCount++
+				if !inClass && depth == 0 {
+					pattern := l.src[patStart:l.pos]
+					if pattern == "" {
+						return Token{}, lexError("S0301", "empty regex pattern")
 					}
-					if bsCount%2 == 0 {
-						// Even number of backslashes → unescaped closing '/'.
-						pattern := l.src[patStart:l.pos]
-						if pattern == "" {
-							return Token{}, lexError("S0301", "empty regex pattern")
-						}
-						l.pos++ // consume closing '/'
+					l.pos++ // consume closing '/'
 
-						// Collect flags: only 'i' and 'm' are valid.
-						var flags strings.Builder
-						for l.pos < len(l.src) && unicode.IsLetter(rune(l.src[l.pos])) {
-							if fc := l.src[l.pos]; fc == 'i' || fc == 'm' {
-								flags.WriteByte(fc)
-								l.pos++
-							} else {
-								return Token{}, lexError("S0302", "invalid regex flag")
-							}
+					// Collect flags: only 'i' and 'm' are valid.
+					var flags strings.Builder
+					for l.pos < len(l.src) && unicode.IsLetter(rune(l.src[l.pos])) {
+						if fc := l.src[l.pos]; fc == 'i' || fc == 'm' {
+							flags.WriteByte(fc)
+							l.pos++
+						} else {
+							return Token{}, lexError("S0302", "invalid regex flag")
 						}
-						flags.WriteByte('g')
-
-						return Token{
-							Type:     TokenRegex,
-							RegexPat: pattern,
-							RegexFlg: flags.String(),
-							Pos:      startPos,
-						}, nil
 					}
-					l.pos++
-				} else {
-					l.pos++
+					flags.WriteByte('g')
+
+					return Token{
+						Type:     TokenRegex,
+						RegexPat: pattern,
+						RegexFlg: flags.String(),
+						Pos:      startPos,
+					}, nil
 				}
+				l.pos++
 			default:
 				l.pos++
 			}
