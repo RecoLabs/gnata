@@ -295,6 +295,9 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 		descSeq := CreateSequence()
 		appendToSequence(descSeq, input)
 		appendToSequence(descSeq, descendantLookup(input))
+		if err := env.CheckSequence(len(descSeq.Values)); err != nil {
+			return nil, nil, err
+		}
 		left = CollapseSequence(descSeq)
 	} else {
 		var err error

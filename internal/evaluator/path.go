@@ -269,7 +269,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			}
 			ctxs = nextCtxs
 			if len(ctxs) == 0 {
-				return nil, nil
+				break
 			}
 			continue
 		}
@@ -300,7 +300,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			}
 			ctxs = nextCtxs
 			if len(ctxs) == 0 {
-				return nil, nil
+				break
 			}
 			continue
 		}
@@ -355,7 +355,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			}
 			ctxs = nextCtxs
 			if len(ctxs) == 0 {
-				return nil, nil
+				break
 			}
 			continue
 		}
@@ -373,7 +373,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			}
 			ctxs = nextCtxs
 			if len(ctxs) == 0 {
-				return nil, nil
+				break
 			}
 			continue
 		}
@@ -400,7 +400,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			}
 			ctxs = nextCtxs
 			if len(ctxs) == 0 {
-				return nil, nil
+				break
 			}
 			continue
 		}
@@ -445,7 +445,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 
 			ctxs = nextCtxs
 			if len(ctxs) == 0 {
-				return nil, nil
+				break
 			}
 			continue
 		}
@@ -489,7 +489,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 
 		ctxs = nextCtxs
 		if len(ctxs) == 0 {
-			return nil, nil
+			break
 		}
 	}
 
@@ -943,9 +943,6 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 		}
 	}
 
-	if result.Len() == 0 {
-		return nil, nil
-	}
 	return result, nil
 }
 
@@ -1045,21 +1042,7 @@ func evalPathStep(
 			return Eval(step, input, env)
 		}
 	case parser.NodeDescendant:
-		// The descendant operator in a path (A.**.B) must include A itself in the
-		// search so that B can be found at any depth INCLUDING the current level.
-		// Arrays are transparent containers: their elements are already included
-		// by descendantLookup, so adding the array itself would cause duplicate
-		// results when subsequent field lookups auto-map through both the array
-		// and its individually-included elements.
-		seq := CreateSequence()
-		if _, isArr := input.([]any); !isArr {
-			appendToSequence(seq, input)
-		}
-		appendToSequence(seq, descendantLookup(input))
-		if len(seq.Values) == 0 {
-			return nil, nil
-		}
-		return seq, nil
+		return evalPathStepDescendant(input, env)
 	case parser.NodeBinary:
 		// Subscript steps map per-element when preceded by a mapping step (prevWasMapper=true).
 		// When NOT preceded by a mapper, apply the subscript to the whole collected array.
@@ -1124,6 +1107,27 @@ func evalPathStep(
 		return seq.Values, nil
 	}
 	return CollapseSequence(seq), nil
+}
+
+// evalPathStepDescendant evaluates a ** path step. It must include the input
+// itself in the search so that a later step can match at the current level
+// too, not just at deeper ones. Arrays are transparent containers: their
+// elements are already included by descendantLookup, so adding the array
+// itself would cause duplicate results when subsequent field lookups
+// auto-map through both the array and its individually-included elements.
+func evalPathStepDescendant(input any, env *Environment) (any, error) {
+	seq := CreateSequence()
+	if _, isArr := input.([]any); !isArr {
+		appendToSequence(seq, input)
+	}
+	appendToSequence(seq, descendantLookup(input))
+	if err := env.CheckSequence(len(seq.Values)); err != nil {
+		return nil, err
+	}
+	if len(seq.Values) == 0 {
+		return nil, nil
+	}
+	return seq, nil
 }
 
 // evalPathFunctionStep evaluates a NodeFunction step in path context.

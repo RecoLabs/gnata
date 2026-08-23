@@ -28,7 +28,7 @@ func fnCount(args []any, _ any) (any, error) {
 
 // ── $append ───────────────────────────────────────────────────────────────────
 
-func fnAppend(args []any, _ any) (any, error) {
+func fnAppend(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) < 2 {
 		return nil, &evaluator.JSONataError{Code: "D3006", Message: "$append: requires 2 arguments"}
 	}
@@ -41,6 +41,9 @@ func fnAppend(args []any, _ any) (any, error) {
 	}
 	a := wrapArray(args[0])
 	b := wrapArray(args[1])
+	if err := env.CheckSequence(len(a) + len(b)); err != nil {
+		return nil, err
+	}
 	const maxAppendSize = 10_000_000
 	if len(a)+len(b) > maxAppendSize {
 		return nil, &evaluator.JSONataError{

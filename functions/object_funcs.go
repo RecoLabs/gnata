@@ -252,6 +252,9 @@ func makeFnEach(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			}
 			if res != nil {
 				seq.Values = append(seq.Values, res)
+				if err := env.CheckSequence(len(seq.Values)); err != nil {
+					return nil, err
+				}
 			}
 		}
 		return seq, nil

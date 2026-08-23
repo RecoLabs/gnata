@@ -82,6 +82,9 @@ func makeFnMap(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			}
 			if val != nil {
 				seq.Values = append(seq.Values, val)
+				if err := env.CheckSequence(len(seq.Values)); err != nil {
+					return nil, err
+				}
 			}
 		}
 		return evaluator.CollapseSequence(seq), nil
@@ -121,6 +124,9 @@ func makeFnFilter(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			}
 			if evaluator.ToBoolean(val) {
 				seq.Values = append(seq.Values, item)
+				if err := env.CheckSequence(len(seq.Values)); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if inputWasArray {

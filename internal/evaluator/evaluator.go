@@ -34,7 +34,7 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodeWildcard:
 		return evalWildcard(node, input, env)
 	case parser.NodeDescendant:
-		return descendantLookup(input), nil
+		return evalDescendant(input, env)
 	case parser.NodePath:
 		return evalPath(node, input, env)
 	case parser.NodeBinary, parser.NodeApply:
@@ -75,6 +75,16 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	default:
 		return nil, fmt.Errorf("unknown node type: %s", node.Type)
 	}
+}
+
+// evalDescendant evaluates the ** operator, enforcing the sequence guardrail
+// (if any) on the collected result.
+func evalDescendant(input any, env *Environment) (any, error) {
+	seq := descendantLookup(input)
+	if err := env.CheckSequence(len(seq.Values)); err != nil {
+		return nil, err
+	}
+	return seq, nil
 }
 
 // ApplyFunction is the public API used by the standard library to call

@@ -53,7 +53,6 @@ var builtinFuncs = []struct {
 	{"average", fnAverage},
 	// ── Array ─────────────────────────────────────────────────────────────────
 	{"count", fnCount},
-	{"append", fnAppend},
 	{"reverse", fnReverse},
 	{"shuffle", fnShuffle},
 	{"distinct", fnDistinct},
@@ -91,6 +90,7 @@ func RegisterAll(env *evaluator.Environment, evalFn EvalFn) {
 	for _, b := range builtinFuncs {
 		env.Bind(b.name, evaluator.BuiltinFunction(b.fn))
 	}
+	env.Bind("append", evaluator.EnvAwareBuiltin(fnAppend))
 	env.Bind("uppercase", newSignedBuiltin(fnUppercase, "s-:s"))
 	env.Bind("lowercase", newSignedBuiltin(fnLowercase, "s-:s"))
 	env.Bind("match", makeFnMatch(evalFn))

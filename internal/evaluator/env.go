@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"context"
+	"fmt"
 	"maps"
 
 	"github.com/recolabs/gnata/internal/parser"
@@ -14,9 +15,11 @@ const defaultMaxCallDepth = 100
 // callCounter tracks the current recursive call depth across all child environments.
 // A pointer is shared so all nested envs increment/decrement the same counter.
 type callCounter struct {
-	depth     int
-	evalDepth int
-	max       int
+	depth        int
+	evalDepth    int
+	max          int
+	stackIsLimit bool // true when max was set via the WithStack guardrail (error D1011 instead of U1001)
+	maxSequence  int  // 0 = unlimited; guardrail set via WithSequence (error D2015)
 }
 
 // Environment holds variable bindings for an evaluation context.
@@ -116,6 +119,30 @@ func (e *Environment) IncrEvalDepth(maxDepth int) error {
 func (e *Environment) DecrEvalDepth() {
 	c := e.callCounter()
 	c.evalDepth--
+}
+
+// SetMaxStackDepth overrides the recursion depth limit as a guardrail: once set,
+// exceeding it returns error D1011 instead of the default U1001.
+func (e *Environment) SetMaxStackDepth(n int) {
+	c := e.callCounter()
+	c.max = n
+	c.stackIsLimit = true
+}
+
+// SetMaxSequence sets the guardrail sequence-length limit (0 = unlimited).
+// Exceeding it at a checked growth site returns error D2015.
+func (e *Environment) SetMaxSequence(n int) {
+	e.callCounter().maxSequence = n
+}
+
+// CheckSequence returns a D2015 error if n exceeds the configured sequence
+// guardrail. No-op when no guardrail is set.
+func (e *Environment) CheckSequence(n int) error {
+	c := e.callCounter()
+	if c.maxSequence > 0 && n > c.maxSequence {
+		return &JSONataError{Code: "D2015", Message: fmt.Sprintf("The maximum sequence length of %d was exceeded", c.maxSequence)}
+	}
+	return nil
 }
 
 // Clone creates a shallow copy of the environment, duplicating the bindings map

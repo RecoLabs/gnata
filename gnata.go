@@ -12,9 +12,11 @@ package gnata
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/recolabs/gnata/functions"
 	"github.com/recolabs/gnata/internal/evaluator"
@@ -35,11 +37,55 @@ type Expression struct {
 	// funcFast covers built-in function calls on a pure path (e.g. `$exists(a.b)`).
 	// Non-nil when the expression qualifies; nil otherwise.
 	funcFast *parser.FuncFastPath
+	// guardrails holds optional resource limits set via Compile options.
+	// nil when Compile was called without options (default, unlimited behavior).
+	guardrails *guardrails
+}
+
+// guardrails holds the resource limits configured via Option, matching the
+// jsonata-js 2.2 guardrails API (stack / timeout / sequence).
+type guardrails struct {
+	stack    int
+	timeout  time.Duration
+	sequence int
+}
+
+// errGuardrailTimeout tags the context cause set by WithTimeout, so evalCore
+// can distinguish a guardrail timeout (error D1012) from the caller's own
+// context cancellation (propagated as-is).
+var errGuardrailTimeout = errors.New("gnata: guardrail timeout exceeded")
+
+// Option configures an optional resource guardrail on a compiled Expression.
+// See WithStack, WithTimeout, and WithSequence.
+type Option func(*guardrails)
+
+// WithStack limits the maximum lambda recursion depth. Exceeding it returns
+// error D1011. Without this option, gnata still enforces its built-in limit
+// of 100 (error U1001) — WithStack only changes the limit and the resulting
+// error code, matching jsonata-js's `stack` guardrail.
+func WithStack(n int) Option {
+	return func(g *guardrails) { g.stack = n }
+}
+
+// WithTimeout limits total evaluation time. Exceeding it returns error
+// D1012. Without this option, evaluation is bounded only by the ctx passed
+// to Eval, matching jsonata-js's `timeout` guardrail.
+func WithTimeout(d time.Duration) Option {
+	return func(g *guardrails) { g.timeout = d }
+}
+
+// WithSequence limits the length of sequences built during evaluation: the
+// range operator (..), $append, $map, $filter, $each, wildcard (*), and
+// descendant (**). Exceeding it returns error D2015, matching jsonata-js's
+// `sequence` guardrail. Without this option, only the built-in 10,000,000
+// element hard caps (D2014 / D3010) apply.
+func WithSequence(n int) Option {
+	return func(g *guardrails) { g.sequence = n }
 }
 
 // Compile parses a JSONata expression string and returns an Expression.
 // The returned Expression is goroutine-safe and should be reused across calls.
-func Compile(expr string) (*Expression, error) {
+func Compile(expr string, opts ...Option) (*Expression, error) {
 	p := parser.NewParser(expr)
 	ast, err := p.Parse()
 	if err != nil {
@@ -50,13 +96,21 @@ func Compile(expr string) (*Expression, error) {
 		return nil, err
 	}
 	fp := parser.AnalyzeFastPath(ast)
+	var g *guardrails
+	if len(opts) > 0 {
+		g = &guardrails{}
+		for _, opt := range opts {
+			opt(g)
+		}
+	}
 	return &Expression{
-		src:      expr,
-		ast:      ast,
-		fastPath: fp.IsFastPath,
-		paths:    fp.GJSONPaths,
-		cmpFast:  fp.CmpFast,
-		funcFast: fp.FuncFast,
+		src:        expr,
+		ast:        ast,
+		fastPath:   fp.IsFastPath,
+		paths:      fp.GJSONPaths,
+		cmpFast:    fp.CmpFast,
+		funcFast:   fp.FuncFast,
+		guardrails: g,
 	}, nil
 }
 
@@ -181,15 +235,31 @@ func recoverEvalPanic(errp *error) { //nolint:gocritic // ptrToRefParam: must mu
 // evalCore is the shared evaluation logic for all Eval variants.
 func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.Environment, vars map[string]any) (result any, err error) {
 	defer recoverEvalPanic(&err)
+	if e.guardrails != nil && e.guardrails.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, e.guardrails.timeout, errGuardrailTimeout)
+		defer cancel()
+	}
 	env := evaluator.NewChildEnvironment(parent)
 	env.ResetCallCounter()
 	env.SetContext(ctx)
+	if e.guardrails != nil {
+		if e.guardrails.stack > 0 {
+			env.SetMaxStackDepth(e.guardrails.stack)
+		}
+		if e.guardrails.sequence > 0 {
+			env.SetMaxSequence(e.guardrails.sequence)
+		}
+	}
 	env.Bind("$", data)
 	for k, v := range vars {
 		env.Bind(k, v)
 	}
 	result, err = evaluator.Eval(e.ast, data, env)
 	if err != nil {
+		if e.guardrails != nil && e.guardrails.timeout > 0 && errors.Is(context.Cause(ctx), errGuardrailTimeout) {
+			return nil, &evaluator.JSONataError{Code: "D1012", Message: fmt.Sprintf("Evaluation timeout after %s", e.guardrails.timeout)}
+		}
 		return nil, err
 	}
 	if seq, ok := result.(*evaluator.Sequence); ok {

@@ -152,6 +152,19 @@ func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
 	return partial, nil
 }
 
+// stackOverflowError reports the recursion-depth error for the given counter,
+// using D1011 when the limit came from the WithStack guardrail and the
+// built-in U1001 otherwise.
+func stackOverflowError(counter *callCounter) error {
+	if counter.stackIsLimit {
+		return &JSONataError{
+			Code:    "D1011",
+			Message: fmt.Sprintf("Stack overflow error: stack depth exceeded %d. Check for non-terminating recursive function", counter.max),
+		}
+	}
+	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
+}
+
 func callFunction(fn any, args []any, focus any, env *Environment) (any, error) {
 	if fn == nil {
 		return nil, &JSONataError{Code: "T1006", Message: "attempted to invoke undefined function"}
@@ -189,7 +202,7 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 			counter.depth++
 			if counter.depth > counter.max {
 				counter.depth--
-				return nil, &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
+				return nil, stackOverflowError(counter)
 			}
 			childEnv := NewChildEnvironment(f.Closure)
 			childEnv.calls = counter
