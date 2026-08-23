@@ -9,17 +9,17 @@ import (
 )
 
 // Null is the singleton JSONata null value.
-var Null any = jsonNullType{}
+var Null any = JSONNull{}
 
 // JSONNull is a sentinel type that represents JSON null explicitly,
 // distinguishing it from Go nil (which represents JSONata undefined).
-type jsonNullType struct{}
+type JSONNull struct{}
 
-func (jsonNullType) MarshalJSON() ([]byte, error) { return []byte(parser.NullJSON), nil }
+func (JSONNull) MarshalJSON() ([]byte, error) { return []byte(parser.NullJSON), nil }
 
 // IsNull reports whether v is the JSON null sentinel.
 func IsNull(v any) bool {
-	_, ok := v.(jsonNullType)
+	_, ok := v.(JSONNull)
 	return ok
 }
 

@@ -422,8 +422,8 @@ All standard regex features (character classes, quantifiers, alternation, groupi
 
 ```
 gnata/
-├── gnata.go                     # Public API: Compile, Eval, EvalBytes, EvalBytesWithVars, EvalMap, EvalWithVars, CustomFunc
-├── stream.go                    # StreamEvaluator, GroupPlan, EvalMany, EvalMap, MetricsHook
+├── gnata.go                     # Public API: Compile, Eval, EvalBytes, EvalBytesWithVars, EvalMap, EvalWithVars, CustomEnvironment, OrderedMap, JSONNull
+├── stream.go                    # StreamEvaluator, GroupPlan, EvalMany, EvalManyWithVars, EvalMap, MetricsHook
 ├── bounded_cache.go             # Lock-free FIFO ring-buffer plan cache
 ├── deep_equal.go                # JSONata-compatible deep equality
 ├── internal/

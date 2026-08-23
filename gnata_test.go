@@ -49,6 +49,88 @@ func TestOrderedMap_TypeAssertFromEval(t *testing.T) {
 	}
 }
 
+func TestQuotedPathArrayIndexSelect(t *testing.T) {
+	data := map[string]any{
+		"testData": []any{
+			map[string]any{"value": "output"},
+		},
+	}
+	tests := []struct {
+		name string
+		expr string
+		want any
+	}{
+		{name: "unquoted", expr: `testData[0].value`, want: "output"},
+		{name: "quoted", expr: `"testData"[0]."value"`, want: "output"},
+		{name: "mixed", expr: `testData[0]."value"`, want: "output"},
+		{name: "rooted quoted", expr: `$."testData"[0]."value"`, want: "output"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			compiled, err := gnata.Compile(tc.expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", tc.expr, err)
+			}
+			got, err := compiled.Eval(context.Background(), data)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tc.expr, err)
+			}
+			if !gnata.DeepEqual(got, tc.want) {
+				t.Errorf("Eval(%q) = %#v (%T), want %#v (%T)", tc.expr, got, got, tc.want, tc.want)
+			}
+		})
+	}
+}
+
+func TestJSONNull_TypeAssertFromEval(t *testing.T) {
+	compiled, err := gnata.Compile(`{"a": null}`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	result, err := compiled.Eval(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	om, ok := result.(*gnata.OrderedMap)
+	if !ok {
+		t.Fatalf("Eval result type %T, want *gnata.OrderedMap", result)
+	}
+	val, exists := om.Get("a")
+	if !exists {
+		t.Fatal("missing key a")
+	}
+	if !gnata.IsNull(val) {
+		t.Fatalf("IsNull(%v) = false, want true", val)
+	}
+	if _, ok := val.(gnata.JSONNull); !ok {
+		t.Fatalf("value type %T, want gnata.JSONNull", val)
+	}
+	if val != gnata.Null {
+		t.Fatalf("value %v != gnata.Null", val)
+	}
+}
+
+func TestEvalWithCustomEnvironmentAndVars(t *testing.T) {
+	env := gnata.NewCustomEnvironment(map[string]gnata.CustomFunc{
+		"greet": func(args []any, _ any) (any, error) {
+			return "hello " + args[0].(string), nil
+		},
+	})
+	compiled, err := gnata.Compile(`$greet($who)`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	got, err := compiled.EvalWithCustomEnvironmentAndVars(
+		context.Background(), nil, env, map[string]any{"who": "world"},
+	)
+	if err != nil {
+		t.Fatalf("EvalWithCustomEnvironmentAndVars: %v", err)
+	}
+	if got != "hello world" {
+		t.Fatalf("got %v, want %q", got, "hello world")
+	}
+}
+
 func TestDeepEqual(t *testing.T) {
 	tests := []struct {
 		a, b any
