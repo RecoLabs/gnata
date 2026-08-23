@@ -126,7 +126,7 @@ func collectPathSteps(node *Node) ([]*Node, error) {
 		if processed.Type == NodePath {
 			return processed.Steps, nil
 		}
-		// In a path context, a string literal (e.g. ."Product Name") is a field name lookup.
+		promoteQuotedPathNames(processed)
 		if processed.Type == NodeString {
 			processed = &Node{Type: NodeName, Value: processed.Value, Pos: processed.Pos}
 		}
@@ -156,6 +156,25 @@ func collectPathSteps(node *Node) ([]*Node, error) {
 	}
 
 	return append(leftSteps, rightSteps...), nil
+}
+
+func promoteQuotedPathNames(n *Node) {
+	for n != nil && n.Type == NodeBinary && n.Value == "[" {
+		if n.Left != nil && n.Left.Type == NodeString {
+			left := n.Left
+			n.Left = &Node{
+				Type:      NodeName,
+				Value:     left.Value,
+				Pos:       left.Pos,
+				KeepArray: left.KeepArray,
+				Group:     left.Group,
+				Index:     left.Index,
+				Focus:     left.Focus,
+			}
+			return
+		}
+		n = n.Left
+	}
 }
 
 // processBinaryChildren recursively processes a non-dot binary node.

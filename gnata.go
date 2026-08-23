@@ -64,6 +64,18 @@ func Compile(expr string) (*Expression, error) {
 // It receives evaluated arguments and the current context value (focus).
 type CustomFunc func(args []any, focus any) (any, error)
 
+// CustomEnvironment is a reusable root environment containing standard library
+// functions and caller-provided custom functions.
+type CustomEnvironment struct {
+	env *evaluator.Environment
+}
+
+// NewCustomEnvironment pre-builds a reusable environment for a stable set of
+// custom functions. Each evaluation creates a child environment for variables.
+func NewCustomEnvironment(customFuncs map[string]CustomFunc) *CustomEnvironment {
+	return &CustomEnvironment{env: newEnv(customFuncs)}
+}
+
 // builtinEnv is a shared root environment with all standard library functions.
 // Created once at init; each eval creates a thin child env for per-call bindings.
 var builtinEnv *evaluator.Environment
@@ -401,6 +413,23 @@ func (e *Expression) EvalWithCustomFuncs(ctx context.Context, data any, env *eva
 	return e.evalCore(ctx, data, env, nil)
 }
 
+// EvalWithCustomEnvironmentAndVars evaluates with a pre-built custom
+// environment and per-call variable bindings. Construct the environment once
+// via NewCustomEnvironment and reuse it across calls — rebuilding the
+// environment per evaluation re-registers the entire standard library and is
+// significantly more expensive than the per-call variable bind below.
+func (e *Expression) EvalWithCustomEnvironmentAndVars(
+	ctx context.Context,
+	data any,
+	customEnv *CustomEnvironment,
+	vars map[string]any,
+) (result any, err error) {
+	if customEnv == nil {
+		return e.evalCore(ctx, data, builtinEnv, vars)
+	}
+	return e.evalCore(ctx, data, customEnv.env, vars)
+}
+
 // NewCustomEnv creates a root environment with all standard library functions
 // plus the provided custom functions. The returned environment is goroutine-safe
 // for concurrent reads and should be reused across evaluations.
@@ -449,6 +478,10 @@ func DeepEqual(a, b any) bool {
 func IsNull(v any) bool {
 	return evaluator.IsNull(v)
 }
+
+type JSONNull = evaluator.JSONNull
+
+var Null = evaluator.Null
 
 type OrderedMap = evaluator.OrderedMap
 

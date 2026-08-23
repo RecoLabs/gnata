@@ -216,7 +216,19 @@ func (se *StreamEvaluator) Reset() {
 func (se *StreamEvaluator) EvalMany(
 	ctx context.Context, data json.RawMessage, schemaKey string, exprIndices []int,
 ) ([]any, error) {
-	return se.evalInternal(ctx, data, nil, nil, schemaKey, exprIndices)
+	return se.evalInternal(ctx, data, nil, nil, nil, schemaKey, exprIndices)
+}
+
+// EvalManyWithVars is like EvalMany but injects extra $-variable bindings into
+// the full-eval environment. Fast-path expressions are unaffected (they never
+// reference $-variables, so the fast-path result is independent of vars).
+//
+// Pass nil or empty vars to get exactly EvalMany behaviour at zero extra cost.
+func (se *StreamEvaluator) EvalManyWithVars(
+	ctx context.Context, data json.RawMessage, vars map[string]any,
+	schemaKey string, exprIndices []int,
+) ([]any, error) {
+	return se.evalInternal(ctx, data, nil, nil, vars, schemaKey, exprIndices)
 }
 
 // EvalMap evaluates the specified expressions against a map of raw JSON values.
@@ -229,11 +241,17 @@ func (se *StreamEvaluator) EvalMany(
 func (se *StreamEvaluator) EvalMap(
 	ctx context.Context, data map[string]json.RawMessage, schemaKey string, exprIndices []int,
 ) ([]any, error) {
-	return se.evalInternal(ctx, nil, nil, data, schemaKey, exprIndices)
+	return se.evalInternal(ctx, nil, nil, data, nil, schemaKey, exprIndices)
 }
 
 func (se *StreamEvaluator) evalInternal(
-	ctx context.Context, data json.RawMessage, preparsed any, mapData map[string]json.RawMessage, schemaKey string, exprIndices []int,
+	ctx context.Context,
+	data json.RawMessage,
+	preparsed any,
+	mapData map[string]json.RawMessage,
+	vars map[string]any,
+	schemaKey string,
+	exprIndices []int,
 ) (results []any, err error) {
 	defer recoverEvalPanic(&err)
 	if len(exprIndices) == 0 {
@@ -265,7 +283,7 @@ func (se *StreamEvaluator) evalInternal(
 	}
 
 	results = make([]any, len(exprIndices))
-	batch := evalBatch{se: se, plan: plan, data: data, mapData: mapData, parsed: preparsed, parseAttempted: preparsed != nil}
+	batch := evalBatch{se: se, plan: plan, data: data, mapData: mapData, parsed: preparsed, parseAttempted: preparsed != nil, vars: vars}
 	for i, idx := range exprIndices {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -297,6 +315,7 @@ type evalBatch struct {
 	parsed         any
 	parsedErr      error
 	parseAttempted bool
+	vars           map[string]any
 }
 
 // evalSingleExpr evaluates one expression, trying fast paths first (pure path,
@@ -374,9 +393,16 @@ func (b *evalBatch) fullEval(ctx context.Context, idx int, expr *Expression, sta
 	}
 	var result any
 	var err error
-	if b.se.customEnv != nil {
+	switch {
+	case len(b.vars) > 0:
+		parent := b.se.customEnv
+		if parent == nil {
+			parent = builtinEnv
+		}
+		result, err = expr.evalCore(ctx, b.parsed, parent, b.vars)
+	case b.se.customEnv != nil:
 		result, err = expr.EvalWithCustomFuncs(ctx, b.parsed, b.se.customEnv)
-	} else {
+	default:
 		result, err = expr.Eval(ctx, b.parsed)
 	}
 	if b.se.metrics != nil {

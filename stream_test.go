@@ -600,3 +600,51 @@ func TestStreamEvaluator_ConcurrentSafety(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamEvaluator_EvalManyWithVars(t *testing.T) {
+	se := gnata.NewStreamEvaluator(nil)
+
+	varIdx, err := se.Compile(`$myVar.value`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	fastIdx, err := se.Compile(`data.user_type = 2`)
+	if err != nil {
+		t.Fatalf("Compile fast: %v", err)
+	}
+
+	vars := map[string]any{
+		"myVar": map[string]any{"value": "hello-from-var"},
+	}
+
+	results, err := se.EvalManyWithVars(
+		context.Background(),
+		json.RawMessage(streamTestData),
+		vars,
+		"schema-vars",
+		[]int{varIdx, fastIdx},
+	)
+	if err != nil {
+		t.Fatalf("EvalManyWithVars: %v", err)
+	}
+	if got := results[0]; got != "hello-from-var" {
+		t.Errorf("var expression: want %q, got %v", "hello-from-var", got)
+	}
+	if got := results[1]; got != true {
+		t.Errorf("fast-path expression: want true, got %v", got)
+	}
+
+	resultsNoVars, err := se.EvalManyWithVars(
+		context.Background(),
+		json.RawMessage(streamTestData),
+		nil,
+		"schema-vars",
+		[]int{fastIdx},
+	)
+	if err != nil {
+		t.Fatalf("EvalManyWithVars(nil vars): %v", err)
+	}
+	if got := resultsNoVars[0]; got != true {
+		t.Errorf("nil-vars fast-path: want true, got %v", got)
+	}
+}
