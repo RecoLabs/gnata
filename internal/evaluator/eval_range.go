@@ -34,6 +34,10 @@ func evalRange(left, right any, env *Environment) (any, error) {
 	if lo > hi {
 		return nil, nil
 	}
+	size := hi - lo + 1
+	if err := env.CheckSequence(size); err != nil {
+		return nil, err
+	}
 	const maxRange = 10_000_000
 	if hi-lo >= maxRange {
 		return nil, &JSONataError{Code: "D2014", Message: fmt.Sprintf("range operator (..) must not exceed %d items", maxRange)}

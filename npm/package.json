@@ -1,6 +1,6 @@
 {
   "name": "gnata-js",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Browser JSONata via gnata WASM for backend parity, not a performance optimization",
   "license": "MIT",
   "repository": {

@@ -395,6 +395,10 @@ func fnContains(args []any, focus any) (any, error) {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$contains: argument 1 must be a string"}
 	}
 
+	if args[1] == nil {
+		return nil, nil
+	}
+
 	switch p := args[1].(type) {
 	case string:
 		return strings.Contains(s, p), nil

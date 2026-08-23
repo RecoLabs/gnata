@@ -238,122 +238,24 @@ For point-in-time cache stats without a hook, use `se.Stats()` which returns hit
 
 ## Performance
 
-All benchmarks on Apple M4 Pro. gnata is compared against the reference [jsonata-js](https://github.com/jsonata-js/jsonata) implementation running in Node.js. The **JSONata (eval)** column estimates pure evaluation time by subtracting RPC overhead from the total; entries showing `< 1 us` mean the expression evaluated faster than the measurement floor.
+All benchmarks on Apple M4 Pro. gnata is compared against the reference [jsonata-js](https://github.com/jsonata-js/jsonata) implementation running in Node.js, evaluation time only (no RPC/transport overhead). Simple field lookups and comparisons hit a zero-copy GJSON fast path — the JSON document is never fully parsed — and functions on a pure path (e.g. `$exists(a.b)`, `$lowercase(name)`) get a similar fast path via a single `gjson.GetBytes` call.
 
-### Fast Path (GJSON zero-copy)
+| Category | gnata latency | Speedup vs JSONata |
+|---|---|---|
+| Fast Path (GJSON zero-copy) | 41 ns – 142 ns | 570x – 1,500x* |
+| Boolean Logic | 127 ns – 573 ns | 43x – 270x |
+| Numeric & Arithmetic | 177 ns – 530 ns | 32x – 200x* |
+| String Functions | 73 ns – 580 ns | 7x – 360x* |
+| Array & Filtering | 195 ns – 573 ns | 24x – 140x |
+| Higher-Order Functions & Lambdas | 425 ns – 1.5 µs | 8x – 88x* |
+| Joins (`@` operator) | 545 ns – 1.6 µs | up to 19x* |
+| Conditionals & Blocks | 170 ns – 7.1 µs | 3x – 68x* |
+| Regex | 497 ns – 947 ns | up to 6x* |
+| Complex Boolean Expressions | 202 ns – 928 ns | up to 31x* |
 
-Simple field lookups and comparisons are evaluated directly against raw `json.RawMessage` via GJSON — the JSON document is never fully parsed.
+\* Some expressions in this category evaluate faster than JSONata's measurement floor (< 1 µs) — actual speedup is understated.
 
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| `field.lookup` | **55 ns** | 83 us | 232 us | 1,500x |
-| `nested.3.deep` | **95 ns** | 56 us | 205 us | 590x |
-| `field = "string"` | **42 ns** | 49 us | 197 us | 1,170x |
-| `field = 2` (numeric) | **142 ns** | 163 us | 311 us | 1,150x |
-| `field = true` (bool) | **111 ns** | 64 us | 212 us | 570x |
-| `field != null` | **41 ns** | 23 us | 172 us | 570x |
-| `field != "value"` | **41 ns** | < 1 us | 147 us | — |
-
-Fast-path expressions typically achieve **0-2 allocations** and **0-40 bytes** per evaluation.
-
-### Function fast path
-
-Expressions calling a supported built-in function on a pure path (e.g. `$exists(a.b)`, `$lowercase(name)`, `$contains(path, "literal")`) are classified at compile time. At runtime, the field is extracted with a single `gjson.GetBytes` call and the function is applied directly — no `json.Unmarshal`, no AST walk.
-
-Supported functions (21): `$exists`, `$contains`, `$string`, `$boolean`, `$number`, `$keys`, `$distinct`, `$not`, `$lowercase`, `$uppercase`, `$trim`, `$length`, `$type`, `$abs`, `$floor`, `$ceil`, `$sqrt`, `$count`, `$reverse`, `$sum`, `$max`, `$min`, `$average`.
-
-### Boolean Logic
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| `a = "x" and b = "y"` | **573 ns** | 24 us | 173 us | 43x |
-| `a = "x" or a = "y"` | **144 ns** | 38 us | 187 us | 270x |
-| `$not(field)` | **127 ns** | 7 us | 156 us | 58x |
-| `(a or b) and c` | **194 ns** | 17 us | 166 us | 88x |
-| `a and b and c` (3-way) | **180 ns** | 11 us | 159 us | 59x |
-
-### Numeric & Arithmetic
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| `field > 1` | **191 ns** | < 1 us | 148 us | — |
-| `(field + 1) * 10` | **200 ns** | 12 us | 160 us | 58x |
-| `field in [1, 2, 3]` | **530 ns** | 17 us | 165 us | 32x |
-| `$sum(array)` | **177 ns** | < 1 us | 144 us | — |
-| `$average(array)` | **190 ns** | < 1 us | 143 us | — |
-| `$max(a) - $min(a)` | **264 ns** | 52 us | 201 us | 200x |
-
-### String Functions
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| `$uppercase(field)` | **117 ns** | < 1 us | 139 us | — |
-| `$contains(field, "sub")` | **73 ns** | < 1 us | 111 us | — |
-| `$split(email, "@")` | **247 ns** | 90 us | 238 us | 360x |
-| `$join(array, ", ")` | **233 ns** | < 1 us | 140 us | — |
-| `a & "-" & b` (concat) | **580 ns** | 4 us | 153 us | 7x |
-| `$replace(field, "x", "y")` | **234 ns** | < 1 us | 142 us | — |
-| `$uppercase($substringBefore(...))` | **314 ns** | < 1 us | 140 us | — |
-
-### Array & Filtering
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| `$count(array)` | **406 ns** | 13 us | 162 us | 33x |
-| `items[active = true].name` | **551 ns** | 13 us | 162 us | 24x |
-| `items[value > 20].name` | **573 ns** | 39 us | 188 us | 68x |
-| `$count(items[active])` | **378 ns** | 42 us | 190 us | 110x |
-| `items.name` (auto-map) | **247 ns** | 34 us | 183 us | 140x |
-| `items^(value).name` (sort) | **524 ns** | 68 us | 216 us | 130x |
-| `items^(>value).name` (desc) | **509 ns** | 41 us | 189 us | 80x |
-| `$reverse(array)` | **195 ns** | 20 us | 168 us | 100x |
-
-### Higher-Order Functions & Lambdas
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| `$map(items, function($v) { ... })` | **1.2 us** | 108 us | 256 us | 88x |
-| `$filter(items, function($v) { ... })` | **1.1 us** | 41 us | 190 us | 38x |
-| `$reduce(array, function($p,$c) { ... })` | **1.0 us** | 8 us | 156 us | 8x |
-| `$sort(items, function($a,$b) { ... })` | **1.5 us** | 79 us | 228 us | 53x |
-| `$map(tags, $uppercase)` | **425 ns** | < 1 us | 143 us | — |
-| `$single(users, function($v) { ... })` | **806 ns** | 7 us | 155 us | 8x |
-
-### Joins (`@` operator)
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| 2-way join (`loans@$l.books@$b[...]`) | **545 ns** | < 1 us | 144 us | — |
-| Join with index (`#$i`) | **1.6 us** | 31 us | 180 us | 19x |
-
-### Conditionals & Blocks
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| `a = 2 ? "yes" : "no"` | **170 ns** | < 1 us | 146 us | — |
-| Nested ternary | **188 ns** | < 1 us | 144 us | — |
-| `( $x := field; $x * $x )` | **268 ns** | < 1 us | 146 us | — |
-| Multi-variable block | **257 ns** | 18 us | 166 us | 68x |
-| `**.field` (recursive descent) | **7.1 us** | 20 us | 168 us | 3x |
-
-### Regex
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| `$contains(field, /pattern/)` | **497 ns** | 3 us | 151 us | 6x |
-| `$match(field, /groups/)` | **947 ns** | < 1 us | 144 us | — |
-| `$replace(field, /capture/, "$1")` | **835 ns** | < 1 us | 141 us | — |
-
-### Complex Boolean Expressions
-
-| Expression | gnata | JSONata (eval) | JSONata (RPC) | Speedup |
-|---|---|---|---|---|
-| 3-way AND compound | **202 ns** | < 1 us | 141 us | — |
-| Membership + numeric guard | **215 ns** | < 1 us | 147 us | — |
-| `$exists` + field checks | **219 ns** | < 1 us | 148 us | — |
-| String pattern matching | **221 ns** | 7 us | 155 us | 31x |
-| Filter + count threshold | **487 ns** | < 1 us | 143 us | — |
-| Filter + map + join pipeline | **928 ns** | < 1 us | 146 us | — |
+Fast-path expressions typically achieve **0-2 allocations** and **0-40 bytes** per evaluation. Supported fast-path functions (21): `$exists`, `$contains`, `$string`, `$boolean`, `$number`, `$keys`, `$distinct`, `$not`, `$lowercase`, `$uppercase`, `$trim`, `$length`, `$type`, `$abs`, `$floor`, `$ceil`, `$sqrt`, `$count`, `$reverse`, `$sum`, `$max`, `$min`, `$average`.
 
 ### StreamEvaluator (batch of 4 expressions)
 
@@ -366,7 +268,7 @@ Supported functions (21): `$exists`, `$contains`, `$string`, `$boolean`, `$numbe
 
 ## JSONata Compatibility
 
-gnata targets full compatibility with [JSONata 2.x](https://docs.jsonata.org), validated against **1,778 test cases** from the official [jsonata-js test suite](https://github.com/jsonata-js/jsonata/tree/master/test/test-suite) — **0 failures, 0 skips**.
+gnata targets full compatibility with [JSONata 2.x](https://docs.jsonata.org), validated against **1,704 test cases** from the official [jsonata-js test suite](https://github.com/jsonata-js/jsonata/tree/master/test/test-suite) at **v2.2.2** — **0 failures, 0 skips**.
 
 ### Supported Features
 
@@ -391,6 +293,20 @@ gnata targets full compatibility with [JSONata 2.x](https://docs.jsonata.org), v
 | **Boolean** | `$boolean` `$not` `$exists` |
 | **Higher-Order** | `$map` `$filter` `$reduce` `$single` |
 | **Date/Time** | `$now` `$millis` `$fromMillis` `$toMillis` |
+
+### Guardrails
+
+`Compile` accepts optional resource guardrails, matching jsonata-js 2.2's `stack` / `timeout` / `sequence` options:
+
+```go
+expr, err := gnata.Compile(userExpr,
+    gnata.WithStack(100),                // error D1011 beyond this recursion depth
+    gnata.WithTimeout(500*time.Millisecond), // error D1012 if evaluation runs longer
+    gnata.WithSequence(1_000_000),       // error D2015 if a built sequence grows past this
+)
+```
+
+All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds every major sequence-growth path: the range operator, `$append`, `$map`, `$filter`, `$each`, wildcard (`*`), and descendant (`**`). Use guardrails when evaluating expressions from an untrusted source.
 
 ## Known Behavioral Differences from jsonata-js
 

@@ -307,7 +307,7 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 	}
 }
 
-func evalWildcard(_ *parser.Node, input any, _ *Environment) (any, error) {
+func evalWildcard(_ *parser.Node, input any, env *Environment) (any, error) {
 	if IsMap(input) {
 		if MapLen(input) == 0 {
 			return nil, nil
@@ -324,6 +324,9 @@ func evalWildcard(_ *parser.Node, input any, _ *Environment) (any, error) {
 		if len(seq.Values) == 0 {
 			return nil, nil
 		}
+		if err := env.CheckSequence(len(seq.Values)); err != nil {
+			return nil, err
+		}
 		if len(seq.Values) == 1 {
 			return seq.Values[0], nil
 		}
@@ -334,7 +337,7 @@ func evalWildcard(_ *parser.Node, input any, _ *Environment) (any, error) {
 		seq := CreateSequence()
 		for _, item := range v {
 			if IsMap(item) {
-				val, err := evalWildcard(nil, item, nil)
+				val, err := evalWildcard(nil, item, env)
 				if err != nil {
 					return nil, err
 				}
@@ -344,6 +347,9 @@ func evalWildcard(_ *parser.Node, input any, _ *Environment) (any, error) {
 			} else if item != nil {
 				seq.Values = append(seq.Values, item)
 			}
+		}
+		if err := env.CheckSequence(len(seq.Values)); err != nil {
+			return nil, err
 		}
 		return CollapseSequence(seq), nil
 	default:
