@@ -51,6 +51,10 @@
 
 ## Quick Start
 
+```sh
+go get github.com/recolabs/gnata
+```
+
 ```go
 package main
 
@@ -97,7 +101,7 @@ Evaluate directly against raw JSON bytes. For fast-path-eligible expressions, fi
 ```go
 expr, _ := gnata.Compile(`user.email = "admin@example.com"`)
 result, _ := expr.EvalBytes(ctx, rawJSON) // rawJSON is json.RawMessage
-fmt.Println(expr.IsFastPath())            // true — zero-copy evaluation
+fmt.Println(expr.IsComparisonFastPath())  // true — zero-copy evaluation
 ```
 
 ### Tier 3 — `StreamEvaluator`
