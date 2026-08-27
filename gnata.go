@@ -3,7 +3,7 @@
 // Quick start:
 //
 //	expr, err := gnata.Compile(`Account.Order.Product.Price`)
-//	result, err := expr.Eval(data)
+//	result, err := expr.Eval(context.Background(), data)
 //
 // For high-throughput streaming workloads, use StreamEvaluator which provides
 // lock-free schema-keyed plan caching and batched expression evaluation.
