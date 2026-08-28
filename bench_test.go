@@ -3,6 +3,8 @@ package gnata_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/recolabs/gnata"
@@ -76,6 +78,62 @@ func BenchmarkEvalBytes(b *testing.B) {
 		if err != nil {
 			b.Logf("skip %q: %v", exprStr, err)
 			continue
+		}
+		b.Run(exprStr, func(b *testing.B) {
+			b.SetBytes(int64(len(rawData)))
+			b.ReportAllocs()
+			for range b.N {
+				if _, err := expr.EvalBytes(context.Background(), rawData); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// wideArraysData builds a document with two nested array boundaries
+// (Order -> Product), large enough that a regression back to full-document
+// decoding shows up clearly in both timing and alloc count — the small
+// benchData fixture above is too tiny for that delta to be obvious.
+func wideArraysData(orders, products int) []byte {
+	var sb strings.Builder
+	sb.WriteString(`{"Account":{"Order":[`)
+	for i := range orders {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, `{"OrderID":"o%d","Product":[`, i)
+		for j := range products {
+			if j > 0 {
+				sb.WriteString(",")
+			}
+			fmt.Fprintf(&sb, `{"SKU":"sku-%d-%d","UnitPrice":%d.5}`, i, j, j)
+		}
+		sb.WriteString("]}")
+	}
+	sb.WriteString("]}}")
+	return []byte(sb.String())
+}
+
+var wideArraysExprs = []string{
+	"Account.Order.Product.SKU",
+	"$sum(Account.Order.Product.UnitPrice)",
+	`Account.Order.Product.SKU = "sku-19-4"`,
+	`$exists(Account.Order.Product.SKU)`,
+	`$contains(Account.Order.Product.SKU, "sku-19-4")`,
+}
+
+// BenchmarkEvalBytes_WideArrays exercises EvalBytes on expressions whose path
+// crosses two array boundaries before reaching the target field. These stay
+// on the gjson fast path (no full-document decode) as of the walker added in
+// path_bytes.go; regressing back to a decode fallback here should show up as
+// a large jump in both ns/op and allocs/op.
+func BenchmarkEvalBytes_WideArrays(b *testing.B) {
+	rawData := json.RawMessage(wideArraysData(20, 5))
+	for _, exprStr := range wideArraysExprs {
+		expr, err := gnata.Compile(exprStr)
+		if err != nil {
+			b.Fatalf("compile %q: %v", exprStr, err)
 		}
 		b.Run(exprStr, func(b *testing.B) {
 			b.SetBytes(int64(len(rawData)))

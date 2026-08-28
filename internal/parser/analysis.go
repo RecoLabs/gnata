@@ -86,13 +86,14 @@ type (
 	// Both fields are populated at Compile() time so that EvalBytes can evaluate
 	// the expression with a single gjson scan — no json.Unmarshal, no AST walk.
 	ComparisonFastPath struct {
-		LHSPath      string  // gjson path string for the left-hand operand
-		Op           string  // "=" or "!="
-		RHSKind      rhsKind // type of the right-hand literal
-		RHSString    string  // valid when RHSKind == RHSKindString
-		RHSNumber    float64 // valid when RHSKind == RHSKindNumber
-		RHSNumberStr string  // pre-formatted RHSNumber for fast integer comparison
-		RHSBool      bool    // valid when RHSKind == RHSKindBool
+		LHSPath      string   // gjson path string for the left-hand operand
+		LHSPathSteps []string // un-escaped field names making up LHSPath, one per path step
+		Op           string   // "=" or "!="
+		RHSKind      rhsKind  // type of the right-hand literal
+		RHSString    string   // valid when RHSKind == RHSKindString
+		RHSNumber    float64  // valid when RHSKind == RHSKindNumber
+		RHSNumberStr string   // pre-formatted RHSNumber for fast integer comparison
+		RHSBool      bool     // valid when RHSKind == RHSKindBool
 	}
 
 	// FuncFastPath holds a pre-analyzed function call of the form $func(pure-path)
@@ -100,9 +101,10 @@ type (
 	// Populated at Compile() time so that EvalBytes can evaluate the expression
 	// with a single gjson scan — no json.Unmarshal, no AST walk.
 	FuncFastPath struct {
-		Kind   FuncFastKind
-		Path   string // gjson path for the primary argument
-		StrArg string // second string literal for $contains; empty for all others
+		Kind      FuncFastKind
+		Path      string   // gjson path for the primary argument
+		PathSteps []string // un-escaped field names making up Path, one per path step
+		StrArg    string   // second string literal for $contains; empty for all others
 	}
 
 	// fastPathResult holds the result of analyzing an expression for fast-path eligibility.
@@ -113,6 +115,9 @@ type (
 		// GJSONPaths is the set of GJSON path strings that this expression reads.
 		// Only populated when IsFastPath is true.
 		GJSONPaths []string
+		// PathSteps holds the un-escaped field names making up GJSONPaths[0], one
+		// per path step. Only populated when IsFastPath is true.
+		PathSteps []string
 		// CmpFast is non-nil when the expression is a simple path-vs-literal comparison
 		// that can be evaluated with a single gjson scan.
 		CmpFast *ComparisonFastPath
@@ -150,7 +155,7 @@ type (
 func AnalyzeFastPath(node *Node) fastPathResult {
 	paths, ok := collectPaths(node)
 	if ok {
-		return fastPathResult{IsFastPath: true, GJSONPaths: paths}
+		return fastPathResult{IsFastPath: true, GJSONPaths: paths, PathSteps: rawStepNames(node)}
 	}
 	if cmp := tryCollectComparison(node); cmp != nil {
 		return fastPathResult{CmpFast: cmp}
@@ -159,6 +164,26 @@ func AnalyzeFastPath(node *Node) fastPathResult {
 		return fastPathResult{FuncFast: fn}
 	}
 	return fastPathResult{IsFastPath: false}
+}
+
+// rawStepNames returns the un-escaped field names of a node already proven
+// fast-path eligible by collectPaths, one entry per path step. Kept separate
+// from collectPaths because that function returns names pre-escaped for a
+// single gjson dotted-path string, which callers doing their own per-step
+// traversal need in their original, un-escaped form.
+func rawStepNames(node *Node) []string {
+	switch node.Type {
+	case NodeName:
+		return []string{node.Value}
+	case NodePath:
+		names := make([]string, len(node.Steps))
+		for i, step := range node.Steps {
+			names[i] = step.Value
+		}
+		return names
+	default:
+		return nil
+	}
 }
 
 // tryCollectFunc returns a FuncFastPath when node is a call to a supported
@@ -186,9 +211,10 @@ func tryCollectFunc(node *Node) *FuncFastPath {
 			return nil
 		}
 		return &FuncFastPath{
-			Kind:   FuncFastContains,
-			Path:   paths[0],
-			StrArg: node.Arguments[1].Value,
+			Kind:      FuncFastContains,
+			Path:      paths[0],
+			PathSteps: rawStepNames(node.Arguments[0]),
+			StrArg:    node.Arguments[1].Value,
 		}
 	}
 
@@ -204,8 +230,9 @@ func tryCollectFunc(node *Node) *FuncFastPath {
 		return nil
 	}
 	return &FuncFastPath{
-		Kind: kind,
-		Path: paths[0],
+		Kind:      kind,
+		Path:      paths[0],
+		PathSteps: rawStepNames(node.Arguments[0]),
 	}
 }
 
@@ -229,26 +256,28 @@ func tryCollectComparison(node *Node) *ComparisonFastPath {
 	}
 	lhsPath := lhsPaths[0]
 
+	lhsSteps := rawStepNames(node.Left)
+
 	switch node.Right.Type {
 	case NodeString:
 		return &ComparisonFastPath{
-			LHSPath: lhsPath, Op: op,
+			LHSPath: lhsPath, LHSPathSteps: lhsSteps, Op: op,
 			RHSKind: RHSKindString, RHSString: node.Right.Value,
 		}
 	case NodeNumber:
 		return &ComparisonFastPath{
-			LHSPath: lhsPath, Op: op,
+			LHSPath: lhsPath, LHSPathSteps: lhsSteps, Op: op,
 			RHSKind: RHSKindNumber, RHSNumber: node.Right.NumVal,
 			RHSNumberStr: strconv.FormatFloat(node.Right.NumVal, 'f', -1, 64),
 		}
 	case NodeValue:
 		switch node.Right.Value {
 		case "true":
-			return &ComparisonFastPath{LHSPath: lhsPath, Op: op, RHSKind: RHSKindBool, RHSBool: true}
+			return &ComparisonFastPath{LHSPath: lhsPath, LHSPathSteps: lhsSteps, Op: op, RHSKind: RHSKindBool, RHSBool: true}
 		case "false":
-			return &ComparisonFastPath{LHSPath: lhsPath, Op: op, RHSKind: RHSKindBool, RHSBool: false}
+			return &ComparisonFastPath{LHSPath: lhsPath, LHSPathSteps: lhsSteps, Op: op, RHSKind: RHSKindBool, RHSBool: false}
 		case "null":
-			return &ComparisonFastPath{LHSPath: lhsPath, Op: op, RHSKind: RHSKindNull}
+			return &ComparisonFastPath{LHSPath: lhsPath, LHSPathSteps: lhsSteps, Op: op, RHSKind: RHSKindNull}
 		}
 	}
 	return nil
