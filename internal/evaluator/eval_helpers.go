@@ -238,6 +238,11 @@ func evalVariable(node *parser.Node, input any, env *Environment) (any, error) {
 	return val, nil
 }
 
+// evalName's array-mapping semantics (flatten one level per step, track
+// whether the field was ever found to distinguish "undefined" from "found
+// as an empty array", singleton-collapse a single match) are mirrored by
+// path_bytes.go's walkPureSteps/stepArray for the gjson-based fast path.
+// Keep the two in sync: a change here needs the matching change there.
 func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 	switch v := input.(type) {
 	case *OrderedMap:

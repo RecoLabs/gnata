@@ -166,6 +166,30 @@ func TestEvalLambda(t *testing.T) {
 	}
 }
 
+// TestEvalManyBindings forces a single environment past the point where it
+// must switch from small inline storage to a map: each of these binds more
+// than a couple of names into one scope (call-site "$" plus several lambda
+// params or block variables), which needs to work identically to binding
+// just one or two.
+func TestEvalManyBindings(t *testing.T) {
+	for _, tC := range []struct {
+		desc string
+		expr string
+		want any
+	}{
+		{"three lambda params", "function($a, $b, $c){$a+$b+$c}(1,2,3)", float64(6)},
+		{"five lambda params", "function($a,$b,$c,$d,$e){$a+$b+$c+$d+$e}(1,2,3,4,5)", float64(15)},
+		{"four sequential block bindings", "($a:=1; $b:=2; $c:=3; $d:=4; $a+$b+$c+$d)", float64(10)},
+		{"rebind an existing name after overflow", "($a:=1; $b:=2; $c:=3; $a:=10; $a+$b+$c)", float64(15)},
+	} {
+		t.Run(tC.desc, func(t *testing.T) {
+			if got := evalExpr(t, tC.expr, nil); !gnata.DeepEqual(got, tC.want) {
+				t.Fatalf("got %v, want %v", got, tC.want)
+			}
+		})
+	}
+}
+
 func TestEvalIn(t *testing.T) {
 	for _, tC := range []struct {
 		desc string

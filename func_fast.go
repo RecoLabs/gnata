@@ -74,15 +74,131 @@ var funcFastHandlers = map[parser.FuncFastKind]funcFastHandler{
 
 func evalFunc(f *parser.FuncFastPath, data json.RawMessage, mapData map[string]json.RawMessage) (result any, handled bool, err error) {
 	r := resolveGjsonPath(data, mapData, f.Path)
-	if !r.Exists() {
-		// Fall through to full evaluator — gjson doesn't auto-map through
-		// arrays, so the path might still resolve via the AST walker.
+	if r.Exists() {
+		if h, ok := funcFastHandlers[f.Kind]; ok {
+			return h(&r, f)
+		}
 		return nil, false, nil
 	}
-	if h, ok := funcFastHandlers[f.Kind]; ok {
-		return h(&r, f)
+	// A single dotted-path lookup doesn't auto-map through arrays. Walk the
+	// path step-by-step so an array anywhere in the chain still avoids a
+	// full document decode, for the kinds whose semantics over a resolved
+	// sequence are unambiguous: $exists just needs definedness, the numeric
+	// aggregates and $contains already auto-map over a sequence in the
+	// full evaluator (see their non-walked handlers above). The remaining
+	// kinds (string/boolean coercions, $keys, $distinct, etc.) are left to
+	// the full evaluator: their behavior over a multi-element sequence isn't
+	// a simple per-element reduction, so walking them here would risk a
+	// result that silently disagrees with the AST.
+	if len(f.PathSteps) == 0 {
+		return nil, false, nil
+	}
+	if f.Kind == parser.FuncFastExists {
+		exists := pathExistsWalked(f, data, mapData)
+		return exists, true, nil
+	}
+	values, ok := walkedValues(f, data, mapData)
+	if !ok {
+		return nil, false, nil
+	}
+	//nolint:exhaustive // only the aggregate and contains kinds are handled; other kinds fall through to the (nil, false, nil) fallback below
+	switch f.Kind {
+	case parser.FuncFastSum, parser.FuncFastCount, parser.FuncFastMax, parser.FuncFastMin, parser.FuncFastAverage:
+		if aggResult, aggOK := aggregateFastValues(f.Kind, values); aggOK {
+			return aggResult, true, nil
+		}
+	case parser.FuncFastContains:
+		return containsAnyValue(values, f.StrArg), true, nil
 	}
 	return nil, false, nil
+}
+
+// walkedValues resolves f's primary-argument path across array boundaries,
+// against whichever of data / mapData the caller has available.
+func walkedValues(f *parser.FuncFastPath, data json.RawMessage, mapData map[string]json.RawMessage) ([]gjson.Result, bool) {
+	if data != nil {
+		return walkPureStepsValues(f.PathSteps, data)
+	}
+	if mapData != nil {
+		return walkPureStepsMapValues(f.PathSteps, mapData)
+	}
+	return nil, false
+}
+
+// pathExistsWalked reports whether f's path resolves to a defined value once
+// array boundaries are accounted for. The walker's "cannot resolve" outcome
+// is exactly JSONata's undefined for a pure field-name chain, so this needs
+// no full-evaluator fallback in either direction.
+func pathExistsWalked(f *parser.FuncFastPath, data json.RawMessage, mapData map[string]json.RawMessage) bool {
+	_, ok := walkedValues(f, data, mapData)
+	return ok
+}
+
+// containsAnyValue reports whether any string element of values contains
+// substr, matching $contains's existing any-match semantics over a sequence.
+func containsAnyValue(values []gjson.Result, substr string) bool {
+	for _, v := range values {
+		if v.Type == gjson.String && strings.Contains(v.Str, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// aggregateFastValues computes a numeric aggregate fast path over an
+// already-resolved slice of gjson values. Returns (nil, false) when the kind
+// isn't a supported aggregate or an element isn't numeric.
+func aggregateFastValues(kind parser.FuncFastKind, values []gjson.Result) (any, bool) {
+	if kind == parser.FuncFastCount {
+		return float64(len(values)), true
+	}
+	nums, ok := collectNumbersFrom(values)
+	if !ok {
+		return nil, false
+	}
+	//nolint:exhaustive // Count is already handled above; only the remaining numeric kinds reach here
+	switch kind {
+	case parser.FuncFastSum:
+		var sum float64
+		for _, n := range nums {
+			sum += n
+		}
+		return sum, true
+	case parser.FuncFastAverage:
+		if len(nums) == 0 {
+			return nil, false
+		}
+		var sum float64
+		for _, n := range nums {
+			sum += n
+		}
+		return sum / float64(len(nums)), true
+	case parser.FuncFastMax:
+		if len(nums) == 0 {
+			return nil, true
+		}
+		return slices.Max(nums), true
+	case parser.FuncFastMin:
+		if len(nums) == 0 {
+			return nil, true
+		}
+		return slices.Min(nums), true
+	default:
+		return nil, false
+	}
+}
+
+// collectNumbersFrom extracts numeric values from an already-collected slice
+// of gjson results. Returns (nil, false) if any element isn't a number.
+func collectNumbersFrom(values []gjson.Result) ([]float64, bool) {
+	nums := make([]float64, 0, len(values))
+	for _, v := range values {
+		if v.Type != gjson.Number {
+			return nil, false
+		}
+		nums = append(nums, v.Float())
+	}
+	return nums, true
 }
 
 func evalFuncExists(_ *gjson.Result, _ *parser.FuncFastPath) (result any, handled bool, err error) {

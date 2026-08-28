@@ -2,6 +2,8 @@ package gnata_test
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/recolabs/gnata"
@@ -128,6 +130,104 @@ func TestEvalWithCustomEnvironmentAndVars(t *testing.T) {
 	}
 	if got != "hello world" {
 		t.Fatalf("got %v, want %q", got, "hello world")
+	}
+}
+
+func TestEvalBytesWithCustomFuncs(t *testing.T) {
+	env := gnata.NewCustomEnv(map[string]gnata.CustomFunc{
+		"double": func(args []any, _ any) (any, error) {
+			n, err := args[0].(json.Number).Float64()
+			if err != nil {
+				return nil, err
+			}
+			return n * 2, nil
+		},
+	})
+	compiled, err := gnata.Compile(`$double(value)`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	got, err := compiled.EvalBytesWithCustomFuncs(context.Background(), []byte(`{"value": 21}`), env)
+	if err != nil {
+		t.Fatalf("EvalBytesWithCustomFuncs: %v", err)
+	}
+	if got != float64(42) {
+		t.Fatalf("got %v, want 42", got)
+	}
+}
+
+func TestEvalBytesWithCustomEnvironmentAndVars(t *testing.T) {
+	env := gnata.NewCustomEnvironment(map[string]gnata.CustomFunc{
+		"greet": func(args []any, _ any) (any, error) {
+			return "hello " + args[0].(string), nil
+		},
+	})
+	compiled, err := gnata.Compile(`$greet($who)`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	got, err := compiled.EvalBytesWithCustomEnvironmentAndVars(
+		context.Background(), []byte(`{}`), env, map[string]any{"who": "world"},
+	)
+	if err != nil {
+		t.Fatalf("EvalBytesWithCustomEnvironmentAndVars: %v", err)
+	}
+	if got != "hello world" {
+		t.Fatalf("got %v, want %q", got, "hello world")
+	}
+}
+
+// TestEvalBytesWithCustomFuncs_OverridesShadowedBuiltin verifies that a
+// custom function registered under a name that collides with a fast-path
+// builtin (here "sum") actually runs instead of the builtin gjson-based
+// implementation. The function fast path dispatches purely by source-text
+// name with no reference to the caller's environment, so EvalBytesWithCustomFuncs
+// must skip that tier entirely — otherwise the override would be silently
+// ignored whenever the fast path fires.
+func TestEvalBytesWithCustomFuncs_OverridesShadowedBuiltin(t *testing.T) {
+	env := gnata.NewCustomEnv(map[string]gnata.CustomFunc{
+		"sum": func(_ []any, _ any) (any, error) {
+			return "overridden", nil
+		},
+	})
+	compiled, err := gnata.Compile(`$sum(nums)`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !compiled.IsFuncFastPath() {
+		t.Fatal("expected IsFuncFastPath() == true so this test actually exercises the shadowing risk")
+	}
+	got, err := compiled.EvalBytesWithCustomFuncs(context.Background(), []byte(`{"nums": [1, 2, 3]}`), env)
+	if err != nil {
+		t.Fatalf("EvalBytesWithCustomFuncs: %v", err)
+	}
+	if got != "overridden" {
+		t.Fatalf("got %v, want %q (custom function override was ignored, builtin $sum ran instead)", got, "overridden")
+	}
+}
+
+// TestEvalBytesWithCustomFuncs_FastPathUnaffected checks that a pure-path
+// fast-path expression still resolves via gjson (not the custom env / decode
+// fallback) when evaluated through the new bytes+custom-env API — the fast
+// path never references custom functions, so it must behave identically
+// regardless of which environment the caller supplies.
+func TestEvalBytesWithCustomFuncs_FastPathUnaffected(t *testing.T) {
+	env := gnata.NewCustomEnv(nil)
+	compiled, err := gnata.Compile(`Account.Order.Product.SKU`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !compiled.IsFastPath() {
+		t.Fatal("expected IsFastPath() == true")
+	}
+	data := []byte(`{"Account":{"Order":[{"Product":[{"SKU":"a"},{"SKU":"b"}]}]}}`)
+	got, err := compiled.EvalBytesWithCustomFuncs(context.Background(), data, env)
+	if err != nil {
+		t.Fatalf("EvalBytesWithCustomFuncs: %v", err)
+	}
+	want := []any{"a", "b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
 	}
 }
 

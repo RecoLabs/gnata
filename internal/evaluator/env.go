@@ -12,6 +12,12 @@ import (
 // Matches the JSONata reference implementation's default.
 const defaultMaxCallDepth = 100
 
+// inlineBindingCap is the number of variable bindings an Environment stores
+// inline before spilling to a map. Most child environments created per-eval
+// bind only "$" (and occasionally one more, e.g. a lambda parameter or a
+// path index variable), so this avoids a map allocation on the common path.
+const inlineBindingCap = 2
+
 // callCounter tracks the current recursive call depth across all child environments.
 // A pointer is shared so all nested envs increment/decrement the same counter.
 type callCounter struct {
@@ -22,26 +28,39 @@ type callCounter struct {
 	maxSequence  int  // 0 = unlimited; guardrail set via WithSequence (error D2015)
 }
 
+// binding is one name/value pair stored inline on an Environment.
+type binding struct {
+	name  string
+	value any
+}
+
 // Environment holds variable bindings for an evaluation context.
 // It forms a linked chain for lexical scoping.
+//
+// Bindings are stored in the inline array until more than inlineBindingCap
+// accumulate, at which point they're moved into bindings (a lazily-allocated
+// map) and inline is no longer consulted. This keeps the common per-eval
+// child environment (bound to "$" and little else) allocation-free beyond
+// the Environment struct itself.
 type Environment struct {
 	parent   *Environment
-	bindings map[string]any
-	calls    *callCounter // shared call-depth counter; nil inherits from parent
+	inline   [inlineBindingCap]binding
+	inlineN  int
+	bindings map[string]any // nil until inline overflows
+	calls    *callCounter   // shared call-depth counter; nil inherits from parent
 	ctx      context.Context
 }
 
 // NewEnvironment creates a root environment with no bindings.
 func NewEnvironment() *Environment {
 	return &Environment{
-		bindings: make(map[string]any),
-		calls:    &callCounter{max: defaultMaxCallDepth},
+		calls: &callCounter{max: defaultMaxCallDepth},
 	}
 }
 
 // NewChildEnvironment creates a child scope inheriting from parent.
 func NewChildEnvironment(parent *Environment) *Environment {
-	env := &Environment{parent: parent, bindings: make(map[string]any)}
+	env := &Environment{parent: parent}
 	if parent != nil {
 		env.calls = parent.callCounter()
 	}
@@ -61,7 +80,29 @@ func (e *Environment) callCounter() *callCounter {
 
 // Bind sets a variable in this environment.
 func (e *Environment) Bind(name string, value any) {
+	if e.bindings != nil {
+		e.bindings[name] = value
+		return
+	}
+	for i := range e.inlineN {
+		if e.inline[i].name == name {
+			e.inline[i].value = value
+			return
+		}
+	}
+	if e.inlineN < inlineBindingCap {
+		e.inline[e.inlineN] = binding{name: name, value: value}
+		e.inlineN++
+		return
+	}
+	// Overflow: spill the inline bindings into a map and clear inline state
+	// so later lookups only need to check one representation.
+	e.bindings = make(map[string]any, inlineBindingCap+1)
+	for i := range e.inlineN {
+		e.bindings[e.inline[i].name] = e.inline[i].value
+	}
 	e.bindings[name] = value
+	e.inlineN = 0
 }
 
 // Parent returns the parent environment (nil for root environments).
@@ -72,7 +113,7 @@ func (e *Environment) Parent() *Environment {
 // Lookup looks up a variable, walking the parent chain.
 // Returns (nil, false) if not found.
 func (e *Environment) Lookup(name string) (any, bool) {
-	if v, ok := e.bindings[name]; ok {
+	if v, ok := e.LookupDirect(name); ok {
 		return v, true
 	}
 	if e.parent != nil {
@@ -87,7 +128,7 @@ func (e *Environment) Lookup(name string) (any, bool) {
 // parent of the binding's environment, not the parent of the starting env.
 // Returns (nil, nil, false) if not found.
 func (e *Environment) LookupWithEnv(name string) (any, *Environment, bool) {
-	if v, ok := e.bindings[name]; ok {
+	if v, ok := e.LookupDirect(name); ok {
 		return v, e, true
 	}
 	if e.parent != nil {
@@ -145,16 +186,21 @@ func (e *Environment) CheckSequence(n int) error {
 	return nil
 }
 
-// Clone creates a shallow copy of the environment, duplicating the bindings map
+// Clone creates a shallow copy of the environment, duplicating its bindings
 // but sharing the same parent and call counter references.
 func (e *Environment) Clone() *Environment {
 	child := &Environment{
-		bindings: make(map[string]any, len(e.bindings)),
-		parent:   e.parent,
-		calls:    e.calls,
-		ctx:      e.ctx,
+		parent: e.parent,
+		calls:  e.calls,
+		ctx:    e.ctx,
 	}
-	maps.Copy(child.bindings, e.bindings)
+	if e.bindings != nil {
+		child.bindings = make(map[string]any, len(e.bindings))
+		maps.Copy(child.bindings, e.bindings)
+		return child
+	}
+	child.inline = e.inline
+	child.inlineN = e.inlineN
 	return child
 }
 
@@ -179,15 +225,29 @@ func (e *Environment) SetContext(ctx context.Context) {
 
 // Range iterates over the bindings in this environment (not parents).
 func (e *Environment) Range(fn func(name string, val any)) {
-	for k, v := range e.bindings {
-		fn(k, v)
+	if e.bindings != nil {
+		for k, v := range e.bindings {
+			fn(k, v)
+		}
+		return
+	}
+	for i := range e.inlineN {
+		fn(e.inline[i].name, e.inline[i].value)
 	}
 }
 
 // LookupDirect checks only the direct bindings (no parent chain walk).
 func (e *Environment) LookupDirect(name string) (any, bool) {
-	v, ok := e.bindings[name]
-	return v, ok
+	if e.bindings != nil {
+		v, ok := e.bindings[name]
+		return v, ok
+	}
+	for i := range e.inlineN {
+		if e.inline[i].name == name {
+			return e.inline[i].value, true
+		}
+	}
+	return nil, false
 }
 
 // BuiltinFunction is a native Go function implementing a JSONata built-in.

@@ -31,6 +31,10 @@ type Expression struct {
 	// fastPath and paths cover pure-path expressions (e.g. "Account.Name").
 	fastPath bool
 	paths    []string
+	// pathSteps holds the un-escaped field names making up paths[0], used to
+	// walk the path step-by-step (auto-mapping through arrays) when the
+	// single dotted-path gjson lookup below can't resolve it directly.
+	pathSteps []string
 	// cmpFast covers simple path-vs-literal comparisons (e.g. `a.b = "x"`).
 	// Non-nil when the expression qualifies; nil otherwise.
 	cmpFast *parser.ComparisonFastPath
@@ -108,6 +112,7 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 		ast:        ast,
 		fastPath:   fp.IsFastPath,
 		paths:      fp.GJSONPaths,
+		pathSteps:  fp.PathSteps,
 		cmpFast:    fp.CmpFast,
 		funcFast:   fp.FuncFast,
 		guardrails: g,
@@ -274,29 +279,77 @@ func (e *Expression) Eval(ctx context.Context, data any) (result any, err error)
 	return e.evalCore(ctx, data, builtinEnv, nil)
 }
 
+// tryFastPathBytes attempts the pure-path (including the array-crossing
+// walker) and comparison gjson tiers, against either raw bytes or a
+// pre-destructured map (exactly one of data / mapData should be non-nil,
+// mirroring resolveGjsonPath). Neither tier can ever name a function, so
+// this is safe to share across every EvalBytes*/EvalMap variant regardless
+// of which vars or custom environment the caller passed — including callers
+// whose custom environment shadows a builtin name. handled is false when
+// neither tier could resolve the expression.
+func (e *Expression) tryFastPathBytes(data json.RawMessage, mapData map[string]json.RawMessage) (result any, handled bool, err error) {
+	if e.fastPath && len(e.paths) == 1 {
+		if res := resolveGjsonPath(data, mapData, e.paths[0]); res.Exists() {
+			return gjsonValueToAny(&res), true, nil
+		}
+		var v any
+		var ok bool
+		switch {
+		case data != nil:
+			v, ok = walkPureStepsBytes(e.pathSteps, data)
+		case mapData != nil:
+			v, ok = walkPureStepsMapBytes(e.pathSteps, mapData)
+		}
+		if ok {
+			return v, true, nil
+		}
+		// The walker couldn't resolve the path either — fall through to the
+		// full evaluator.
+	}
+	if e.cmpFast != nil {
+		if res, ok, evalErr := evalComparison(e.cmpFast, data, mapData); ok || evalErr != nil {
+			return res, true, evalErr
+		}
+	}
+	return nil, false, nil
+}
+
+// tryFuncFastBytes attempts the built-in-function fast path, against either
+// raw bytes or a pre-destructured map. Unlike tryFastPathBytes, this
+// dispatches purely on the function's source-text name (parser.FuncFastKind),
+// with no reference to which environment the caller actually passed — so it
+// is only safe for callers that always evaluate against the standard
+// builtinEnv (EvalBytes, EvalBytesWithVars, EvalMap). A caller-supplied
+// custom environment can register a function under a name that collides
+// with a fast-path-eligible builtin (e.g. "sum", "exists", "contains");
+// calling this tier for such a caller would silently run the builtin
+// instead of the caller's override. EvalBytesWithCustomFuncs and
+// EvalBytesWithCustomEnvironmentAndVars must not call this — they fall
+// straight through to the full evaluator for function-fast expressions,
+// which correctly consults the caller's environment.
+func (e *Expression) tryFuncFastBytes(data json.RawMessage, mapData map[string]json.RawMessage) (result any, handled bool, err error) {
+	if e.funcFast != nil {
+		if res, ok, evalErr := evalFunc(e.funcFast, data, mapData); ok || evalErr != nil {
+			return res, true, evalErr
+		}
+	}
+	return nil, false, nil
+}
+
 // EvalBytes evaluates the expression against raw JSON bytes.
 //
 //   - Pure-path fast path: zero-copy GJSON extraction (e.g. "Account.Name").
+//     When the path crosses one or more arrays (e.g. "Account.Order.Product.Price"),
+//     a step-by-step gjson walk auto-maps through them without decoding the document.
 //   - Comparison fast path: single gjson scan for path-vs-literal comparisons.
 //   - Complex expressions: json.Unmarshal + full AST evaluation.
 func (e *Expression) EvalBytes(ctx context.Context, data json.RawMessage) (result any, err error) {
 	defer recoverEvalPanic(&err)
-	if e.fastPath && len(e.paths) == 1 {
-		if res := gjson.GetBytes(data, e.paths[0]); res.Exists() {
-			return gjsonValueToAny(&res), nil
-		}
-		// gjson couldn't resolve the path — fall through to the full evaluator
-		// which handles auto-mapping through arrays correctly.
+	if res, handled, fastErr := e.tryFastPathBytes(data, nil); handled || fastErr != nil {
+		return res, fastErr
 	}
-	if e.cmpFast != nil {
-		if res, handled, evalErr := evalComparison(e.cmpFast, data, nil); handled || evalErr != nil {
-			return res, evalErr
-		}
-	}
-	if e.funcFast != nil {
-		if res, handled, evalErr := evalFunc(e.funcFast, data, nil); handled || evalErr != nil {
-			return res, evalErr
-		}
+	if res, handled, fastErr := e.tryFuncFastBytes(data, nil); handled || fastErr != nil {
+		return res, fastErr
 	}
 	v, err := evaluator.DecodeJSON(data)
 	if err != nil {
@@ -310,20 +363,11 @@ func (e *Expression) EvalBytes(ctx context.Context, data json.RawMessage) (resul
 // making it ideal for pre-destructured data (e.g. database columns, form fields).
 func (e *Expression) EvalMap(ctx context.Context, data map[string]json.RawMessage) (result any, err error) {
 	defer recoverEvalPanic(&err)
-	if e.fastPath && len(e.paths) == 1 {
-		if res := resolveGjsonPath(nil, data, e.paths[0]); res.Exists() {
-			return gjsonValueToAny(&res), nil
-		}
+	if res, handled, fastErr := e.tryFastPathBytes(nil, data); handled || fastErr != nil {
+		return res, fastErr
 	}
-	if e.cmpFast != nil {
-		if res, handled, evalErr := evalComparison(e.cmpFast, nil, data); handled || evalErr != nil {
-			return res, evalErr
-		}
-	}
-	if e.funcFast != nil {
-		if res, handled, evalErr := evalFunc(e.funcFast, nil, data); handled || evalErr != nil {
-			return res, evalErr
-		}
+	if res, handled, fastErr := e.tryFuncFastBytes(nil, data); handled || fastErr != nil {
+		return res, fastErr
 	}
 	v, err := evaluator.DecodeRawMap(data)
 	if err != nil {
@@ -334,31 +378,70 @@ func (e *Expression) EvalMap(ctx context.Context, data map[string]json.RawMessag
 
 // EvalBytesWithVars evaluates the expression against raw JSON bytes with extra
 // variable bindings. Combines the gjson fast-path cascade from EvalBytes with
-// the variable support from EvalWithVars. Fast-path expressions never reference
-// $variables (excluded at compile time), so the fast-path result is independent
-// of the variable map; only the full-eval fallback uses vars.
+// the variable support from EvalWithVars.
 func (e *Expression) EvalBytesWithVars(ctx context.Context, data json.RawMessage, vars map[string]any) (result any, err error) {
 	defer recoverEvalPanic(&err)
-	if e.fastPath && len(e.paths) == 1 {
-		if res := gjson.GetBytes(data, e.paths[0]); res.Exists() {
-			return gjsonValueToAny(&res), nil
-		}
+	if res, handled, fastErr := e.tryFastPathBytes(data, nil); handled || fastErr != nil {
+		return res, fastErr
 	}
-	if e.cmpFast != nil {
-		if res, handled, evalErr := evalComparison(e.cmpFast, data, nil); handled || evalErr != nil {
-			return res, evalErr
-		}
-	}
-	if e.funcFast != nil {
-		if res, handled, evalErr := evalFunc(e.funcFast, data, nil); handled || evalErr != nil {
-			return res, evalErr
-		}
+	if res, handled, fastErr := e.tryFuncFastBytes(data, nil); handled || fastErr != nil {
+		return res, fastErr
 	}
 	v, err := evaluator.DecodeJSON(data)
 	if err != nil {
 		return nil, err
 	}
 	return e.evalCore(ctx, v, builtinEnv, vars)
+}
+
+// EvalBytesWithCustomFuncs evaluates raw JSON bytes using a custom
+// environment. The env parameter should be created via NewCustomEnv.
+// Combines the pure-path/comparison gjson tiers from EvalBytes with the
+// custom environment support from EvalWithCustomFuncs. Deliberately skips
+// the function fast path (see tryFuncFastBytes): a caller-supplied
+// environment can register a function under a name that shadows a
+// fast-path-eligible builtin, and only the full evaluator consults env for
+// function resolution.
+func (e *Expression) EvalBytesWithCustomFuncs(
+	ctx context.Context, data json.RawMessage, env *evaluator.Environment,
+) (result any, err error) {
+	defer recoverEvalPanic(&err)
+	if res, handled, fastErr := e.tryFastPathBytes(data, nil); handled || fastErr != nil {
+		return res, fastErr
+	}
+	v, err := evaluator.DecodeJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	return e.evalCore(ctx, v, env, nil)
+}
+
+// EvalBytesWithCustomEnvironmentAndVars evaluates raw JSON bytes with a
+// pre-built custom environment and per-call variable bindings. Construct the
+// environment once via NewCustomEnvironment and reuse it across evaluations,
+// same as EvalWithCustomEnvironmentAndVars. Combines the pure-path/comparison
+// gjson tiers from EvalBytes with that decoded-input API's custom-function
+// and $-variable support. Deliberately skips the function fast path — see
+// EvalBytesWithCustomFuncs and tryFuncFastBytes for why.
+func (e *Expression) EvalBytesWithCustomEnvironmentAndVars(
+	ctx context.Context,
+	data json.RawMessage,
+	customEnv *CustomEnvironment,
+	vars map[string]any,
+) (result any, err error) {
+	defer recoverEvalPanic(&err)
+	if res, handled, fastErr := e.tryFastPathBytes(data, nil); handled || fastErr != nil {
+		return res, fastErr
+	}
+	v, err := evaluator.DecodeJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	parent := builtinEnv
+	if customEnv != nil {
+		parent = customEnv.env
+	}
+	return e.evalCore(ctx, v, parent, vars)
 }
 
 // resolveGjsonPath resolves a gjson path from either raw bytes or a pre-decoded map.
@@ -399,30 +482,48 @@ func evalComparison(
 	c *parser.ComparisonFastPath, data json.RawMessage, mapData map[string]json.RawMessage,
 ) (result any, handled bool, err error) {
 	lhs := resolveGjsonPath(data, mapData, c.LHSPath)
-	if !lhs.Exists() {
-		// gjson couldn't resolve the path. This could be because the path is
-		// truly undefined OR because an intermediate element is a JSON array
-		// (gjson doesn't auto-map through arrays, but JSONata does).
-		// Fall back to the full evaluator which handles both cases correctly.
+	if lhs.Exists() {
+		match, ok := matchComparison(&lhs, c)
+		return match, ok, nil
+	}
+	// gjson couldn't resolve the path. This could be because the path is
+	// truly undefined OR because an intermediate element is a JSON array
+	// (gjson doesn't auto-map through arrays, but JSONata does). Walk the
+	// path step-by-step so the array case still avoids a full document decode.
+	if len(c.LHSPathSteps) == 0 {
 		return nil, false, nil
 	}
-
-	if lhs.Type == gjson.JSON {
-		raw := lhs.Raw
-		if raw != "" && raw[0] == '[' {
-			// JSON array: JSONata auto-maps comparisons element-wise.
-			// For null checks we can safely short-circuit (arrays are never null).
-			if c.RHSKind == parser.RHSKindNull {
-				return c.Op == "!=", true, nil
-			}
-			// For all other comparisons, fall back to the full evaluator.
-			return nil, false, nil
-		}
-		// JSON object: never equal to any primitive literal.
+	var values []gjson.Result
+	var ok bool
+	switch {
+	case data != nil:
+		values, ok = walkPureStepsValues(c.LHSPathSteps, data)
+	case mapData != nil:
+		values, ok = walkPureStepsMapValues(c.LHSPathSteps, mapData)
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	if len(values) != 1 {
+		// A resolved sequence — whether flattened to more than one element,
+		// or to zero elements from a field present as an empty array — is
+		// never structurally equal to a scalar literal.
 		return c.Op == "!=", true, nil
 	}
+	match, ok := matchComparison(&values[0], c)
+	return match, ok, nil
+}
 
-	var match bool
+// matchComparison evaluates a single resolved gjson value against a
+// pre-compiled comparison literal. JSON arrays and objects are never equal
+// to a primitive literal regardless of the literal's type; JSONata's
+// equality operator does structural, not any-element, comparison.
+// ok is false only for an unrecognized RHSKind, which never occurs today
+// since the parser only ever produces the four known kinds.
+func matchComparison(lhs *gjson.Result, c *parser.ComparisonFastPath) (match, ok bool) {
+	if lhs.Type == gjson.JSON {
+		return c.Op == "!=", true
+	}
 	switch c.RHSKind {
 	case parser.RHSKindString:
 		match = lhs.Type == gjson.String && lhs.String() == c.RHSString
@@ -444,12 +545,12 @@ func evalComparison(
 	case parser.RHSKindNull:
 		match = lhs.Type == gjson.Null
 	default:
-		return nil, false, nil
+		return false, false
 	}
 	if c.Op == "!=" {
 		match = !match
 	}
-	return match, true, nil
+	return match, true
 }
 
 // gjsonValueToAny converts a gjson.Result to a native Go value.
