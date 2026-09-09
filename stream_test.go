@@ -387,13 +387,33 @@ func (h *testMetricsHook) OnCacheHit(_ string)  { h.hits++ }
 func (h *testMetricsHook) OnCacheMiss(_ string) { h.misses++ }
 func (h *testMetricsHook) OnEviction()          { h.evictions++ }
 
-// TestStreamEvaluator_EvalMap verifies that EvalMap produces identical results
-// to EvalMany for the same data and expressions.
-func TestStreamEvaluator_EvalMap(t *testing.T) {
-	rawData := json.RawMessage(streamTestData)
+func assertEvalManyParity(t *testing.T, expr string, want any, eval func(*gnata.StreamEvaluator, int) (any, error)) {
+	t.Helper()
+	se := gnata.NewStreamEvaluator(nil)
+	idx, err := se.Compile(expr)
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", expr, err)
+	}
 
+	many, err := se.EvalMany(context.Background(), json.RawMessage(streamTestData), "", []int{idx})
+	if err != nil {
+		t.Fatalf("EvalMany: %v", err)
+	}
+	got, err := eval(se, idx)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if !gnata.DeepEqual(many[0], got) {
+		t.Errorf("EvalMany=%v (%T), other=%v (%T)", many[0], many[0], got, got)
+	}
+	if !gnata.DeepEqual(got, want) {
+		t.Errorf("want %v (%T), got %v (%T)", want, want, got, got)
+	}
+}
+
+func TestStreamEvaluator_EvalMap(t *testing.T) {
 	var dataMap map[string]json.RawMessage
-	if err := json.Unmarshal(rawData, &dataMap); err != nil {
+	if err := json.Unmarshal(json.RawMessage(streamTestData), &dataMap); err != nil {
 		t.Fatalf("unmarshal to map: %v", err)
 	}
 
@@ -412,31 +432,13 @@ func TestStreamEvaluator_EvalMap(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			se := gnata.NewStreamEvaluator(nil)
-			idx, err := se.Compile(tc.expr)
-			if err != nil {
-				t.Fatalf("Compile(%q): %v", tc.expr, err)
-			}
-
-			evalManyResult, err := se.EvalMany(context.Background(), rawData, "", []int{idx})
-			if err != nil {
-				t.Fatalf("EvalMany: %v", err)
-			}
-
-			evalMapResult, err := se.EvalMap(context.Background(), dataMap, "", []int{idx})
-			if err != nil {
-				t.Fatalf("EvalMap: %v", err)
-			}
-
-			if !gnata.DeepEqual(evalManyResult[0], evalMapResult[0]) {
-				t.Errorf("EvalMany=%v (%T), EvalMap=%v (%T)",
-					evalManyResult[0], evalManyResult[0],
-					evalMapResult[0], evalMapResult[0])
-			}
-			if !gnata.DeepEqual(evalMapResult[0], tc.want) {
-				t.Errorf("want %v (%T), got %v (%T)",
-					tc.want, tc.want, evalMapResult[0], evalMapResult[0])
-			}
+			assertEvalManyParity(t, tc.expr, tc.want, func(se *gnata.StreamEvaluator, idx int) (any, error) {
+				results, err := se.EvalMap(context.Background(), dataMap, "", []int{idx})
+				if err != nil {
+					return nil, err
+				}
+				return results[0], nil
+			})
 		})
 	}
 }
@@ -543,6 +545,140 @@ func TestStreamEvaluator_EvalMap_FastPaths(t *testing.T) {
 				t.Errorf("expected fast path for %q but MetricsHook reported 0 fast paths", tc.expr)
 			}
 		})
+	}
+}
+
+func streamTestMap(t *testing.T) map[string]any {
+	t.Helper()
+	var data map[string]any
+	if err := json.Unmarshal([]byte(streamTestData), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return data
+}
+
+func TestStreamEvaluator_EvalPreparsed(t *testing.T) {
+	data := streamTestMap(t)
+
+	tests := []struct {
+		name string
+		expr string
+		want any
+	}{
+		{"path lookup", `data.action`, "grant-access"},
+		{"comparison", `data.user_type = 2`, true},
+		{"boolean field", `metadata.is_admin`, true},
+		{"greater than", `data.user_type > 1`, true},
+		{"nested path", `data.user_type`, float64(2)},
+		{"and expression", `data.user_type = 2 and metadata.is_admin = true`, true},
+		{"exists present", `$exists(data.action)`, true},
+		{"exists missing", `$exists(nonexistent.field)`, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertEvalManyParity(t, tc.expr, tc.want, func(se *gnata.StreamEvaluator, idx int) (any, error) {
+				results, err := se.EvalPreparsed(context.Background(), data, "", []int{idx})
+				if err != nil {
+					return nil, err
+				}
+				return results[0], nil
+			})
+		})
+	}
+}
+
+func TestStreamEvaluator_EvalPreparsed_MultipleExprs(t *testing.T) {
+	data := streamTestMap(t)
+
+	se := gnata.NewStreamEvaluator(nil)
+	idx0, _ := se.Compile(`data.action`)
+	idx1, _ := se.Compile(`data.user_type = 2`)
+	idx2, _ := se.Compile(`$exists(data.action)`)
+
+	results, err := se.EvalPreparsed(context.Background(), data, "schema", []int{idx0, idx1, idx2})
+	if err != nil {
+		t.Fatalf("EvalPreparsed: %v", err)
+	}
+
+	if results[0] != "grant-access" {
+		t.Errorf("result[0]: want grant-access, got %v", results[0])
+	}
+	if results[1] != true {
+		t.Errorf("result[1]: want true, got %v", results[1])
+	}
+	if results[2] != true {
+		t.Errorf("result[2]: want true, got %v", results[2])
+	}
+}
+
+func TestStreamEvaluator_EvalPreparsed_NilAndEmpty(t *testing.T) {
+	se := gnata.NewStreamEvaluator(nil)
+	idx, _ := se.Compile(`foo`)
+
+	results, err := se.EvalPreparsed(context.Background(), nil, "", []int{idx})
+	if err != nil {
+		t.Fatalf("EvalPreparsed(nil): %v", err)
+	}
+	if results[0] != nil {
+		t.Errorf("nil data: want nil result, got %v", results[0])
+	}
+
+	results, err = se.EvalPreparsed(context.Background(), map[string]any{}, "", []int{idx})
+	if err != nil {
+		t.Fatalf("EvalPreparsed(empty): %v", err)
+	}
+	if results[0] != nil {
+		t.Errorf("empty map: want nil result, got %v", results[0])
+	}
+
+	results, err = se.EvalPreparsed(context.Background(), map[string]any{}, "", nil)
+	if err != nil {
+		t.Fatalf("EvalPreparsed(no indices): %v", err)
+	}
+	if results != nil {
+		t.Errorf("no indices: want nil results, got %v", results)
+	}
+}
+
+func TestStreamEvaluator_EvalPreparsed_SkipsFastPaths(t *testing.T) {
+	data := streamTestMap(t)
+	hook := &testMetricsHook{}
+	se := gnata.NewStreamEvaluator(nil, gnata.WithMetricsHook(hook))
+	idx, err := se.Compile(`$exists(data.action)`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	results, err := se.EvalPreparsed(context.Background(), data, "s", []int{idx})
+	if err != nil {
+		t.Fatalf("EvalPreparsed: %v", err)
+	}
+	if results[0] != true {
+		t.Errorf("want true, got %v", results[0])
+	}
+	if hook.fastPaths != 0 {
+		t.Errorf("EvalPreparsed must not use GJSON fast paths, got %d", hook.fastPaths)
+	}
+}
+
+func TestStreamEvaluator_EvalPreparsed_CustomFuncs(t *testing.T) {
+	se := gnata.NewStreamEvaluator(nil, gnata.WithCustomFunctions(map[string]gnata.CustomFunc{
+		"greet": func(args []any, _ any) (any, error) {
+			return "hello " + args[0].(string), nil
+		},
+	}))
+	idx, err := se.Compile(`$greet(name)`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	results, err := se.EvalPreparsed(context.Background(), map[string]any{"name": "world"}, "", []int{idx})
+	if err != nil {
+		t.Fatalf("EvalPreparsed: %v", err)
+	}
+	if results[0] != "hello world" {
+		t.Errorf("want %q, got %v", "hello world", results[0])
 	}
 }
 
