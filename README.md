@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/RecoLabs/gnata/actions/workflows/ci.yml"><img src="https://github.com/RecoLabs/gnata/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/RecoLabs/gnata/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/coverage-82.7%25-brightgreen" alt="Coverage" /></a>
   <a href="https://pkg.go.dev/github.com/recolabs/gnata"><img src="https://pkg.go.dev/badge/github.com/recolabs/gnata.svg" alt="Go Reference" /></a>
   <a href="https://github.com/RecoLabs/gnata/blob/main/go.mod"><img src="https://img.shields.io/github/go-mod/go-version/RecoLabs/gnata" alt="Go version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>

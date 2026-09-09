@@ -1,6 +1,7 @@
 *.wasm
 .secret
 .DS_Store
+coverage.out
 
 # npm package build artifacts
 npm/dist/

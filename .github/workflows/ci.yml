@@ -13,7 +13,12 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: go test -race -count=1 ./...
+      - name: Test
+        run: |
+          go test -race -count=1 -coverprofile=coverage.out -coverpkg=./... ./...
+          go tool cover -func=coverage.out
+          total=$(go tool cover -func=coverage.out | awk '/^total:/{gsub(/%/,"",$NF); print $NF}')
+          awk -v t="$total" 'BEGIN { if (t+0 < 80) { printf "coverage %.1f%% is below 80%%\n", t; exit 1 } }'
   lint:
     runs-on: ubuntu-latest
     steps:
