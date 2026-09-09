@@ -244,6 +244,21 @@ func (se *StreamEvaluator) EvalMap(
 	return se.evalInternal(ctx, nil, nil, data, nil, schemaKey, exprIndices)
 }
 
+// EvalPreparsed evaluates the specified expressions against an already-decoded
+// JSON-like Go value (for example map[string]any or []any).
+//   - data: pre-parsed input value. Skips the JSON decoding step used by EvalMany.
+//   - schemaKey: external key identifying the event schema. On first encounter, builds
+//     and caches a GroupPlan. Subsequent calls are lock-free. Pass "" to disable caching.
+//   - exprIndices: which compiled expressions to evaluate.
+//
+// Returns results[i] = evaluation of expressions[exprIndices[i]], or nil for undefined.
+// GJSON fast paths require raw JSON bytes and are not used; evaluation uses the AST.
+func (se *StreamEvaluator) EvalPreparsed(
+	ctx context.Context, data any, schemaKey string, exprIndices []int,
+) ([]any, error) {
+	return se.evalInternal(ctx, nil, data, nil, nil, schemaKey, exprIndices)
+}
+
 func (se *StreamEvaluator) evalInternal(
 	ctx context.Context,
 	data json.RawMessage,
@@ -337,6 +352,11 @@ func (b *evalBatch) evalSingleExpr(ctx context.Context, i, idx int, expr *Expres
 // Returns (result, true, nil) on success, (nil, false, nil) to signal fallback,
 // or (nil, true, err) on error.
 func (b *evalBatch) tryFastPaths(i, idx int, start time.Time) (result any, done bool, err error) {
+	// $exists treats a failed byte walk as handled false; skip when there are no bytes.
+	if b.data == nil && b.mapData == nil {
+		return nil, false, nil
+	}
+
 	if b.plan != nil && i < len(b.plan.ExprFastPath) && b.plan.ExprFastPath[i] && b.plan.FastPaths[i] != "" {
 		r := resolveGjsonPath(b.data, b.mapData, b.plan.FastPaths[i])
 		if r.Exists() {
