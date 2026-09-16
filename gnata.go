@@ -191,6 +191,8 @@ func NormalizeValue(v any) any {
 		return out
 	case []any:
 		return normalizeSlice(val)
+	case evaluator.ConsArray:
+		return normalizeSlice([]any(val))
 	}
 	return v
 }
@@ -270,7 +272,7 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 	if seq, ok := result.(*evaluator.Sequence); ok {
 		result = evaluator.CollapseSequence(seq)
 	}
-	return result, nil
+	return evaluator.StripCons(result), nil
 }
 
 // Eval evaluates the expression against pre-parsed Go data (map[string]any, []any, scalar, nil).

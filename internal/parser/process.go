@@ -6,6 +6,7 @@ package parser
 // Current transformations:
 //   - Flattens nested binary(".") nodes into path nodes with Steps slices.
 //   - Propagates KeepSingletonArray when any step has KeepArray=true.
+//   - Marks last-step array constructors as ConsArray (jsonata-js consarray).
 //   - Attaches group expressions from path-step binary("{") to the path.
 //   - Recursively processes all child nodes.
 func ProcessAST(node *Node) (*Node, error) {
@@ -82,6 +83,7 @@ func processDotBinary(node *Node) (*Node, error) {
 		Pos:   node.Pos,
 		Group: node.Group, // propagate group-by expression (A.B{key:val})
 	}
+	markUnaryArraySteps(steps)
 
 	// Propagate KeepSingletonArray when any step (or a subscript step's left side)
 	// has KeepArray=true. This covers both A[].B and A[][filter].B patterns.
@@ -223,8 +225,28 @@ func processBlockChildren(node *Node) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		part := node.Expressions[i]
+		if part.ConsArray || (part.Type == NodePath && len(part.Steps) > 0 && part.Steps[0].ConsArray) {
+			node.ConsArray = true
+		}
 	}
 	return node, nil
+}
+
+// markUnaryArraySteps flags first/last path steps that are array constructors
+// so evaluation can treat them as cons arrays (jsonata-js processAST).
+func markUnaryArraySteps(steps []*Node) {
+	if len(steps) == 0 {
+		return
+	}
+	last := steps[len(steps)-1]
+	if isUnaryArrayCtor(last) {
+		last.ConsArray = true
+	}
+}
+
+func isUnaryArrayCtor(n *Node) bool {
+	return n != nil && n.Type == NodeUnary && n.Value == "["
 }
 
 // processFunctionChildren recursively processes a function/partial node.
@@ -336,6 +358,7 @@ func processPathChildren(node *Node) (*Node, error) {
 			node.KeepSingletonArray = true
 		}
 	}
+	markUnaryArraySteps(node.Steps)
 	// Process group-by key/value pairs.
 	if node.Group != nil {
 		for i, pair := range node.Group.Pairs {

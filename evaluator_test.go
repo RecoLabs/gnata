@@ -619,3 +619,38 @@ func TestRegressionBytes(t *testing.T) {
 		})
 	}
 }
+
+func TestConsArrayPathFilter(t *testing.T) {
+	expr := `(tags.[$split($, "=")])[$[0] = "b"].$[1]`
+	tests := []struct {
+		desc string
+		tags []any
+		want any
+	}{{
+		desc: "one match among two tags",
+		tags: []any{"a=20", "b=114"},
+		want: "114",
+	}, {
+		desc: "two matches",
+		tags: []any{"b=1", "b=2"},
+		want: []any{"1", "2"},
+	}, {
+		desc: "single matching tag",
+		tags: []any{"b=114"},
+		// Inner path collapses to one cons array; the filter then iterates
+		// that array's elements (jsonata-js evaluateFilter), so .$[1] is undefined.
+		want: nil,
+	}, {
+		desc: "no match",
+		tags: []any{"a=20", "c=3"},
+		want: nil,
+	}}
+	for _, tC := range tests {
+		t.Run(tC.desc, func(t *testing.T) {
+			got := evalExpr(t, expr, map[string]any{"tags": tC.tags})
+			if !gnata.DeepEqual(got, tC.want) {
+				t.Fatalf("got %#v (%T), want %#v (%T)", got, got, tC.want, tC.want)
+			}
+		})
+	}
+}

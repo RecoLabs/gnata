@@ -23,6 +23,60 @@ func IsNull(v any) bool {
 	return ok
 }
 
+// ConsArray is a JSONata constructed array (`[...]` used as a path step).
+// It is indexable like []any, but it is one value in a path: a later step
+// does not auto-map into its elements the way it maps a result sequence.
+type ConsArray []any
+
+// AsArray returns the slice behind a []any or ConsArray.
+func AsArray(v any) ([]any, bool) {
+	switch a := v.(type) {
+	case []any:
+		return a, true
+	case ConsArray:
+		return []any(a), true
+	}
+	return nil, false
+}
+
+// StripCons converts ConsArray values to []any, recursively. Used at the
+// public Eval boundary so callers see ordinary slices.
+func StripCons(v any) any {
+	switch a := v.(type) {
+	case ConsArray:
+		return stripConsSlice([]any(a))
+	case []any:
+		return stripConsSliceIfNeeded(a)
+	default:
+		return v
+	}
+}
+
+func stripConsSlice(s []any) []any {
+	out := make([]any, len(s))
+	for i, e := range s {
+		out[i] = StripCons(e)
+	}
+	return out
+}
+
+func stripConsSliceIfNeeded(s []any) []any {
+	if slices.ContainsFunc(s, containsCons) {
+		return stripConsSlice(s)
+	}
+	return s
+}
+
+func containsCons(v any) bool {
+	switch a := v.(type) {
+	case ConsArray:
+		return true
+	case []any:
+		return slices.ContainsFunc(a, containsCons)
+	}
+	return false
+}
+
 // Sequence is the core multi-value container used throughout evaluation.
 // It represents an ordered collection of values that may be collapsed to a
 // single value or remain as a sequence depending on context.
@@ -91,9 +145,9 @@ func CollapseAndKeep(result any, keepArray bool) any {
 	return result
 }
 
-// IsArray returns true for []any values (not *Sequence).
+// IsArray returns true for []any and ConsArray values (not *Sequence).
 func IsArray(v any) bool {
-	_, ok := v.([]any)
+	_, ok := AsArray(v)
 	return ok
 }
 
@@ -163,18 +217,24 @@ func ToBoolean(v any) bool {
 	case map[string]any:
 		return len(val) > 0
 	case []any:
-		switch len(val) {
-		case 0:
-			return false
-		case 1:
-			return ToBoolean(val[0])
-		default:
-			return slices.ContainsFunc(val, ToBoolean)
-		}
+		return arrayToBoolean(val)
+	case ConsArray:
+		return arrayToBoolean(val)
 	case *Sequence:
 		return ToBoolean(CollapseSequence(val))
 	}
 	return false
+}
+
+func arrayToBoolean(val []any) bool {
+	switch len(val) {
+	case 0:
+		return false
+	case 1:
+		return ToBoolean(val[0])
+	default:
+		return slices.ContainsFunc(val, ToBoolean)
+	}
 }
 
 func normalizeNumber(v any) any {
@@ -217,13 +277,14 @@ func DeepEqual(a, b any) bool { //nolint:gocyclo // type-switch fast path adds b
 	case string:
 		bv, ok := b.(string)
 		return ok && av == bv
-	case []any:
-		bv, ok := b.([]any)
-		if !ok || len(av) != len(bv) {
+	case []any, ConsArray:
+		bv, ok := AsArray(b)
+		avSlice, _ := AsArray(av)
+		if !ok || len(avSlice) != len(bv) {
 			return false
 		}
-		for i := range av {
-			if !DeepEqual(av[i], bv[i]) {
+		for i := range avSlice {
+			if !DeepEqual(avSlice[i], bv[i]) {
 				return false
 			}
 		}

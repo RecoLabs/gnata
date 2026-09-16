@@ -162,7 +162,7 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 		// distinguishes "nothing found" (returns nil) from "field exists
 		// with empty array value" (returns []any{}), so we skip the
 		// blanket nil-ification for those step types.
-		if arr, ok := result.([]any); ok && len(arr) == 0 && prevWasMapper {
+		if arr, ok := AsArray(result); ok && len(arr) == 0 && prevWasMapper {
 			if step.Type != parser.NodeName && step.Type != parser.NodeString {
 				return nil, nil
 			}
@@ -176,6 +176,8 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 		switch v := result.(type) {
 		case []any:
 			return v, nil
+		case ConsArray:
+			return []any(v), nil
 		default:
 			if result != nil {
 				return []any{result}, nil
@@ -513,6 +515,8 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 		switch v := result.(type) {
 		case []any:
 			return v, nil
+		case ConsArray:
+			return []any(v), nil
 		default:
 			if result != nil {
 				return []any{result}, nil
@@ -796,6 +800,10 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 	}
 
 	switch rv := result.(type) {
+	case ConsArray:
+		for j, elem := range rv {
+			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
+		}
 	case []any:
 		for j, elem := range rv {
 			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
@@ -805,7 +813,7 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 		if collapsed == nil {
 			return
 		}
-		if arr, ok := collapsed.([]any); ok {
+		if arr, ok := AsArray(collapsed); ok {
 			for j, elem := range arr {
 				*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
 			}
@@ -828,6 +836,10 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 		return e
 	}
 	switch rv := result.(type) {
+	case ConsArray:
+		for j, elem := range rv {
+			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
+		}
 	case []any:
 		for j, elem := range rv {
 			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
@@ -837,7 +849,7 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 		if collapsed == nil {
 			return
 		}
-		if arr, ok := collapsed.([]any); ok {
+		if arr, ok := AsArray(collapsed); ok {
 			for j, elem := range arr {
 				*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
 			}
@@ -1058,11 +1070,8 @@ func evalPathStep(
 		return Eval(step, input, env)
 	}
 
-	// For all other step types (subscripts with field-name left, function calls, etc.),
-	// map the step over each element of an array input.
-	arr, ok := input.([]any)
+	arr, ok := pathStepArray(input)
 	if !ok {
-		// Single-item path context for function call: check if lambda context-prepend needed.
 		if step.Type == parser.NodeFunction {
 			return evalPathFunctionStep(step, input, env)
 		}
@@ -1109,6 +1118,16 @@ func evalPathStep(
 	return CollapseSequence(seq), nil
 }
 
+// pathStepArray returns the array to map a step over. A ConsArray is
+// deliberately excluded: it is one constructed value, not a sequence of
+// several context values, so any step receiving it as input evaluates
+// once against the whole array (matching jsonata-js, where a cons-flagged
+// array is never re-expanded into the outer per-element iteration).
+func pathStepArray(input any) ([]any, bool) {
+	arr, ok := input.([]any)
+	return arr, ok
+}
+
 // evalPathStepDescendant evaluates a ** path step. It must include the input
 // itself in the search so that a later step can match at the current level
 // too, not just at deeper ones. Arrays are transparent containers: their
@@ -1117,7 +1136,7 @@ func evalPathStep(
 // auto-map through both the array and its individually-included elements.
 func evalPathStepDescendant(input any, env *Environment) (any, error) {
 	seq := CreateSequence()
-	if _, isArr := input.([]any); !isArr {
+	if _, isArr := AsArray(input); !isArr {
 		appendToSequence(seq, input)
 	}
 	appendToSequence(seq, descendantLookup(input))

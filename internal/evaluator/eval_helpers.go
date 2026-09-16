@@ -305,6 +305,8 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 			return seq.Values[0], nil
 		}
 		return CollapseSequence(seq), nil
+	case ConsArray:
+		return evalName(node, []any(v), nil)
 	case *Sequence:
 		return evalName(node, CollapseSequence(v), nil)
 	default:
@@ -357,6 +359,8 @@ func evalWildcard(_ *parser.Node, input any, env *Environment) (any, error) {
 			return nil, err
 		}
 		return CollapseSequence(seq), nil
+	case ConsArray:
+		return evalWildcard(nil, []any(v), env)
 	default:
 		return nil, nil
 	}

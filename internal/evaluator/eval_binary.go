@@ -226,8 +226,8 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 		if v == nil {
 			return []any{}
 		}
-		if arr, ok := v.([]any); ok {
-			return arr
+		if _, ok := AsArray(v); ok {
+			return v
 		}
 		return []any{v}
 	}
@@ -309,6 +309,8 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 		return nil, nil, nil
 	}
 	switch v := left.(type) {
+	case ConsArray:
+		items = []any(v)
 	case []any:
 		items = v
 	case *Sequence:
@@ -316,7 +318,7 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 		if collapsed == nil {
 			return nil, nil, nil
 		}
-		if arr, ok := collapsed.([]any); ok {
+		if arr, ok := AsArray(collapsed); ok {
 			items = arr
 		} else {
 			items = []any{collapsed}
