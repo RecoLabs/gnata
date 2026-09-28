@@ -189,8 +189,7 @@ func formatIntegerDecimal(n int64, picture string) (string, error) {
 	}
 	var grpInfos []grpInfo
 	digitFromRight := 0
-	for i := len(runes) - 1; i >= 0; i-- {
-		c := runes[i]
+	for _, c := range slices.Backward(runes) {
 		if c == '#' || (c >= '0' && c <= '9') || isUnicodeDigit(c) {
 			digitFromRight++
 		} else if digitFromRight > 0 {

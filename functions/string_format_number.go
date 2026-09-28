@@ -307,8 +307,7 @@ func parseIntPart(intPart []rune, fc fmtChars, sp *subPicture) error {
 	}
 
 	intDigitCountFromRight := 0
-	for i := len(intPart) - 1; i >= 0; i-- {
-		c := intPart[i]
+	for _, c := range slices.Backward(intPart) {
 		if isDigitChar(c, fc) || c == fc.digit {
 			intDigitCountFromRight++
 		} else if c == fc.groupingSep {
