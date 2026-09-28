@@ -18,6 +18,9 @@ go test ./...
 # Run a single test
 go test -run TestName
 
+# Run tests as js/wasm under Node (browser parity)
+env -i PATH="$(go env GOROOT)/lib/wasm:$PATH" HOME="$HOME" GOOS=js GOARCH=wasm go test ./...
+
 # Run benchmarks
 go test -bench=. -benchmem
 ```

@@ -19,6 +19,20 @@ jobs:
           go tool cover -func=coverage.out
           total=$(go tool cover -func=coverage.out | awk '/^total:/{gsub(/%/,"",$NF); print $NF}')
           awk -v t="$total" 'BEGIN { if (t+0 < 80) { printf "coverage %.1f%% is below 80%%\n", t; exit 1 } }'
+  test-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Test (js/wasm)
+        # wasm_exec rejects oversized environments, so run with a minimal one.
+        run: env -i PATH="$(go env GOROOT)/lib/wasm:$PATH" HOME="$HOME" GOOS=js GOARCH=wasm go test -count=1 ./...
   lint:
     runs-on: ubuntu-latest
     steps:

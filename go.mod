@@ -2,6 +2,8 @@ module github.com/recolabs/gnata
 
 go 1.25.6
 
+toolchain go1.27.1
+
 require github.com/tidwall/gjson v1.18.0
 
 require (
