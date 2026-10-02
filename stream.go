@@ -401,6 +401,20 @@ func (b *evalBatch) tryFastPaths(i, idx int, start time.Time) (result any, done 
 		}
 	}
 
+	if b.plan != nil && i < len(b.plan.BoolFast) && b.plan.BoolFast[i] != nil {
+		if result, handled, err := evalBool(b.plan.BoolFast[i], b.data, b.mapData); err != nil {
+			if b.se.metrics != nil {
+				b.se.metrics.OnEval(idx, true, time.Since(start), err)
+			}
+			return nil, true, err
+		} else if handled {
+			if b.se.metrics != nil {
+				b.se.metrics.OnEval(idx, true, time.Since(start), nil)
+			}
+			return result, true, nil
+		}
+	}
+
 	return nil, false, nil
 }
 
@@ -477,8 +491,9 @@ func buildPlan(expressions []*Expression, exprIndices []int, shadowed map[string
 		ExprFastPath: make([]bool, len(exprIndices)),
 		CmpFast:      make([]*parser.ComparisonFastPath, len(exprIndices)),
 		FuncFast:     make([]*parser.FuncFastPath, len(exprIndices)),
+		BoolFast:     make([]*parser.BoolFastPath, len(exprIndices)),
 	}
-	hasPure, hasCmp, hasFunc := false, false, false
+	hasPure, hasCmp, hasFunc, hasBool, needsDecode := false, false, false, false, false
 	for i, idx := range exprIndices {
 		if idx < 0 || idx >= len(expressions) {
 			continue
@@ -498,6 +513,11 @@ func buildPlan(expressions []*Expression, exprIndices []int, shadowed map[string
 		case expr.funcFast != nil && !isShadowed(shadowed, expr.funcFast.FunctionName()):
 			plan.FuncFast[i] = expr.funcFast
 			hasFunc = true
+		case expr.boolFast != nil && !usesShadowedFunction(expr.boolFast, shadowed):
+			plan.BoolFast[i] = expr.boolFast
+			hasBool = true
+		default:
+			needsDecode = true
 		}
 	}
 	if !hasPure {
@@ -510,10 +530,26 @@ func buildPlan(expressions []*Expression, exprIndices []int, shadowed map[string
 	if !hasFunc {
 		plan.FuncFast = nil
 	}
+	if !hasBool || needsDecode {
+		plan.BoolFast = nil
+	}
 	return plan
 }
 
 func isShadowed(shadowed map[string]struct{}, name string) bool {
 	_, ok := shadowed[name]
 	return ok
+}
+
+func usesShadowedFunction(b *parser.BoolFastPath, shadowed map[string]struct{}) bool {
+	if b == nil || len(shadowed) == 0 {
+		return false
+	}
+	if b.Op == parser.BoolFastNot && isShadowed(shadowed, "not") {
+		return true
+	}
+	if b.Func != nil && isShadowed(shadowed, b.Func.FunctionName()) {
+		return true
+	}
+	return usesShadowedFunction(b.Left, shadowed) || usesShadowedFunction(b.Right, shadowed)
 }

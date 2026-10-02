@@ -41,6 +41,7 @@ type Expression struct {
 	// funcFast covers built-in function calls on a pure path (e.g. `$exists(a.b)`).
 	// Non-nil when the expression qualifies; nil otherwise.
 	funcFast *parser.FuncFastPath
+	boolFast *parser.BoolFastPath
 	// guardrails holds optional resource limits set via Compile options.
 	// nil when Compile was called without options (default, unlimited behavior).
 	guardrails *guardrails
@@ -115,6 +116,7 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 		pathSteps:  fp.PathSteps,
 		cmpFast:    fp.CmpFast,
 		funcFast:   fp.FuncFast,
+		boolFast:   fp.BoolFast,
 		guardrails: g,
 	}, nil
 }
@@ -291,18 +293,7 @@ func (e *Expression) Eval(ctx context.Context, data any) (result any, err error)
 // neither tier could resolve the expression.
 func (e *Expression) tryFastPathBytes(data json.RawMessage, mapData map[string]json.RawMessage) (result any, handled bool, err error) {
 	if e.fastPath && len(e.paths) == 1 {
-		if res := resolveGjsonPath(data, mapData, e.paths[0]); res.Exists() {
-			return gjsonValueToAny(&res), true, nil
-		}
-		var v any
-		var ok bool
-		switch {
-		case data != nil:
-			v, ok = walkPureStepsBytes(e.pathSteps, data)
-		case mapData != nil:
-			v, ok = walkPureStepsMapBytes(e.pathSteps, mapData)
-		}
-		if ok {
+		if v, ok := resolvePurePath(e.paths[0], e.pathSteps, data, mapData); ok {
 			return v, true, nil
 		}
 		// The walker couldn't resolve the path either — fall through to the
@@ -332,6 +323,11 @@ func (e *Expression) tryFastPathBytes(data json.RawMessage, mapData map[string]j
 func (e *Expression) tryFuncFastBytes(data json.RawMessage, mapData map[string]json.RawMessage) (result any, handled bool, err error) {
 	if e.funcFast != nil {
 		if res, ok, evalErr := evalFunc(e.funcFast, data, mapData); ok || evalErr != nil {
+			return res, true, evalErr
+		}
+	}
+	if e.boolFast != nil {
+		if res, ok, evalErr := evalBool(e.boolFast, data, mapData); ok || evalErr != nil {
 			return res, true, evalErr
 		}
 	}
@@ -473,13 +469,30 @@ func resolveGjsonPath(data json.RawMessage, mapData map[string]json.RawMessage, 
 	return gjson.GetBytes(raw, rest)
 }
 
+// resolvePurePath resolves a pure-path fast path against raw bytes or a
+// pre-decoded map, walking through arrays when a direct gjson lookup misses.
+// ok is false when the walker cannot resolve the path.
+func resolvePurePath(path string, steps []string, data json.RawMessage, mapData map[string]json.RawMessage) (any, bool) {
+	if res := resolveGjsonPath(data, mapData, path); res.Exists() {
+		return gjsonValueToAny(&res), true
+	}
+	switch {
+	case data != nil:
+		return walkPureStepsBytes(steps, data)
+	case mapData != nil:
+		return walkPureStepsMapBytes(steps, mapData)
+	default:
+		return nil, false
+	}
+}
+
 // evalComparison evaluates a pre-compiled comparison fast path against raw JSON
 // bytes or a pre-decoded map. Returns (result, true, nil) on success. Returns
 // (nil, false, nil) when the expression cannot safely short-circuit (e.g. the
 // LHS is a JSON array that requires auto-mapping), signalling the caller to
 // fall back to full evaluation.
 //
-//nolint:unparam // err is part of the funcFastHandler contract; always nil for now
+
 func evalComparison(
 	c *parser.ComparisonFastPath, data json.RawMessage, mapData map[string]json.RawMessage,
 ) (result any, handled bool, err error) {
@@ -625,6 +638,12 @@ func (e *Expression) IsFastPath() bool {
 // (a built-in function applied to a pure path, evaluated via gjson).
 func (e *Expression) IsFuncFastPath() bool {
 	return e.funcFast != nil
+}
+
+// IsBooleanFastPath reports whether this expression uses the boolean fast path
+// (and / or / $not over fast-path leaves, evaluated via gjson).
+func (e *Expression) IsBooleanFastPath() bool {
+	return e.boolFast != nil
 }
 
 // IsComparisonFastPath reports whether this expression uses the comparison fast path

@@ -172,3 +172,71 @@ func BenchmarkStreamEvaluator(b *testing.B) {
 	}
 	b.ReportMetric(float64(se.Stats().Hits), "cache-hits")
 }
+
+func auditLogData(records int) map[string]json.RawMessage {
+	var sb strings.Builder
+	sb.WriteString(`{"action":"repo.access","actor":{"email":"alice@example.com","login":"alice"},"data":[`)
+	for i := range records {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb,
+			`{"type":"member.removed","id":%d,"actor":{"email_address":"user%d@example.com","ip":"10.0.0.%d"},"details":{"note":"%s"}}`,
+			i, i, i, strings.Repeat("x", 120))
+	}
+	sb.WriteString(`]}`)
+	return map[string]json.RawMessage{
+		"payload":  json.RawMessage(sb.String()),
+		"enriched": json.RawMessage(`{"actor":{"is_admin":true,"role":"owner"}}`),
+	}
+}
+
+func BenchmarkStreamEvaluator_BooleanComposition(b *testing.B) {
+	batches := []struct {
+		name  string
+		exprs []string
+	}{
+		{"single leaves only", []string{
+			`payload.action = "repo.access"`,
+			`$exists(payload.actor.email)`,
+			`enriched.actor.is_admin = true`,
+		}},
+		{"with and guard", []string{
+			`payload.action = "repo.access"`,
+			`$exists(payload.actor.email) and payload.actor.email != ""`,
+			`enriched.actor.is_admin = true`,
+		}},
+		{"with or chain", []string{
+			`payload.action = "repo.create" or payload.action = "repo.access" or payload.action = "repo.destroy"`,
+			`enriched.actor.is_admin = true`,
+		}},
+		{"with not", []string{
+			`payload.action = "repo.access"`,
+			`$not(enriched.actor.role = "member")`,
+		}},
+		{"composition across an array", []string{
+			`$exists(payload.data.actor.email_address) and payload.data.type = "member.removed"`,
+		}},
+	}
+	data := auditLogData(20)
+	ctx := context.Background()
+	for _, batch := range batches {
+		se := gnata.NewStreamEvaluator(nil)
+		indices := make([]int, 0, len(batch.exprs))
+		for _, s := range batch.exprs {
+			idx, err := se.Compile(s)
+			if err != nil {
+				b.Fatalf("compile %q: %v", s, err)
+			}
+			indices = append(indices, idx)
+		}
+		b.Run(batch.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if _, err := se.EvalMap(ctx, data, "bench-schema", indices); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

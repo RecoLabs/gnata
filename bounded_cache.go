@@ -20,6 +20,10 @@ type GroupPlan struct {
 	// FuncFast[i] is non-nil when expressions[i] is a supported built-in function
 	// call on a pure path (e.g. $exists(a.b), $lowercase(name)).
 	FuncFast []*parser.FuncFastPath
+	// BoolFast[i] is non-nil when expressions[i] is an and / or / $not
+	// composition of fast-path leaves. It is nil for every entry when another
+	// expression in the batch has no fast path, since that batch decodes anyway.
+	BoolFast []*parser.BoolFastPath
 }
 
 // cacheEntry is one slot in the BoundedCache.
