@@ -127,6 +127,20 @@ type (
 	}
 )
 
+var funcFastNames = func() map[FuncFastKind]string {
+	names := map[FuncFastKind]string{FuncFastContains: "contains"}
+	for name, kind := range funcFastKinds {
+		names[kind] = name
+	}
+	return names
+}()
+
+// FunctionName returns the built-in function's name as written in the
+// source, without the leading $.
+func (f *FuncFastPath) FunctionName() string {
+	return funcFastNames[f.Kind]
+}
+
 // AnalyzeFastPath examines an AST node and determines whether it qualifies
 // for zero-copy GJSON fast-path evaluation.
 //

@@ -784,3 +784,56 @@ func TestStreamEvaluator_EvalManyWithVars(t *testing.T) {
 		t.Errorf("nil-vars fast-path: want true, got %v", got)
 	}
 }
+
+type fastPathCounter struct{ fast, slow int }
+
+func (c *fastPathCounter) OnEval(_ int, fastPath bool, _ time.Duration, _ error) {
+	if fastPath {
+		c.fast++
+	} else {
+		c.slow++
+	}
+}
+func (c *fastPathCounter) OnCacheHit(string)  {}
+func (c *fastPathCounter) OnCacheMiss(string) {}
+func (c *fastPathCounter) OnEviction()        {}
+
+func TestStreamEvaluator_CustomFunctionShadowsFastPathBuiltin(t *testing.T) {
+	data := json.RawMessage(`{"a":1,"b":2}`)
+	testCases := []struct {
+		desc     string
+		custom   string
+		expr     string
+		want     any
+		wantFast int
+		wantSlow int
+	}{
+		{desc: "shadowed $exists reaches the custom function", custom: "exists", expr: `$exists(a)`, want: "CUSTOM", wantSlow: 1},
+		{desc: "unrelated custom function keeps the fast path", custom: "myFunc", expr: `$exists(a)`, want: true, wantFast: 1},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			counter := &fastPathCounter{}
+			se := gnata.NewStreamEvaluator(nil,
+				gnata.WithMetricsHook(counter),
+				gnata.WithCustomFunctions(map[string]gnata.CustomFunc{
+					tC.custom: func(_ []any, _ any) (any, error) { return "CUSTOM", nil },
+				}),
+			)
+			idx, err := se.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", tC.expr, err)
+			}
+			got, err := se.EvalMany(context.Background(), data, "shadow-schema", []int{idx})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got[0] != tC.want {
+				t.Fatalf("EvalMany(%q) = %#v, want %#v", tC.expr, got[0], tC.want)
+			}
+			if counter.fast != tC.wantFast || counter.slow != tC.wantSlow {
+				t.Fatalf("fast=%d slow=%d, want fast=%d slow=%d", counter.fast, counter.slow, tC.wantFast, tC.wantSlow)
+			}
+		})
+	}
+}

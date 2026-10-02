@@ -25,6 +25,7 @@ type StreamEvaluator struct {
 	cache     *BoundedCache
 	metrics   MetricsHook // nil = no overhead
 	customEnv *evaluator.Environment
+	shadowed  map[string]struct{}
 }
 
 // MetricsHook receives evaluation telemetry from StreamEvaluator.
@@ -97,10 +98,15 @@ func NewStreamEvaluator(expressions []*Expression, opts ...StreamOption) *Stream
 	if len(cfg.customFuncs) > 0 {
 		customEnv = newEnv(cfg.customFuncs)
 	}
+	shadowed := make(map[string]struct{}, len(cfg.customFuncs))
+	for name := range cfg.customFuncs {
+		shadowed[name] = struct{}{}
+	}
 	se := &StreamEvaluator{
 		cache:     NewBoundedCache(cfg.maxSchemas),
 		metrics:   cfg.metrics,
 		customEnv: customEnv,
+		shadowed:  shadowed,
 	}
 	snap := make([]*Expression, len(expressions))
 	copy(snap, expressions)
@@ -282,7 +288,7 @@ func (se *StreamEvaluator) evalInternal(
 		var ok bool
 		plan, ok = se.cache.Get(cacheKey)
 		if !ok {
-			plan = buildPlan(expressions, exprIndices)
+			plan = buildPlan(expressions, exprIndices, se.shadowed)
 			evicted := se.cache.Set(cacheKey, plan)
 			if se.metrics != nil {
 				se.metrics.OnCacheMiss(schemaKey)
@@ -294,7 +300,7 @@ func (se *StreamEvaluator) evalInternal(
 			se.metrics.OnCacheHit(schemaKey)
 		}
 	} else {
-		plan = buildPlan(expressions, exprIndices)
+		plan = buildPlan(expressions, exprIndices, se.shadowed)
 	}
 
 	results = make([]any, len(exprIndices))
@@ -465,7 +471,7 @@ func planCacheKey(schemaKey string, exprIndices []int) string {
 }
 
 // buildPlan constructs a GroupPlan for the given expression indices.
-func buildPlan(expressions []*Expression, exprIndices []int) *GroupPlan {
+func buildPlan(expressions []*Expression, exprIndices []int, shadowed map[string]struct{}) *GroupPlan {
 	plan := &GroupPlan{
 		FastPaths:    make([]string, len(exprIndices)),
 		ExprFastPath: make([]bool, len(exprIndices)),
@@ -489,7 +495,7 @@ func buildPlan(expressions []*Expression, exprIndices []int) *GroupPlan {
 		case expr.cmpFast != nil:
 			plan.CmpFast[i] = expr.cmpFast
 			hasCmp = true
-		case expr.funcFast != nil:
+		case expr.funcFast != nil && !isShadowed(shadowed, expr.funcFast.FunctionName()):
 			plan.FuncFast[i] = expr.funcFast
 			hasFunc = true
 		}
@@ -505,4 +511,9 @@ func buildPlan(expressions []*Expression, exprIndices []int) *GroupPlan {
 		plan.FuncFast = nil
 	}
 	return plan
+}
+
+func isShadowed(shadowed map[string]struct{}, name string) bool {
+	_, ok := shadowed[name]
+	return ok
 }
