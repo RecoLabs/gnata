@@ -495,25 +495,26 @@ func evalComparison(
 	if len(c.LHSPathSteps) == 0 {
 		return nil, false, nil
 	}
-	var values []gjson.Result
-	var ok bool
-	switch {
-	case data != nil:
-		values, ok = walkPureStepsValues(c.LHSPathSteps, data)
-	case mapData != nil:
-		values, ok = walkPureStepsMapValues(c.LHSPathSteps, mapData)
-	}
+	resolved, ok := walkPureStepsResolved(c.LHSPathSteps, data, mapData)
 	if !ok {
 		return nil, false, nil
 	}
-	if len(values) != 1 {
-		// A resolved sequence — whether flattened to more than one element,
-		// or to zero elements from a field present as an empty array — is
-		// never structurally equal to a scalar literal.
-		return c.Op == "!=", true, nil
+	switch v := resolved.(type) {
+	case gjson.Result:
+		match, matchOK := matchComparison(&v, c)
+		return match, matchOK, nil
+	case []gjson.Result:
+		if len(v) != 1 {
+			// A resolved sequence — whether flattened to more than one element,
+			// or to zero elements from a field present as an empty array — is
+			// never structurally equal to a scalar literal.
+			return c.Op == "!=", true, nil
+		}
+		match, matchOK := matchComparison(&v[0], c)
+		return match, matchOK, nil
+	default:
+		return nil, false, nil
 	}
-	match, ok := matchComparison(&values[0], c)
-	return match, ok, nil
 }
 
 // matchComparison evaluates a single resolved gjson value against a

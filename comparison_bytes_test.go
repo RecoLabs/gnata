@@ -154,3 +154,72 @@ func mustMarshal(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+const loneArrayLeafTestData = `{
+	"Records": [
+		{"Actor": {"Roles": ["admin"], "Flags": [""], "Groups": [], "Tags": ["a", "b"]}},
+		{"Other": 1}
+	],
+	"Nested": [
+		{"Items": [{"Codes": ["x"]}]}
+	]
+}`
+
+func TestEvalBytes_ComparisonLoneArrayAcrossArrays_MatchesEval(t *testing.T) {
+	testCases := []struct {
+		desc string
+		expr string
+	}{
+		{desc: "one-element array equals its element", expr: `Records.Actor.Roles = "admin"`},
+		{desc: "one-element array not-equals its element", expr: `Records.Actor.Roles != "admin"`},
+		{desc: "one-element empty-string array equals empty string", expr: `Records.Actor.Flags = ""`},
+		{desc: "one-element empty-string array not-equals empty string", expr: `Records.Actor.Flags != ""`},
+		{desc: "empty array equals literal", expr: `Records.Actor.Groups = "admin"`},
+		{desc: "two-element array not-equals literal", expr: `Records.Actor.Tags != "a"`},
+		{desc: "one-element array behind two array boundaries", expr: `Nested.Items.Codes = "x"`},
+		{desc: "one-element array compared to null", expr: `Records.Actor.Roles != null`},
+	}
+
+	rawData := json.RawMessage(loneArrayLeafTestData)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	mapData := map[string]json.RawMessage{}
+	for key, value := range decoded.(map[string]any) {
+		mapData[key] = mustMarshal(t, value)
+	}
+
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			expr, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", tC.expr, err)
+			}
+			if !expr.IsComparisonFastPath() {
+				t.Fatalf("expected %q to compile as a comparison fast path", tC.expr)
+			}
+
+			wantResult, wantErr := expr.Eval(context.Background(), decoded)
+			if wantErr != nil {
+				t.Fatalf("Eval(%q): %v", tC.expr, wantErr)
+			}
+
+			gotBytes, err := expr.EvalBytes(context.Background(), rawData)
+			if err != nil {
+				t.Fatalf("EvalBytes(%q): %v", tC.expr, err)
+			}
+			if !reflect.DeepEqual(gotBytes, wantResult) {
+				t.Fatalf("EvalBytes(%q) = %#v, want %#v (from Eval)", tC.expr, gotBytes, wantResult)
+			}
+
+			gotMap, err := expr.EvalMap(context.Background(), mapData)
+			if err != nil {
+				t.Fatalf("EvalMap(%q): %v", tC.expr, err)
+			}
+			if !reflect.DeepEqual(gotMap, wantResult) {
+				t.Fatalf("EvalMap(%q) = %#v, want %#v (from Eval)", tC.expr, gotMap, wantResult)
+			}
+		})
+	}
+}

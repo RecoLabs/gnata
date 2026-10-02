@@ -184,13 +184,9 @@ func firstStepFromMap(steps []string, mapData map[string]json.RawMessage) (root 
 }
 
 func walkPureStepsValuesFrom(steps []string, root *gjson.Result) (values []gjson.Result, ok bool) {
-	var cur any = *root
-	for _, step := range steps {
-		next, stepOK := stepValue(step, cur)
-		if !stepOK {
-			return nil, false
-		}
-		cur = next
+	cur, ok := walkPureStepsResolvedFrom(steps, root)
+	if !ok {
+		return nil, false
 	}
 	switch v := cur.(type) {
 	case []gjson.Result:
@@ -203,4 +199,35 @@ func walkPureStepsValuesFrom(steps []string, root *gjson.Result) (values []gjson
 	default:
 		return nil, false
 	}
+}
+
+func walkPureStepsResolved(steps []string, data json.RawMessage, mapData map[string]json.RawMessage) (any, bool) {
+	switch {
+	case data != nil:
+		root := gjson.ParseBytes(data)
+		if !root.Exists() {
+			return nil, false
+		}
+		return walkPureStepsResolvedFrom(steps, &root)
+	case mapData != nil:
+		root, rest, ok := firstStepFromMap(steps, mapData)
+		if !ok {
+			return nil, false
+		}
+		return walkPureStepsResolvedFrom(rest, &root)
+	default:
+		return nil, false
+	}
+}
+
+func walkPureStepsResolvedFrom(steps []string, root *gjson.Result) (any, bool) {
+	var cur any = *root
+	for _, step := range steps {
+		next, ok := stepValue(step, cur)
+		if !ok {
+			return nil, false
+		}
+		cur = next
+	}
+	return cur, true
 }
