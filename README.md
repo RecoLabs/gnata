@@ -48,7 +48,7 @@
 - **1,778 test cases** — ported from the official jsonata-js test suite (0 failures, 0 skips).
 - **One dependency** — [`tidwall/gjson`](https://github.com/tidwall/gjson) for fast-path byte-level field extraction.
 - **~13K lines of Go** — complete implementation with no code generation.
-- **WASM support** — compile to WebAssembly for an in-browser playground.
+- **WASM support** — compile to WebAssembly for an in-browser playground, or with [TinyGo](https://tinygo.org) for WASI hosts (several times smaller binaries).
 
 ## Quick Start
 
@@ -232,6 +232,21 @@ result, _ := expr.EvalWithCustomFuncs(ctx, data, env)
 
 The environment should be created once and reused across evaluations for best performance.
 
+### Argument Copying
+
+Object arguments reach custom functions as `map[string]any`. By default every call receives freshly copied maps, so a function may modify the maps it is given. Arrays are passed through without copying when they hold only scalars, so a function must not modify an array argument (or one nested inside a map) in place.
+
+When many expressions pass the same payload objects to custom functions, the copies add up. `WithReadOnlyCustomFuncArgs` caches the normalized view on each object decoded from the input and shares it between calls:
+
+```go
+se := gnata.NewStreamEvaluator(nil,
+    gnata.WithCustomFunctions(customFuncs),
+    gnata.WithReadOnlyCustomFuncArgs(), // custom functions must not modify their arguments
+)
+```
+
+Only objects gnata decodes itself from the input of `EvalMany`, `EvalManyWithVars`, `EvalOne` and `EvalMap` are cached; values you decode with `DecodeJSON` and pass to `EvalPreparsed` or as variables never are. Objects returned in results may carry the cache, so don't mutate them and feed them back in while the option is set.
+
 ## Metrics & Observability
 
 The `StreamEvaluator` accepts an optional `MetricsHook` (via `WithMetricsHook`) for production telemetry. Implement the interface and wire it in — a nil hook (the default) adds zero overhead.
@@ -315,6 +330,8 @@ expr, err := gnata.Compile(userExpr,
 )
 ```
 
+`WithTimeout` is enforced by checking a deadline on every function call and periodically between expression nodes, rather than with a timer, so it also applies inside a synchronous call on single-threaded WebAssembly hosts. A single builtin or custom function call is not interrupted, so evaluation can exceed the timeout by at most the duration of the call in progress.
+
 All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds every major sequence-growth path: the range operator, `$append`, `$map`, `$filter`, `$each`, wildcard (`*`), and descendant (`**`). Use guardrails when evaluating expressions from an untrusted source.
 
 ## Known Behavioral Differences from jsonata-js
@@ -379,6 +396,7 @@ gnata/
 │   └── datetime_parse.go        #   Datetime parsing (picture strings)
 ├── testdata/                    # 1,298 test files from jsonata-js
 ├── wasm/                        # WASM entry point for browser playground
+├── examples/                    # Runnable examples (basic, evalbytes, streaming, customfunc, wasi)
 └── assets/                      # Project logo
 ```
 
@@ -427,6 +445,21 @@ A ready-made `playground.html` is included — build the WASM binary, copy the G
 ```bash
 cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" .
 ```
+
+### TinyGo (WASI)
+
+gnata also builds with [TinyGo](https://tinygo.org) for `wasip1` hosts (wasmtime, wazero, JVM WASM runtimes, …). It passes the jsonata-js conformance suite there with results identical to the standard Go build.
+
+```bash
+GOEXPERIMENT=nojsonv2 tinygo build -target=wasip1 -scheduler=none -opt=1 -no-debug -o app.wasm ./your/cmd
+```
+
+- `GOEXPERIMENT=nojsonv2` is required: Go's json/v2-backed `encoding/json` relies on reflection TinyGo does not implement.
+- `-scheduler=none` works because gnata starts no goroutines (including for `WithTimeout`).
+- Prefer `-opt=1` when the host compiles WASM to JVM bytecode: higher levels inline large functions past the JVM's method-size limit, which forces those runtimes to interpret them.
+- `recover` is unavailable on TinyGo/WASM, so a runtime panic traps the instance; hosts should treat a trap as a failed evaluation and re-instantiate the module. Size `-stack-size` for the recursion depth your expressions need.
+
+[`examples/wasi`](examples/wasi/main.go) is a complete program built this way. It prints with the `println` builtin: under TinyGo, writing through `os.Stdout` (e.g. `fmt.Println`) pulls in timers that need a goroutine scheduler, so it cannot be used with `-scheduler=none`. Built with TinyGo 0.42 it is 1.2 MB (0.45 MB gzip), versus 6.5 MB (1.74 MB gzip) for `GOOS=wasip1` with Go 1.27. In our measurements on wazero's compiler (Apple M4), gnata evaluated real-world transformation expressions 1.6–1.9× faster in the TinyGo build than in the `GOOS=wasip1` build; results depend on the workload and runtime.
 
 ## License
 

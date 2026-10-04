@@ -21,6 +21,9 @@ go test -run TestName
 # Run tests as js/wasm under Node (browser parity)
 env -i PATH="$(go env GOROOT)/lib/wasm:$PATH" HOME="$HOME" GOOS=js GOARCH=wasm go test ./...
 
+# Check the TinyGo/WASI build (must keep compiling; see "TinyGo / WASI" below)
+GOEXPERIMENT=nojsonv2 tinygo build -target=wasip1 -scheduler=none -o /dev/null ./examples/wasi
+
 # Run benchmarks
 go test -bench=. -benchmem
 ```
@@ -98,6 +101,24 @@ customFuncs := map[string]gnata.CustomFunc{
 se := gnata.NewStreamEvaluator(nil, gnata.WithCustomFunctions(customFuncs))
 ```
 
+Object arguments reach custom functions as `map[string]any`. By default each call gets freshly copied maps; arrays of scalars are passed through uncopied and must not be modified in place. `WithReadOnlyCustomFuncArgs()` instead hands out a normalized view cached on each object the evaluator decoded from its input and shared by every call — cheaper when many expressions pass the same payload objects, but functions must then treat their arguments as read-only. Only evaluator-decoded input is frozen and cached (`evaluator.DecodeInput`, `DecodeRawMap`); the public `DecodeJSON` returns caller-owned, unfrozen maps.
+
 ## WASM
 
 `wasm/main.go` exports six JS functions: `gnataEval`, `gnataCompile`, `gnataEvalHandle`, `gnataReleaseHandle`, `gnataEvalMap` (O(1) top-level key lookup via `EvalMap`), and `gnataEvalWithVars` (external `$`-variable bindings). `gnataEval` and `gnataEvalHandle` use `EvalBytes`; `gnataEvalMap` uses `EvalMap`; `gnataEvalWithVars` uses `EvalBytesWithVars`. All paths leverage gjson fast-path access where applicable. Build with `GOOS=js GOARCH=wasm go build -ldflags="-s -w" -trimpath -o gnata.wasm ./wasm/`.
+
+`WithTimeout` is enforced without a timer goroutine: `Environment.Err` samples the clock every 128 calls on the per-node path, and `callFunction` checks it on every call (`errNow`), so the overrun is bounded by one builtin/custom-function call and the guardrail also fires inside a synchronous call on single-threaded WebAssembly hosts.
+
+## TinyGo / WASI
+
+gnata also builds with [TinyGo](https://tinygo.org) for `wasip1`, including `-scheduler=none`, and passes the jsonata-js conformance suite there with results identical to the standard Go build. Keep it that way:
+
+- **Build flags:** `GOEXPERIMENT=nojsonv2` (Go's json/v2-backed `encoding/json` needs reflection TinyGo lacks). Use `-scheduler=none` for library/reactor modules.
+- **No goroutines or timers in library code** — e.g. no `context.WithTimeout`/`time.AfterFunc`. TinyGo refuses to build them with `-scheduler=none`, and on single-threaded WASM hosts they cannot fire during a synchronous call anyway. The same applies to writing through `os.Stdout` (`fmt.Print*`), which is why `examples/wasi` uses `println`.
+- **Don't encode gnata values with `encoding/json`:** use `evaluator.AppendJSON`. `encoding/json`'s encoder reports errors by panicking and recovering internally, and `recover` is unavailable on TinyGo/WASM, so any encode error would abort the module. Decoding (`DecodeJSON`) does not use `encoding/json` on the hot path.
+- **Convert JSONata numbers to `int` with `evaluator.ToIntClamped`**, never a bare `int(f)`: `int` is 32 bits on TinyGo/WASM and an out-of-range float→int conversion is implementation-defined.
+- **Runtime panics trap instead of being recovered** on TinyGo/WASM. Hosts should treat a trap as a failed evaluation and re-instantiate the module.
+- **Stack depth:** deep JSONata recursion needs a sufficient `-stack-size`; an overflow traps rather than corrupting memory.
+- **JVM-hosted runtimes** (WASM compiled to JVM bytecode) cannot compile very large functions; at `-opt=2` LLVM inlines `evaluator.Eval` past that limit, so prefer `-opt=1` for those hosts.
+- **Running the test suite under TinyGo:** `GOEXPERIMENT=nojsonv2 tinygo test -c -target=wasip1 -stack-size=1MB -o gnata.test.wasm .` and run it with a WASI runtime with the package directory mounted as `/` (e.g. `wazero run -mount=.:/ -env=PWD=/ gnata.test.wasm -test.v`). TinyGo runs every subtest in its own fixed-size goroutine stack, so a full run needs plenty of memory; the two 10,000,000-element range cases are the heaviest.
+
