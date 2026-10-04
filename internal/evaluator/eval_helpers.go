@@ -41,7 +41,7 @@ func stringifyValue(v any) (string, error) {
 		}
 		return "false", nil
 	default:
-		b, err := marshalNoHTMLEscape(v)
+		b, err := AppendJSON(nil, v)
 		if err != nil {
 			return "", fmt.Errorf("cannot stringify value: %w", err)
 		}

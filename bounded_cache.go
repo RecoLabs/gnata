@@ -82,6 +82,18 @@ func (c *BoundedCache) Get(key string) (*GroupPlan, bool) {
 	return nil, false
 }
 
+// getBytes is Get for a key held in a byte slice; the map lookup converts it
+// without allocating.
+func (c *BoundedCache) getBytes(key []byte) (*GroupPlan, bool) {
+	snap := c.snapshot.Load()
+	if i, ok := snap.index[string(key)]; ok {
+		c.hits.Add(1)
+		return snap.entries[i].plan, true
+	}
+	c.misses.Add(1)
+	return nil, false
+}
+
 // Set inserts or updates a key. Uses a mutex for writes.
 // Returns true if an existing entry was evicted due to capacity overflow.
 func (c *BoundedCache) Set(key string, plan *GroupPlan) (evicted bool) {

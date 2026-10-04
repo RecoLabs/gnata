@@ -137,7 +137,7 @@ func fnRound(args []any, _ any) (any, error) {
 		if !sfOk {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$round: scale argument must be a number"}
 		}
-		scale = int(sf)
+		scale = evaluator.ToIntClamped(sf)
 	}
 	return bankersRound(n, scale), nil
 }

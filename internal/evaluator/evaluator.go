@@ -12,7 +12,7 @@ import (
 func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	if node == nil {
 		return nil, nil
-	} else if err := env.Context().Err(); err != nil {
+	} else if err := env.Err(); err != nil {
 		return nil, err
 	} else if node.Group != nil {
 		// If the node has a Group expression (A{key:val}), evaluate the base node

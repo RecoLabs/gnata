@@ -139,7 +139,9 @@ func CachedCompileRegex(pattern, flags string) (*Regex, error) {
 		return cached.(*Regex), nil
 	}
 
-	fullPattern := inlineFlags + pattern
+	// Clone so the process-wide cache never retains a caller's string (which
+	// may share memory with a larger buffer).
+	fullPattern := strings.Clone(inlineFlags + pattern)
 	re, err := regexp.Compile(fullPattern)
 	if err != nil {
 		return nil, err

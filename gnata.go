@@ -12,7 +12,6 @@ package gnata
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -55,11 +54,6 @@ type guardrails struct {
 	sequence int
 }
 
-// errGuardrailTimeout tags the context cause set by WithTimeout, so evalCore
-// can distinguish a guardrail timeout (error D1012) from the caller's own
-// context cancellation (propagated as-is).
-var errGuardrailTimeout = errors.New("gnata: guardrail timeout exceeded")
-
 // Option configures an optional resource guardrail on a compiled Expression.
 // See WithStack, WithTimeout, and WithSequence.
 type Option func(*guardrails)
@@ -75,6 +69,12 @@ func WithStack(n int) Option {
 // WithTimeout limits total evaluation time. Exceeding it returns error
 // D1012. Without this option, evaluation is bounded only by the ctx passed
 // to Eval, matching jsonata-js's `timeout` guardrail.
+//
+// The deadline is checked on every function call and periodically between
+// expression nodes, without a timer goroutine, so it also applies inside a
+// synchronous call on single-threaded WebAssembly hosts. A single builtin or
+// custom function call is not interrupted: evaluation can exceed the timeout
+// by at most the duration of the call in progress.
 func WithTimeout(d time.Duration) Option {
 	return func(g *guardrails) { g.timeout = d }
 }
@@ -134,7 +134,7 @@ type CustomEnvironment struct {
 // NewCustomEnvironment pre-builds a reusable environment for a stable set of
 // custom functions. Each evaluation creates a child environment for variables.
 func NewCustomEnvironment(customFuncs map[string]CustomFunc) *CustomEnvironment {
-	return &CustomEnvironment{env: newEnv(customFuncs)}
+	return &CustomEnvironment{env: newEnv(customFuncs, false)}
 }
 
 // builtinEnv is a shared root environment with all standard library functions.
@@ -142,16 +142,18 @@ func NewCustomEnvironment(customFuncs map[string]CustomFunc) *CustomEnvironment 
 var builtinEnv *evaluator.Environment
 
 func init() {
-	builtinEnv = newEnv(nil)
+	builtinEnv = newEnv(nil, false)
 }
 
 // newEnv creates a root environment with all standard library functions
-// and optional custom functions registered.
-func newEnv(customFuncs map[string]CustomFunc) *evaluator.Environment {
+// and optional custom functions registered. With sharedArgs, custom functions
+// receive cached, shared normalized views of decoded input objects (see
+// WithReadOnlyCustomFuncArgs) instead of a fresh copy per call.
+func newEnv(customFuncs map[string]CustomFunc, sharedArgs bool) *evaluator.Environment {
 	env := evaluator.NewEnvironment()
 	functions.RegisterAll(env, evaluator.ApplyFunction)
 	for name, fn := range customFuncs {
-		wrapped := wrapCustomFunc(fn)
+		wrapped := wrapCustomFunc(fn, sharedArgs)
 		env.Bind(name, evaluator.BuiltinFunction(wrapped))
 	}
 	return env
@@ -160,20 +162,29 @@ func newEnv(customFuncs map[string]CustomFunc) *evaluator.Environment {
 // wrapCustomFunc wraps a user-provided custom function to normalize
 // internal evaluator types (OrderedMap, Null sentinel) into standard
 // Go types (map[string]any, nil) before the function sees them.
-func wrapCustomFunc(fn CustomFunc) CustomFunc {
+func wrapCustomFunc(fn CustomFunc, sharedArgs bool) CustomFunc {
 	return func(args []any, focus any) (any, error) {
 		for i, a := range args {
-			args[i] = NormalizeValue(a)
+			args[i] = normalizeValue(a, sharedArgs)
 		}
-		return fn(args, NormalizeValue(focus))
+		return fn(args, normalizeValue(focus, sharedArgs))
 	}
 }
 
 // NormalizeValue converts internal evaluator types to standard Go types.
 // OrderedMap becomes map[string]any, the null sentinel becomes nil,
 // and slices are recursively normalized only when they contain internal types.
-// Scalar values and slices of pure scalars pass through without allocation.
+// Scalar values and slices of pure scalars pass through without allocation:
+// maps in the result are always freshly allocated and may be modified, but
+// slices may be the caller's own and must not be modified in place.
 func NormalizeValue(v any) any {
+	return normalizeValue(v, false)
+}
+
+// normalizeValue implements NormalizeValue. With shared, objects decoded from
+// input JSON return a normalized map cached on the object and shared by every
+// caller, which must therefore not modify it.
+func normalizeValue(v any, shared bool) any {
 	if v == nil {
 		return nil
 	}
@@ -182,33 +193,43 @@ func NormalizeValue(v any) any {
 	}
 	switch val := v.(type) {
 	case *evaluator.Sequence:
-		collapsed := evaluator.CollapseSequence(val)
-		return NormalizeValue(collapsed)
+		return normalizeValue(evaluator.CollapseSequence(val), shared)
 	case *evaluator.OrderedMap:
-		m := val.ToMap()
-		out := make(map[string]any, len(m))
-		for k, mv := range m {
-			out[k] = NormalizeValue(mv)
+		if shared {
+			return evaluator.NormalizedView(val, normalizeOrderedMapShared)
 		}
-		return out
+		return normalizeOrderedMap(val, false)
 	case []any:
-		return normalizeSlice(val)
+		return normalizeSlice(val, shared)
 	case evaluator.ConsArray:
-		return normalizeSlice([]any(val))
+		return normalizeSlice([]any(val), shared)
 	}
 	return v
 }
 
+func normalizeOrderedMapShared(om *evaluator.OrderedMap) map[string]any {
+	return normalizeOrderedMap(om, true)
+}
+
+func normalizeOrderedMap(om *evaluator.OrderedMap, shared bool) map[string]any {
+	m := om.ToMap()
+	out := make(map[string]any, len(m))
+	for k, mv := range m {
+		out[k] = normalizeValue(mv, shared)
+	}
+	return out
+}
+
 // normalizeSlice only allocates a copy when at least one element
 // needs conversion (OrderedMap, null sentinel, or nested slice).
-func normalizeSlice(s []any) any {
+func normalizeSlice(s []any, shared bool) any {
 	needsCopy := slices.ContainsFunc(s, needsNormalize)
 	if !needsCopy {
 		return s
 	}
 	out := make([]any, len(s))
 	for i, elem := range s {
-		out[i] = NormalizeValue(elem)
+		out[i] = normalizeValue(elem, shared)
 	}
 	return out
 }
@@ -244,15 +265,13 @@ func recoverEvalPanic(errp *error) { //nolint:gocritic // ptrToRefParam: must mu
 // evalCore is the shared evaluation logic for all Eval variants.
 func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.Environment, vars map[string]any) (result any, err error) {
 	defer recoverEvalPanic(&err)
-	if e.guardrails != nil && e.guardrails.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeoutCause(ctx, e.guardrails.timeout, errGuardrailTimeout)
-		defer cancel()
-	}
 	env := evaluator.NewChildEnvironment(parent)
 	env.ResetCallCounter()
 	env.SetContext(ctx)
 	if e.guardrails != nil {
+		if e.guardrails.timeout > 0 {
+			env.SetDeadline(time.Now().Add(e.guardrails.timeout))
+		}
 		if e.guardrails.stack > 0 {
 			env.SetMaxStackDepth(e.guardrails.stack)
 		}
@@ -266,7 +285,7 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 	}
 	result, err = evaluator.Eval(e.ast, data, env)
 	if err != nil {
-		if e.guardrails != nil && e.guardrails.timeout > 0 && errors.Is(context.Cause(ctx), errGuardrailTimeout) {
+		if env.DeadlineExceeded() {
 			return nil, &evaluator.JSONataError{Code: "D1012", Message: fmt.Sprintf("Evaluation timeout after %s", e.guardrails.timeout)}
 		}
 		return nil, err
@@ -349,7 +368,7 @@ func (e *Expression) EvalBytes(ctx context.Context, data json.RawMessage) (resul
 	if res, handled, fastErr := e.tryFuncFastBytes(data, nil); handled || fastErr != nil {
 		return res, fastErr
 	}
-	v, err := evaluator.DecodeJSON(data)
+	v, err := evaluator.DecodeInput(data)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +404,7 @@ func (e *Expression) EvalBytesWithVars(ctx context.Context, data json.RawMessage
 	if res, handled, fastErr := e.tryFuncFastBytes(data, nil); handled || fastErr != nil {
 		return res, fastErr
 	}
-	v, err := evaluator.DecodeJSON(data)
+	v, err := evaluator.DecodeInput(data)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +426,7 @@ func (e *Expression) EvalBytesWithCustomFuncs(
 	if res, handled, fastErr := e.tryFastPathBytes(data, nil); handled || fastErr != nil {
 		return res, fastErr
 	}
-	v, err := evaluator.DecodeJSON(data)
+	v, err := evaluator.DecodeInput(data)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +450,7 @@ func (e *Expression) EvalBytesWithCustomEnvironmentAndVars(
 	if res, handled, fastErr := e.tryFastPathBytes(data, nil); handled || fastErr != nil {
 		return res, fastErr
 	}
-	v, err := evaluator.DecodeJSON(data)
+	v, err := evaluator.DecodeInput(data)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +605,7 @@ func gjsonValueToAny(r *gjson.Result) any {
 	case gjson.String:
 		return r.String()
 	case gjson.JSON:
-		if v, err := evaluator.DecodeJSON(json.RawMessage(r.Raw)); err == nil {
+		if v, err := evaluator.DecodeInput(json.RawMessage(r.Raw)); err == nil {
 			return v
 		}
 		return nil
@@ -621,7 +640,7 @@ func (e *Expression) EvalWithCustomEnvironmentAndVars(
 // plus the provided custom functions. The returned environment is goroutine-safe
 // for concurrent reads and should be reused across evaluations.
 func NewCustomEnv(customFuncs map[string]CustomFunc) *evaluator.Environment {
-	return newEnv(customFuncs)
+	return newEnv(customFuncs, false)
 }
 
 // EvalWithVars evaluates the expression with extra variable bindings.

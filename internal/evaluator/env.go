@@ -2,8 +2,11 @@ package evaluator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"math"
+	"time"
 
 	"github.com/recolabs/gnata/internal/parser"
 )
@@ -21,12 +24,36 @@ const inlineBindingCap = 2
 // callCounter tracks the current recursive call depth across all child environments.
 // A pointer is shared so all nested envs increment/decrement the same counter.
 type callCounter struct {
-	depth        int
-	evalDepth    int
-	max          int
-	stackIsLimit bool // true when max was set via the WithStack guardrail (error D1011 instead of U1001)
-	maxSequence  int  // 0 = unlimited; guardrail set via WithSequence (error D2015)
+	// int32 keeps the struct in the same allocation size class as before the
+	// deadline and context fields were added; it is allocated per evaluation.
+	depth        int32
+	evalDepth    int32
+	max          int32
+	maxSequence  int32 // 0 = unlimited; guardrail set via WithSequence (error D2015)
+	stackIsLimit bool  // true when max was set via the WithStack guardrail (error D1011 instead of U1001)
+
+	// deadline is the WithTimeout guardrail, nil when unset so evaluations
+	// without a timeout pay one pointer. It is polled from Err rather than
+	// enforced with a context timer, so it needs no timer goroutine and still
+	// fires inside a synchronous call on single-threaded WebAssembly hosts.
+	deadline *deadlineState
+	// ctx is the evaluation's context, shared by every environment using this
+	// counter (see SetContext).
+	ctx context.Context
 }
+
+type deadlineState struct {
+	at    time.Time
+	ticks uint32
+	hit   bool
+}
+
+// deadlinePollMask spaces out time.Now calls: the deadline is checked on the
+// first poll and then every 128th, keeping the per-node cost to a counter.
+const deadlinePollMask = 127
+
+// ErrDeadlineExceeded is returned by Err once the guardrail deadline passes.
+var ErrDeadlineExceeded = errors.New("gnata: evaluation deadline exceeded")
 
 // binding is one name/value pair stored inline on an Environment.
 type binding struct {
@@ -43,12 +70,20 @@ type binding struct {
 // child environment (bound to "$" and little else) allocation-free beyond
 // the Environment struct itself.
 type Environment struct {
-	parent   *Environment
-	inline   [inlineBindingCap]binding
-	inlineN  int
-	bindings map[string]any // nil until inline overflows
-	calls    *callCounter   // shared call-depth counter; nil inherits from parent
-	ctx      context.Context
+	parent  *Environment
+	inline  [inlineBindingCap]binding
+	inlineN int32
+	// hasDeadline mirrors whether the call counter has a WithTimeout deadline
+	// so Err's fast path needs no pointer chase. SetDeadline is called before
+	// evaluation starts, and child environments inherit it. It sits beside
+	// inlineN to reuse that field's padding.
+	hasDeadline bool
+	bindings    map[string]any // nil until inline overflows
+	calls       *callCounter   // shared call-depth counter; nil inherits from parent
+	// done caches ctx.Done() so the per-node cancellation check in Eval is a
+	// nil check for non-cancellable contexts instead of a walk up both the
+	// environment chain and the context.valueCtx chain.
+	done <-chan struct{}
 }
 
 // NewEnvironment creates a root environment with no bindings.
@@ -63,6 +98,8 @@ func NewChildEnvironment(parent *Environment) *Environment {
 	env := &Environment{parent: parent}
 	if parent != nil {
 		env.calls = parent.callCounter()
+		env.done = parent.done
+		env.hasDeadline = parent.hasDeadline
 	}
 	return env
 }
@@ -149,7 +186,7 @@ func (e *Environment) ResetCallCounter() {
 func (e *Environment) IncrEvalDepth(maxDepth int) error {
 	c := e.callCounter()
 	c.evalDepth++
-	if c.evalDepth > maxDepth {
+	if int(c.evalDepth) > maxDepth {
 		c.evalDepth--
 		return &JSONataError{Code: "D3121", Message: "$eval: maximum nesting depth exceeded"}
 	}
@@ -166,21 +203,27 @@ func (e *Environment) DecrEvalDepth() {
 // exceeding it returns error D1011 instead of the default U1001.
 func (e *Environment) SetMaxStackDepth(n int) {
 	c := e.callCounter()
-	c.max = n
+	c.max = clampInt32(n)
 	c.stackIsLimit = true
 }
 
 // SetMaxSequence sets the guardrail sequence-length limit (0 = unlimited).
 // Exceeding it at a checked growth site returns error D2015.
 func (e *Environment) SetMaxSequence(n int) {
-	e.callCounter().maxSequence = n
+	e.callCounter().maxSequence = clampInt32(n)
+}
+
+// clampInt32 saturates a configured limit to the int32 range; larger limits
+// are effectively unbounded.
+func clampInt32(n int) int32 {
+	return int32(max(min(n, math.MaxInt32), math.MinInt32))
 }
 
 // CheckSequence returns a D2015 error if n exceeds the configured sequence
 // guardrail. No-op when no guardrail is set.
 func (e *Environment) CheckSequence(n int) error {
 	c := e.callCounter()
-	if c.maxSequence > 0 && n > c.maxSequence {
+	if c.maxSequence > 0 && n > int(c.maxSequence) {
 		return &JSONataError{Code: "D2015", Message: fmt.Sprintf("The maximum sequence length of %d was exceeded", c.maxSequence)}
 	}
 	return nil
@@ -190,9 +233,10 @@ func (e *Environment) CheckSequence(n int) error {
 // but sharing the same parent and call counter references.
 func (e *Environment) Clone() *Environment {
 	child := &Environment{
-		parent: e.parent,
-		calls:  e.calls,
-		ctx:    e.ctx,
+		parent:      e.parent,
+		calls:       e.calls,
+		done:        e.done,
+		hasDeadline: e.hasDeadline,
 	}
 	if e.bindings != nil {
 		child.bindings = make(map[string]any, len(e.bindings))
@@ -204,23 +248,105 @@ func (e *Environment) Clone() *Environment {
 	return child
 }
 
-// Context returns the context.Context associated with this environment.
-// It walks the parent chain if the local ctx is nil, falling back to
-// context.Background() for root environments without an explicit context.
+// Context returns the evaluation's context.Context, or context.Background()
+// when none was set.
 func (e *Environment) Context() context.Context {
-	if e.ctx != nil {
-		return e.ctx
-	}
-	if e.parent != nil {
-		return e.parent.Context()
+	if c := e.callCounter(); c.ctx != nil {
+		return c.ctx
 	}
 	return context.Background()
 }
 
-// SetContext sets a context.Context on this environment, making it
-// available to Eval and all child environments via Context().
+// SetContext sets the evaluation's context. It is stored on the call counter,
+// so it must be called after ResetCallCounter and before evaluation creates
+// child environments, which inherit the cached Done channel.
 func (e *Environment) SetContext(ctx context.Context) {
-	e.ctx = ctx
+	e.callCounter().ctx = ctx
+	e.done = nil
+	if ctx != nil {
+		e.done = ctx.Done()
+	}
+}
+
+// Err reports why evaluation must stop: the context's cancellation error, or
+// ErrDeadlineExceeded once the WithTimeout deadline has passed. To keep the
+// per-node cost to a counter increment, the clock is read only on every
+// deadlinePollMask+1 calls; errNow reads it unconditionally.
+func (e *Environment) Err() error {
+	// Inlinable fast path for the common case: a context that can never be
+	// cancelled and no WithTimeout deadline. Err runs on every Eval node.
+	if e.done == nil && !e.hasDeadline {
+		return nil
+	}
+	return e.errSlow()
+}
+
+func (e *Environment) errSlow() error {
+	if err := e.ctxErr(); err != nil {
+		return err
+	}
+	return e.deadlineErr(false)
+}
+
+// errNow is Err with an unconditional clock read. It is used at function-call
+// boundaries, where a single call (a builtin over a large value, or a slow
+// custom function) can take arbitrarily long, so the deadline overrun stays
+// bounded by one call rather than by deadlinePollMask calls.
+func (e *Environment) errNow() error {
+	if err := e.ctxErr(); err != nil {
+		return err
+	}
+	return e.deadlineErr(true)
+}
+
+// ctxErr reports the context's cancellation error. A nil done means the
+// context (if any) can never be cancelled.
+func (e *Environment) ctxErr() error {
+	if e.done == nil {
+		return nil
+	}
+	select {
+	case <-e.done:
+		return e.Context().Err()
+	default:
+		return nil
+	}
+}
+
+func (e *Environment) deadlineErr(force bool) error {
+	c := e.calls
+	if c == nil {
+		c = e.callCounter()
+	}
+	d := c.deadline
+	if d == nil {
+		return nil
+	}
+	if d.hit {
+		return ErrDeadlineExceeded
+	}
+	d.ticks++
+	if (force || d.ticks&deadlinePollMask == 1) && !time.Now().Before(d.at) {
+		d.hit = true
+		return ErrDeadlineExceeded
+	}
+	return nil
+}
+
+// SetDeadline sets the evaluation deadline enforced by Err (zero = none).
+func (e *Environment) SetDeadline(t time.Time) {
+	c := e.callCounter()
+	c.deadline = nil
+	if !t.IsZero() {
+		c.deadline = &deadlineState{at: t}
+	}
+	e.hasDeadline = c.deadline != nil
+}
+
+// DeadlineExceeded reports whether Err has observed the deadline passing.
+func (e *Environment) DeadlineExceeded() bool {
+	d := e.callCounter().deadline
+	return d != nil && d.hit
 }
 
 // Range iterates over the bindings in this environment (not parents).

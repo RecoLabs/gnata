@@ -30,7 +30,7 @@ func makeFnMatch(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			if !ok {
 				return nil, &evaluator.JSONataError{Code: "T0410", Message: "$match: argument 3 must be a number"}
 			}
-			limit = int(lf)
+			limit = evaluator.ToIntClamped(lf)
 		}
 
 		switch args[1].(type) {
@@ -159,7 +159,7 @@ func makeFnReplace(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			if lf < 0 {
 				return nil, &evaluator.JSONataError{Code: "D3011", Message: "$replace: fourth argument must not be negative"}
 			}
-			limit = int(lf)
+			limit = evaluator.ToIntClamped(lf)
 		}
 
 		switch pattern := args[1].(type) {

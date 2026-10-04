@@ -290,7 +290,7 @@ func fnFlatten(args []any, _ any) (any, error) {
 		if !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$flatten: depth argument must be a number"}
 		}
-		depth = int(df)
+		depth = evaluator.ToIntClamped(df)
 	}
 
 	return flattenArray(arr, depth), nil

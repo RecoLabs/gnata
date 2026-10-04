@@ -51,6 +51,7 @@ type streamConfig struct {
 	maxSchemas  int
 	metrics     MetricsHook
 	customFuncs map[string]CustomFunc
+	sharedArgs  bool
 }
 
 // WithPoolSize pre-warms the evaluation context pool with n entries.
@@ -78,6 +79,21 @@ func WithCustomFunctions(fns map[string]CustomFunc) StreamOption {
 	return func(c *streamConfig) { c.customFuncs = fns }
 }
 
+// WithReadOnlyCustomFuncArgs lets custom functions receive a shared, cached
+// map[string]any view of objects the evaluator decoded from its input (the
+// json.RawMessage / map passed to EvalMany, EvalManyWithVars, EvalOne and
+// EvalMap) instead of a fresh copy on every call. This avoids re-copying the
+// same payload objects when many expressions pass them to custom functions.
+// The maps (and any nested maps or slices) are shared across calls and must
+// not be modified. Values the caller decoded itself (e.g. with DecodeJSON and
+// passed to EvalPreparsed or as variables) are never cached. Objects returned
+// in results may carry the cache; do not mutate such results and pass them
+// back in while this option is set.
+// Without this option every call gets its own copy of each object.
+func WithReadOnlyCustomFuncArgs() StreamOption {
+	return func(c *streamConfig) { c.sharedArgs = true }
+}
+
 // StreamStats holds cache statistics returned by Stats().
 type StreamStats struct {
 	Hits      int64
@@ -96,7 +112,7 @@ func NewStreamEvaluator(expressions []*Expression, opts ...StreamOption) *Stream
 	}
 	var customEnv *evaluator.Environment
 	if len(cfg.customFuncs) > 0 {
-		customEnv = newEnv(cfg.customFuncs)
+		customEnv = newEnv(cfg.customFuncs, cfg.sharedArgs)
 	}
 	shadowed := make(map[string]struct{}, len(cfg.customFuncs))
 	for name := range cfg.customFuncs {
@@ -284,12 +300,13 @@ func (se *StreamEvaluator) evalInternal(
 
 	var plan *GroupPlan
 	if schemaKey != "" {
-		cacheKey := planCacheKey(schemaKey, exprIndices)
+		var keyBuf [128]byte
+		cacheKey := appendPlanCacheKey(keyBuf[:0], schemaKey, exprIndices)
 		var ok bool
-		plan, ok = se.cache.Get(cacheKey)
+		plan, ok = se.cache.getBytes(cacheKey)
 		if !ok {
 			plan = buildPlan(expressions, exprIndices, se.shadowed)
-			evicted := se.cache.Set(cacheKey, plan)
+			evicted := se.cache.Set(string(cacheKey), plan)
 			if se.metrics != nil {
 				se.metrics.OnCacheMiss(schemaKey)
 				if evicted {
@@ -425,7 +442,7 @@ func (b *evalBatch) fullEval(ctx context.Context, idx int, expr *Expression, sta
 		if len(b.mapData) > 0 {
 			b.parsed, b.parsedErr = evaluator.DecodeRawMap(b.mapData)
 		} else if len(b.data) > 0 {
-			b.parsed, b.parsedErr = evaluator.DecodeJSON(b.data)
+			b.parsed, b.parsedErr = evaluator.DecodeInput(b.data)
 		}
 	}
 	if b.parsedErr != nil {
@@ -468,11 +485,8 @@ func (se *StreamEvaluator) Stats() StreamStats {
 	return se.cache.Stats()
 }
 
-// planCacheKey builds a composite cache key from schemaKey and exprIndices.
-// This ensures that plans built for different index sets don't collide when
-// sharing the same schemaKey.
-func planCacheKey(schemaKey string, exprIndices []int) string {
-	b := make([]byte, 0, len(schemaKey)+1+len(exprIndices)*4)
+// appendPlanCacheKey appends the plan cache key for (schemaKey, exprIndices) to b.
+func appendPlanCacheKey(b []byte, schemaKey string, exprIndices []int) []byte {
 	b = append(b, schemaKey...)
 	b = append(b, '|')
 	for i, idx := range exprIndices {
@@ -481,7 +495,7 @@ func planCacheKey(schemaKey string, exprIndices []int) string {
 		}
 		b = strconv.AppendInt(b, int64(idx), 10)
 	}
-	return string(b)
+	return b
 }
 
 // buildPlan constructs a GroupPlan for the given expression indices.

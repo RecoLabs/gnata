@@ -233,7 +233,7 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	}
 
 	if idx, ok := ToFloat64(rightVal); ok {
-		i := int(idx)
+		i := ToIntClamped(idx)
 		if i < 0 {
 			i = len(items) + i
 		}
@@ -271,9 +271,8 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 	seq := CreateSequence()
 	filterEnv := NewChildEnvironment(env)
 	filterEnv.Bind(parentKey, parent)
-	ctx := env.Context()
 	for i, item := range items {
-		if err := ctx.Err(); err != nil {
+		if err := env.Err(); err != nil {
 			return nil, err
 		}
 		if indexVar != "" {
@@ -343,7 +342,7 @@ func selectByIndices(rightVal any, items []any) (any, bool) {
 		if !ok {
 			return nil, false // non-numeric → fall through to predicate filter
 		}
-		i := int(idx)
+		i := ToIntClamped(idx)
 		if i < 0 {
 			i = len(items) + i
 		}

@@ -175,10 +175,9 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 	// growing the Go stack. This handles both self-recursion and mutual recursion.
 	// The iteration limit (counter.max * tailCallMultiplier) prevents infinite
 	// tail-recursive loops from running forever.
-	maxIter, iter := counter.max*10000, 0
-	ctx := env.Context()
+	maxIter, iter := int(counter.max)*10000, 0
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := env.errNow(); err != nil {
 			return nil, err
 		}
 		switch f := fn.(type) {

@@ -46,9 +46,8 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 
 	sorted := slices.Clone(arr)
 
-	ctx := env.Context()
 	if err := SortItemsErr(sorted, func(a, b any) (int, error) {
-		if err := ctx.Err(); err != nil {
+		if err := env.Err(); err != nil {
 			return 0, err
 		}
 		return compareSortTerms(node.Terms, a, b, env, env)

@@ -433,7 +433,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 					return nil, err
 				}
 				if idx, ok := outerResult.(float64); ok {
-					i := int(idx)
+					i := ToIntClamped(idx)
 					if i < 0 {
 						i = len(nextCtxs) + i
 					}

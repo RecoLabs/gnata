@@ -34,7 +34,7 @@ func fnFormatBase(args []any, focus any) (any, error) {
 		if !bOk {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$formatBase: argument 2 must be a number"}
 		}
-		base = int(bf)
+		base = evaluator.ToIntClamped(bf)
 	}
 	if base < 2 || base > 36 {
 		return nil, &evaluator.JSONataError{Code: "D3100", Message: "$formatBase: base must be between 2 and 36"}

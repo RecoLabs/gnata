@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync/atomic"
 )
 
 // OrderedMap is a map that preserves insertion order for JSON serialization.
@@ -16,6 +17,13 @@ import (
 type OrderedMap struct {
 	keys []string
 	data map[string]any
+	// frozen marks maps the evaluator decoded from its own input for the
+	// duration of one evaluation call (DecodeInput, DecodeRawMap); evaluation
+	// never mutates them. Only frozen maps cache their normalized form (see
+	// NormalizedView). Maps from the public DecodeJSON are never frozen, since
+	// callers may keep and mutate them.
+	frozen bool
+	norm   atomic.Pointer[map[string]any]
 }
 
 func NewOrderedMap() *OrderedMap {
@@ -30,6 +38,10 @@ func NewOrderedMapWithCapacity(n int) *OrderedMap {
 }
 
 func (m *OrderedMap) Set(key string, val any) {
+	if m.frozen {
+		m.frozen = false
+		m.norm.Store(nil)
+	}
 	if _, exists := m.data[key]; !exists {
 		m.keys = append(m.keys, key)
 	}
@@ -47,12 +59,35 @@ func (m *OrderedMap) Has(key string) bool {
 }
 
 func (m *OrderedMap) Delete(key string) {
+	if m.frozen {
+		m.frozen = false
+		m.norm.Store(nil)
+	}
 	if _, ok := m.data[key]; !ok {
 		return
 	}
 	delete(m.data, key)
 	m.keys = slices.DeleteFunc(m.keys, func(k string) bool { return k == key })
 }
+
+// NormalizedView returns build(m), caching the result on frozen maps so
+// repeated custom-function calls over the same input object do not rebuild
+// it. For frozen maps the result is shared and must be treated as read-only.
+// It is a function rather than a method so it stays out of the public API of
+// the gnata.OrderedMap alias.
+func NormalizedView(m *OrderedMap, build func(*OrderedMap) map[string]any) map[string]any {
+	if !m.frozen {
+		return build(m)
+	}
+	if p := m.norm.Load(); p != nil {
+		return *p
+	}
+	n := build(m)
+	m.norm.Store(&n)
+	return n
+}
+
+func (m *OrderedMap) freeze() { m.frozen = true }
 
 func (m *OrderedMap) Keys() []string        { return m.keys }
 func (m *OrderedMap) Len() int              { return len(m.keys) }
@@ -70,26 +105,7 @@ func (m *OrderedMap) Range(fn func(key string, val any) bool) {
 // MarshalJSON implements json.Marshaler, preserving insertion order.
 // json.MarshalIndent calls this then re-indents, so no separate indent method needed.
 func (m *OrderedMap) MarshalJSON() ([]byte, error) {
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	for i, k := range m.keys {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
-		kb, err := marshalNoHTMLEscape(k)
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(kb)
-		buf.WriteByte(':')
-		vb, err := marshalNoHTMLEscape(m.data[k])
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(vb)
-	}
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
+	return AppendJSON(make([]byte, 0, 256), m)
 }
 
 // marshalNoHTMLEscape serializes v to JSON without escaping &, <, >.
@@ -142,24 +158,69 @@ func (m *OrderedMap) UnmarshalJSON(b []byte) error {
 // key insertion order. Arrays, strings, numbers, booleans, and null are
 // decoded normally. This should be used instead of json.Unmarshal when key
 // order matters (which is always the case for JSONata evaluation).
+//
+// The result belongs to the caller, who may keep and mutate it.
 func DecodeJSON(b json.RawMessage) (any, error) {
+	return decodeJSON(b, false)
+}
+
+// DecodeInput decodes input the evaluator parses for a single evaluation call.
+// Its objects are frozen so custom functions can share their normalized views
+// (see NormalizedView); it must not be used for values handed to callers.
+func DecodeInput(b json.RawMessage) (any, error) {
+	return decodeJSON(b, true)
+}
+
+func decodeJSON(b json.RawMessage, freeze bool) (any, error) {
+	if v, ok := fastDecodeJSON(b, freeze); ok {
+		return v, nil
+	}
+	v, err := legacyDecodeJSON(b)
+	if err == nil && freeze {
+		freezeTree(v)
+	}
+	return v, err
+}
+
+// freezeTree freezes every object in a decoded value.
+func freezeTree(v any) {
+	switch t := v.(type) {
+	case *OrderedMap:
+		for _, k := range t.keys {
+			freezeTree(t.data[k])
+		}
+		t.freeze()
+	case []any:
+		for _, e := range t {
+			freezeTree(e)
+		}
+	}
+}
+
+// legacyDecodeJSON is the encoding/json token decoder. It remains the
+// reference for error reporting: fastDecodeJSON defers to it on any input it
+// does not accept.
+func legacyDecodeJSON(b json.RawMessage) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
 	return decodeValue(dec)
 }
 
 // DecodeRawMap converts a map of field names to raw JSON values into an
-// *OrderedMap by decoding each value individually via DecodeJSON. Objects
-// in the values preserve key insertion order, consistent with DecodeJSON.
+// *OrderedMap by decoding each value individually. Objects in the values
+// preserve key insertion order, consistent with DecodeJSON. Like DecodeInput,
+// it is for evaluator input scoped to one evaluation call, so the result is
+// frozen.
 func DecodeRawMap(m map[string]json.RawMessage) (*OrderedMap, error) {
 	om := NewOrderedMapWithCapacity(len(m))
 	for _, key := range slices.Sorted(maps.Keys(m)) {
-		val, err := DecodeJSON(m[key])
+		val, err := DecodeInput(m[key])
 		if err != nil {
 			return nil, fmt.Errorf("decode key %q: %w", key, err)
 		}
 		om.Set(key, val)
 	}
+	om.freeze()
 	return om, nil
 }
 

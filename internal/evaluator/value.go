@@ -336,3 +336,19 @@ func (e *JSONataError) Error() string {
 	}
 	return e.Code
 }
+
+// ToIntClamped truncates a JSONata number to int, saturating outside the int32
+// range. A plain int() of an out-of-range float is implementation-defined, and
+// int is only 32 bits on some WebAssembly targets, so indexes, limits and
+// widths beyond ±2^31 (all of which already mean "unbounded") are clamped.
+func ToIntClamped(f float64) int {
+	switch {
+	case math.IsNaN(f):
+		return 0
+	case f >= math.MaxInt32:
+		return math.MaxInt32
+	case f <= math.MinInt32:
+		return math.MinInt32
+	}
+	return int(f)
+}

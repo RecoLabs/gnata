@@ -72,17 +72,18 @@ func valueToString(v any, prettify bool) (string, error) {
 	case *evaluator.Sequence:
 		return valueToString(evaluator.CollapseSequence(val), prettify)
 	default:
-		sanitized := sanitizeForJSON(v)
-		var buf bytes.Buffer
-		enc := json.NewEncoder(&buf)
-		enc.SetEscapeHTML(false)
-		if prettify {
-			enc.SetIndent("", "  ")
-		}
-		if err := enc.Encode(sanitized); err != nil {
+		out, err := evaluator.AppendJSON(nil, sanitizeForJSON(v))
+		if err != nil {
 			return "", &evaluator.JSONataError{Code: "D1001", Message: "Number out of range"}
 		}
-		return strings.TrimRight(buf.String(), "\n"), nil
+		if prettify {
+			var buf bytes.Buffer
+			if err := json.Indent(&buf, out, "", "  "); err != nil {
+				return "", &evaluator.JSONataError{Code: "D1001", Message: "Number out of range"}
+			}
+			return buf.String(), nil
+		}
+		return string(out), nil
 	}
 }
 
@@ -173,7 +174,8 @@ func fnSubstring(args []any, _ any) (any, error) {
 
 	runes := []rune(s)
 	n := len(runes)
-	start := int(startF)
+	// Bounded to the string length so start+length cannot overflow int.
+	start := min(max(evaluator.ToIntClamped(startF), -n-1), n+1)
 
 	if start < 0 {
 		start = max(n+start, 0)
@@ -185,7 +187,7 @@ func fnSubstring(args []any, _ any) (any, error) {
 	if !hasLength {
 		return string(runes[start:]), nil
 	}
-	length := int(lengthF)
+	length := min(max(evaluator.ToIntClamped(lengthF), -1), n+1)
 	if length < 0 {
 		return "", nil
 	}
@@ -312,7 +314,7 @@ func fnPad(args []any, _ any) (any, error) {
 	if !widthOk {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$pad: argument 2 must be a number"}
 	}
-	width := int(widthF)
+	width := evaluator.ToIntClamped(widthF)
 
 	const maxPadWidth = 10_000
 	if width > maxPadWidth || width < -maxPadWidth {
@@ -440,7 +442,7 @@ func fnSplit(args []any, _ any) (any, error) {
 		if !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$split: argument 3 must be a number"}
 		}
-		limit = int(lf)
+		limit = evaluator.ToIntClamped(lf)
 		if limit < 0 {
 			return nil, &evaluator.JSONataError{Code: "D3020", Message: "$split: limit must be a non-negative integer"}
 		}

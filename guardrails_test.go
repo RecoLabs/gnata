@@ -71,6 +71,33 @@ func TestWithTimeout(t *testing.T) {
 	}
 }
 
+// TestWithTimeout_SlowCallsBoundOverrun checks that the deadline is enforced
+// at function-call granularity: with a slow custom function evaluated many
+// times, evaluation must stop within a few calls of the deadline, not after
+// the 128-node polling interval.
+func TestWithTimeout_SlowCallsBoundOverrun(t *testing.T) {
+	const callCost = 5 * time.Millisecond
+	env := gnata.NewCustomEnv(map[string]gnata.CustomFunc{
+		"slow": func(args []any, _ any) (any, error) {
+			time.Sleep(callCost)
+			return args[0], nil
+		},
+	})
+	e, err := gnata.Compile("$map([1..1000], function($v) { $slow($v) })", gnata.WithTimeout(20*time.Millisecond))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	start := time.Now()
+	_, err = e.EvalWithCustomFuncs(context.Background(), nil, env)
+	elapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "D1012") {
+		t.Fatalf("expected D1012, got %v", err)
+	}
+	if limit := 20*time.Millisecond + 10*callCost; elapsed > limit {
+		t.Fatalf("evaluation ran %v past start, want at most %v (deadline overrun not bounded per call)", elapsed, limit)
+	}
+}
+
 func TestWithTimeout_ParentCancellationPreserved(t *testing.T) {
 	e, err := gnata.Compile("1+1", gnata.WithTimeout(time.Minute))
 	if err != nil {
