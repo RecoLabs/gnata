@@ -2,7 +2,6 @@ package evaluator
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/recolabs/gnata/internal/parser"
 )
@@ -56,7 +55,7 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodeSort:
 		// If any sort term references %, we need tuple-aware path evaluation so
 		// that each item carries its parent context during sorting.
-		if slices.ContainsFunc(node.Terms, func(t parser.SortTerm) bool { return nodeHasParentRef(t.Expression) }) {
+		if sortHasParentRef(node) {
 			return evalSortWithParentTracking(node, input, env)
 		}
 		return evalSort(node, input, env)

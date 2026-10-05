@@ -39,7 +39,7 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	// recursion and without mutating the shared AST (concurrent safety).
 	baseCopy := *node
 	baseCopy.Group = nil
-	base, err := Eval(&baseCopy, input, env)
+	base, err := evalOperandStage(&baseCopy, input, env)
 	if err != nil || base == nil {
 		return nil, err
 	}
@@ -51,13 +51,10 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	case ConsArray:
 		items = v
 	case *Sequence:
-		if collapsed := CollapseSequence(v); collapsed == nil {
+		if len(v.Values) == 0 {
 			return nil, nil
-		} else if arr, ok := collapsed.([]any); ok {
-			items = arr
-		} else {
-			items = []any{collapsed}
 		}
+		items = v.Values
 	default:
 		items = []any{base}
 	}
@@ -151,6 +148,9 @@ func groupItems(pairs iter.Seq2[*parser.Node, *parser.Node], items []any, env *E
 				var err error
 				if valResult, err = Eval(valNode, groupInput, childEnv); err != nil {
 					return nil, err
+				}
+				if seq, ok := valResult.(*Sequence); ok {
+					valResult = CollapseSequence(seq)
 				}
 				if valNode.KeepArray && valResult == nil {
 					valResult = []any{}

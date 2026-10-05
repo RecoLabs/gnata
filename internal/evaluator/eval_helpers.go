@@ -25,6 +25,9 @@ func appendToSequence(seq *Sequence, v any) {
 }
 
 func stringifyValue(v any, prec int) (string, error) {
+	if seq, ok := v.(*Sequence); ok {
+		v = CollapseSequence(seq)
+	}
 	if v == nil {
 		return "", nil
 	}

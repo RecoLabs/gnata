@@ -46,6 +46,10 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		// jsonata-js collapses a sequence once its expression ends.
+		if seq, ok := val.(*Sequence); ok {
+			val = CollapseSequence(seq)
+		}
 		args = append(args, val)
 	}
 

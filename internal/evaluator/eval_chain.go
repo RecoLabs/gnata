@@ -121,6 +121,9 @@ func evalBind(node *parser.Node, input any, env *Environment) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if seq, ok := val.(*Sequence); ok {
+		val = CollapseSequence(seq)
+	}
 	env.Bind(node.Left.Value, val)
 	return val, nil
 }

@@ -169,7 +169,34 @@ func hasKeepArrayInChain(node *parser.Node) bool {
 	return false
 }
 
+// evalSubscript evaluates a subscript chain such as a[[0]][0]. As in
+// jsonata-js, each stage filters the sequence the previous one selected,
+// and only the chain's result collapses: a lone item stands alone.
 func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) {
+	result, err := evalSubscriptStage(node, input, env)
+	seq, isSeq := result.(*Sequence)
+	if err != nil || !isSeq {
+		return result, err
+	}
+	if node.KeepArray || hasKeepArrayInChain(node.Left) {
+		return CollapseToSlice(seq), nil
+	}
+	return CollapseSequence(seq), nil
+}
+
+// evalSubscriptStep evaluates a subscript as a path step: its index
+// selection stays a sequence, whose items are the next step's contexts.
+func evalSubscriptStep(node *parser.Node, input any, env *Environment) (any, error) {
+	result, err := evalSubscriptStage(node, input, env)
+	if seq, ok := result.(*Sequence); ok && err == nil && (node.KeepArray || hasKeepArrayInChain(node.Left)) {
+		return CollapseToSlice(seq), nil
+	}
+	return result, err
+}
+
+// evalSubscriptStage evaluates one stage of a subscript chain, leaving an
+// index selection a sequence for the next stage.
+func evalSubscriptStage(node *parser.Node, input any, env *Environment) (any, error) {
 	// When Left is a Block containing a single path expression and the
 	// predicate references % (parent), evaluate the inner path in tuple mode
 	// so each item retains its parent context for the % operator.
@@ -226,6 +253,9 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 		if _, ok := AsArray(v); ok {
 			return v
 		}
+		if _, ok := v.(*Sequence); ok {
+			return v
+		}
 		return []any{v}
 	}
 
@@ -245,7 +275,10 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	// Array index: when subscript evaluates to an array of all-numeric indices,
 	// select multiple elements. Non-numeric arrays fall through to predicate filter.
 	if result, ok, err := selectByIndices(rightVal, items, env); err != nil || ok {
-		return result, err
+		if err != nil || result == nil {
+			return nil, err
+		}
+		return wrapResult(result), nil
 	}
 
 	// Predicate filter: keep items where right evaluates to truthy.
@@ -282,13 +315,17 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 	if err := env.CheckSequence(len(seq.Values)); err != nil {
 		return nil, err
 	}
-	return CollapseSequence(seq), nil
+	if len(seq.Values) == 0 {
+		return nil, nil
+	}
+	return seq, nil
 }
 
 // evalSubscriptLeft evaluates the left side of a subscript and normalizes
 // the result to a slice. Returns (left, items, err); left==nil means no match.
 func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any, items []any, _ error) {
-	if node.Left != nil && node.Left.Type == parser.NodeDescendant {
+	switch {
+	case node.Left != nil && node.Left.Type == parser.NodeDescendant:
 		descSeq := CreateSequence()
 		appendToSequence(descSeq, input)
 		appendToSequence(descSeq, descendantLookup(input))
@@ -296,7 +333,15 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 			return nil, nil, err
 		}
 		left = CollapseSequence(descSeq)
-	} else {
+	case isSubscript(node.Left) || node.Left != nil && node.Left.Type == parser.NodeSort:
+		stage, err := evalOperandStage(node.Left, input, env)
+		if seq, ok := stage.(*Sequence); ok && err == nil {
+			return seq, seq.Values, nil
+		}
+		if left = stage; err != nil {
+			return nil, nil, err
+		}
+	default:
 		var err error
 		if left, err = Eval(node.Left, input, env); err != nil {
 			return nil, nil, err
@@ -311,15 +356,11 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 	case []any:
 		items = v
 	case *Sequence:
-		collapsed := CollapseSequence(v)
-		if collapsed == nil {
+		// A filter applies to the sequence's items, as in jsonata-js.
+		if len(v.Values) == 0 {
 			return nil, nil, nil
 		}
-		if arr, ok := AsArray(collapsed); ok {
-			items = arr
-		} else {
-			items = []any{collapsed}
-		}
+		items = v.Values
 	default:
 		items = []any{left}
 	}
@@ -352,7 +393,7 @@ func selectByIndices(rightVal any, items []any, env *Environment) (selected any,
 	if len(result) == 0 {
 		return nil, true, nil
 	}
-	return result, true, nil
+	return &Sequence{Values: result}, true, nil
 }
 
 // resolveIndices resolves every value of an index array with subscriptIndex.
@@ -454,4 +495,27 @@ func evalSubscriptBlockParent(node *parser.Node, input any, env *Environment) (a
 		return arr, nil
 	}
 	return []any{result}, nil
+}
+
+// evalOperandStage evaluates a subscript's or a group-by's operand, leaving
+// the sequence a subscript, sort or path yields uncollapsed: the next stage
+// applies to its items, of which a lone array is one.
+func evalOperandStage(node *parser.Node, input any, env *Environment) (any, error) {
+	switch {
+	case isSubscript(node):
+		return evalSubscriptStage(node, input, env)
+	case node.Type == parser.NodeSort:
+		return evalSortStep(node, input, env)
+	case node.Type == parser.NodePath && node.Group == nil && !pathHasTupleStep(node.Steps):
+		result, singleConsArray, err := walkPathSimple(node, input, env)
+		if _, isSeq := result.(*Sequence); isSeq && !node.KeepSingletonArray || err != nil {
+			return result, err
+		}
+		return pathResult(result, node.KeepSingletonArray, singleConsArray), nil
+	}
+	return Eval(node, input, env)
+}
+
+func isSubscript(n *parser.Node) bool {
+	return n != nil && n.Type == parser.NodeBinary && n.Value == "["
 }

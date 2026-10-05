@@ -98,16 +98,27 @@ func nodeHasParentRef(node *parser.Node) bool {
 // evalPathSimple is step-by-step path evaluation for paths with no index,
 // focus or parent (%) bindings.
 func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error) {
-	result := input
-	prevWasMapper, prevWasCons, singleConsArray := false, false, false
+	result, singleConsArray, err := walkPathSimple(node, input, env)
+	if err != nil {
+		return nil, err
+	}
+	return pathResult(result, node.KeepSingletonArray, singleConsArray), nil
+}
+
+// walkPathSimple evaluates a path's steps, leaving a sequence result
+// uncollapsed. singleConsArray reports that the result is an array
+// constructed from a single context.
+func walkPathSimple(node *parser.Node, input any, env *Environment) (result any, singleConsArray bool, _ error) {
+	result = input
+	prevWasMapper, prevWasCons := false, false
 	for i, step := range node.Steps {
 		if i > 0 && result == nil {
-			return nil, nil
+			return nil, false, nil
 		}
 		if seq, ok := result.(*Sequence); ok {
-			result = CollapseSequence(seq)
+			result = sequenceContexts(seq)
 			if i > 0 && result == nil {
-				return nil, nil
+				return nil, false, nil
 			}
 		}
 
@@ -127,10 +138,10 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 			result, lone, err = evalPathStepLone(step, result, env, prevWasMapper, node.KeepSingletonArray)
 		}
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if err := checkPathStep(stepInput, result, singleContext, lone, i == len(node.Steps)-1, env); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		// An array constructed from a single context, as in a.[b, c], is one
 		// context item for the next step rather than a sequence to map over.
@@ -145,17 +156,42 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 			}
 		}
 		if prevWasMapper && !singleConsArray && isNothingFound(step, result) {
-			return nil, nil
+			return nil, false, nil
 		}
 		_, isArr := result.([]any)
 		_, isSeq := result.(*Sequence)
 		prevWasMapper = isArr || isSeq
 	}
 
-	if node.KeepSingletonArray {
-		return keepSingletonArray(result, singleConsArray), nil
+	return result, singleConsArray, nil
+}
+
+// pathResult is a path's value: a sequence collapses as the path ends, as
+// in jsonata-js, unless [] keeps it an array.
+func pathResult(result any, keepSingleton, singleConsArray bool) any {
+	if seq, ok := result.(*Sequence); ok {
+		if keepSingleton {
+			return CollapseToSlice(seq)
+		}
+		return CollapseSequence(seq)
 	}
-	return result, nil
+	if keepSingleton {
+		return keepSingletonArray(result, singleConsArray)
+	}
+	return result
+}
+
+// sequenceContexts returns the contexts a step's sequence result holds for
+// the next step, as in jsonata-js, where a filter's result is a sequence
+// whose items are the contexts: a lone array item stays one context, and
+// any other sequence collapses.
+func sequenceContexts(seq *Sequence) any {
+	if len(seq.Values) == 1 {
+		if _, isArr := AsArray(seq.Values[0]); isArr {
+			return CollapseToSlice(seq)
+		}
+	}
+	return CollapseSequence(seq)
 }
 
 // checkPathStep applies the sequence guardrail to a path step's result. As
@@ -674,7 +710,7 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
 		}
 	case *Sequence:
-		collapsed := CollapseSequence(rv)
+		collapsed := sequenceContexts(rv)
 		if collapsed == nil {
 			return
 		}
@@ -713,7 +749,7 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
 		}
 	case *Sequence:
-		collapsed := CollapseSequence(rv)
+		collapsed := sequenceContexts(rv)
 		if collapsed == nil {
 			return
 		}
@@ -842,6 +878,9 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx, pathEnv *Environmen
 			if err != nil {
 				return nil, err
 			}
+			if seq, ok := val.(*Sequence); ok {
+				val = CollapseSequence(seq)
+			}
 			if val == nil {
 				continue
 			}
@@ -946,9 +985,11 @@ func evalPathStepLone(
 			return evalNameLone(step, input)
 		}
 		return noLone(Eval(step, input, env))
-	case parser.NodeWildcard,
-		parser.NodeVariable, parser.NodeString, parser.NodeValue,
-		parser.NodeSort: // Sort steps must be applied to the full accumulated input, not mapped per-element.
+	case parser.NodeWildcard:
+		return noLone(Eval(step, input, env))
+	case parser.NodeSort: // Sort steps must be applied to the full accumulated input, not mapped per-element.
+		return noLone(evalSortStep(step, input, env))
+	case parser.NodeVariable, parser.NodeString, parser.NodeValue:
 		return noLone(Eval(step, input, env))
 	case parser.NodeBlock:
 		// A block not preceded by a mapping step (prevWasMapper=false) should receive
@@ -963,7 +1004,7 @@ func evalPathStepLone(
 		// Subscript steps map per-element when preceded by a mapping step (prevWasMapper=true).
 		// When NOT preceded by a mapper, apply the subscript to the whole collected array.
 		if step.Value == "[" && step.Left != nil && !prevWasMapper {
-			return noLone(Eval(step, input, env))
+			return noLone(evalSubscriptStep(step, input, env))
 		}
 	}
 
@@ -992,8 +1033,11 @@ func mapPathStep(step *parser.Node, arr []any, env *Environment, keepSingletonAr
 	// Group steps produce one array per input element that must NOT be flattened;
 	// each per-element result is kept as a nested array in the output sequence.
 	isGroupStep, seq, evalItem := step.Type == parser.NodeUnary && step.Value == "[", CreateSequence(), Eval
-	if step.Type == parser.NodeFunction {
+	switch {
+	case step.Type == parser.NodeFunction:
 		evalItem = evalPathFunctionStep
+	case isSubscript(step):
+		evalItem = evalSubscriptStep
 	}
 	contributed := 0
 	for _, item := range arr {

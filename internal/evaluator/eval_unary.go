@@ -129,7 +129,7 @@ func evalObjectConstructor(node *parser.Node, input any, env *Environment) (any,
 // subscripted as in [[1,2]][0], which jsonata-js pushes into an enclosing
 // constructor as one value.
 func isArrayConstructor(n *parser.Node) bool {
-	for n.Type == parser.NodeBinary && n.Value == "[" && n.Left != nil {
+	for isSubscript(n) && n.Left != nil {
 		n = n.Left
 	}
 	return n.Type == parser.NodeUnary && n.Value == "["

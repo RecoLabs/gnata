@@ -159,6 +159,7 @@ var bindingOperatorCases = []exprCase{
 	{expr: `[a.[b,c], 1]`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2,1]`},
 	{expr: `($c := a.[b,c]; [$c, 3])`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2,3]`},
 	{expr: `[[[1,2]][0], 3]`, want: `[[1,2],3]`},
+	{expr: `[[[1,2]][[0,1]], 3]`, want: `[[1,2],3]`},
 	{expr: `($o := {"a": $x := 1}; $x)`, want: `1`},
 	// A tuple group skips a record whose key is undefined.
 	{expr: `a#$i{k:$i}`, data: `{"a":[{"x":1,"k":"p"},{"x":2}]}`, want: `{"p":0}`},
@@ -303,6 +304,31 @@ var subscriptCases = []exprCase{
 	{expr: `a#$i[[0,"x",1/0]]`, data: `{"a":[1,2,3]}`, code: "D1001"},
 	{expr: `a#$i[[0,"x"]]`, data: `{"a":[1,2,3]}`, want: `[1,2,3]`},
 	{expr: `$boolean(0/0)`, want: `false`},
+	{expr: `[1,2,3][[0]]`, want: `1`},
+	{expr: `[[1,2],[3]][[1]]`, want: `[3]`},
+	{expr: `[1,2,3][[0]][]`, want: `[1]`},
+	{expr: `[1,2,3][[5]][]`, want: undefined},
+	{expr: `a[[1]][0]`, data: `{"a":[[1,2],[3,4]]}`, want: `[3,4]`},
+	{expr: `a[[1]][$=4]`, data: `{"a":[[1,2],[3,4]]}`, want: undefined},
+	{expr: `a[[0]][[0]]`, data: `{"a":[[1,2],[3,4]]}`, want: `[1,2]`},
+	{expr: `a[[0]][]`, data: `{"a":[[1,2],[3,4]]}`, want: `[[1,2]]`},
+	{expr: `$count(a[[0]])`, data: `{"a":[[1,2],[3,4]]}`, want: `2`},
+	{expr: `[a[[0]]]`, data: `{"a":[[1,2],[3,4]]}`, want: `[1,2]`},
+	// A filter's result is a sequence, whose items are the next step's
+	// contexts, so a lone array stays one context.
+	{expr: `y[[0]].$count($)`, data: `{"y":[[1,2],[3]],"z":[{"a":[[1,2]]},{"a":[[3]]}],"n":[1,2,3]}`, want: `2`},
+	{expr: `z.a[[0]]`, data: `{"y":[[1,2],[3]],"z":[{"a":[[1,2]]},{"a":[[3]]}],"n":[1,2,3]}`, want: `[[1,2],[3]]`},
+	{expr: `y[$count($)=2].$count($)`, data: `{"y":[[1,2],[3]],"z":[{"a":[[1,2]]},{"a":[[3]]}],"n":[1,2,3]}`, want: `2`},
+	{expr: `z.a[$count($)>0]`, data: `{"y":[[1,2],[3]],"z":[{"a":[[1,2]]},{"a":[[3]]}],"n":[1,2,3]}`, want: `[[1,2],[3]]`},
+	{expr: `y[[0]]^($)[0]`, data: `{"y":[[1,2],[3]],"z":[{"a":[[1,2]]},{"a":[[3]]}],"n":[1,2,3]}`, want: `[1,2]`},
+	// A sort's result is a sequence too.
+	{expr: `[3]^($)`, want: `3`},
+	{expr: `[3]^($)[]`, want: `[3]`},
+	{expr: `$count(n^($))`, data: `{"y":[[1,2],[3]],"z":[{"a":[[1,2]]},{"a":[[3]]}],"n":[1,2,3]}`, want: `3`},
+	{expr: `q[[0]]{"k":$}`, data: `{"q":[[1,2,3]]}`, want: `{"k":[1,2,3]}`},
+	{expr: `q^(t){t:1}`, data: `{"q":[[{"t":"a"},{"t":"b"}]]}`, code: "T1003"},
+	{expr: `a^($) & "x"`, data: `{"a":[3,1,2]}`, want: `"[1,2,3]x"`},
+	{expr: `($x := s^($); $x + 1)`, data: `{"s":[3]}`, want: `4`},
 }
 
 var operatorCases = []exprCase{
