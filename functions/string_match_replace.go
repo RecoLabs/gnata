@@ -403,10 +403,13 @@ func replacerMatchObject(s string, m *evaluator.Match) *evaluator.OrderedMap {
 
 // ── regex helpers ─────────────────────────────────────────────────────────────
 
+var errNotPattern = &evaluator.JSONataError{Code: "T0410", Message: "expected a string or regex pattern"}
+
 func compileRegex(m map[string]any) (*evaluator.Regex, error) {
-	pattern, _ := m["pattern"].(string)
-	flags, _ := m["flags"].(string)
-	re, err := evaluator.CachedCompileRegex(pattern, flags)
+	if _, ok := evaluator.RegexValue(m); !ok {
+		return nil, errNotPattern
+	}
+	re, err := evaluator.CompileRegexValue(m)
 	if err != nil {
 		return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("invalid regex: %v", err)}
 	}
@@ -420,7 +423,7 @@ func compileRegexArg(v any) (*evaluator.Regex, error) {
 	case map[string]any:
 		return compileRegex(p)
 	default:
-		return nil, &evaluator.JSONataError{Code: "T0410", Message: "expected a string or regex pattern"}
+		return nil, errNotPattern
 	}
 }
 
