@@ -81,6 +81,10 @@ func TestDeepNesting(t *testing.T) {
 		{desc: "encode built objects", expr: "$length($string(" + deepBuilt + "))", want: float64(len(objectJSON))},
 		{desc: "compare built objects", expr: "($f := function(){" + deepBuilt + "}; $f() = $f())", want: true},
 		{desc: "field over nested arrays", expr: "a", data: deepArrayOf(map[string]any{"a": 1.0}), want: 1.0},
+		{
+			desc: "transform an object", expr: `$length($string($ ~> |$|{"b": 1}|))`, data: deepObject(),
+			want: float64(len(objectJSON) + len(`,"b":1`)),
+		},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {

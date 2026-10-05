@@ -4,30 +4,86 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
+// deepClone copies the objects and arrays of v. It fills the copy's nested
+// ones from an explicit stack of slots rather than by recursion, so a deeply
+// nested value cannot overflow the goroutine stack.
 func deepClone(v any) any {
+	var buf [8]cloneSlot
+	out, pending := cloneValue(v, buf[:0])
+	for len(pending) > 0 {
+		slot := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		var val any
+		val, pending = cloneValue(slot.src, pending)
+		slot.fill(val)
+	}
+	return out
+}
+
+// cloneSlot is a place in a copied object or array still to be filled with
+// the copy of src, itself an object or an array.
+type cloneSlot struct {
+	src     any
+	array   []any
+	index   int
+	ordered *OrderedMap
+	plain   map[string]any
+	key     string
+}
+
+func (s *cloneSlot) fill(v any) {
+	switch {
+	case s.ordered != nil:
+		s.ordered.data[s.key] = v
+	case s.plain != nil:
+		s.plain[s.key] = v
+	default:
+		s.array[s.index] = v
+	}
+}
+
+// cloneValue copies v. Of a copied object or array it sets the values that
+// are neither, and appends slots for the rest to pending.
+func cloneValue(v any, pending []cloneSlot) (any, []cloneSlot) {
 	switch val := v.(type) {
 	case *OrderedMap:
 		m := NewOrderedMapWithCapacity(val.Len())
-		val.Range(func(k string, vv any) bool {
-			m.Set(k, deepClone(vv))
-			return true
-		})
-		return m
+		for _, k := range val.keys {
+			item := val.data[k]
+			if isClonable(item) {
+				pending = append(pending, cloneSlot{src: item, ordered: m, key: k})
+			}
+			m.Set(k, item)
+		}
+		return m, pending
 	case map[string]any:
 		m := make(map[string]any, len(val))
-		for k, vv := range val {
-			m[k] = deepClone(vv)
+		for k, item := range val {
+			if isClonable(item) {
+				pending = append(pending, cloneSlot{src: item, plain: m, key: k})
+			}
+			m[k] = item
 		}
-		return m
+		return m, pending
 	case []any:
 		s := make([]any, len(val))
-		for i, vv := range val {
-			s[i] = deepClone(vv)
+		for i, item := range val {
+			if isClonable(item) {
+				pending = append(pending, cloneSlot{src: item, array: s, index: i})
+			}
+			s[i] = item
 		}
-		return s
-	default:
-		return v
+		return s, pending
 	}
+	return v, pending
+}
+
+func isClonable(v any) bool {
+	switch v.(type) {
+	case *OrderedMap, map[string]any, []any:
+		return true
+	}
+	return false
 }
 
 func evalTransform(node *parser.Node, _ any, env *Environment) (any, error) {
