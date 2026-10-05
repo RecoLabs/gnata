@@ -175,37 +175,14 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 		return nil, err
 	}
 
-	// keepArray is true when the [] operator was applied to this subscript (or any
-	// node in the left chain), forcing the result to be returned as an array even
-	// if singular. We walk the left chain to propagate KeepArray through sort steps.
+	// keepArray: [] applies to this subscript or to a node in its left chain,
+	// as through a sort step.
 	keepArray := node.KeepArray || parser.ChainKeepsArray(node.Left)
-
 	if len(items) == 0 {
-		if keepArray {
-			return []any{}, nil
-		}
 		return nil, nil
 	}
-
-	wrapResult := func(v any) any {
-		if !keepArray {
-			return v
-		}
-		if v == nil {
-			return []any{}
-		}
-		if _, ok := AsArray(v); ok {
-			return v
-		}
-		return []any{v}
-	}
-
 	if node.Right.Type == parser.NodeNumber {
-		item, err := pickItem(node.Right, items, env)
-		if err != nil || item == nil {
-			return nil, err
-		}
-		return wrapResult(item), nil
+		return pickItem(node.Right, items, keepArray, env)
 	}
 	indexVar := ""
 	if node.Left != nil {
@@ -215,20 +192,27 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	return wrapResult(CollapseSequence(filtered)), nil
+	return CollapseAndKeep(filtered, keepArray), nil
 }
 
-// pickItem applies a number-literal subscript, which jsonata-js resolves
-// without evaluating it per item.
-func pickItem(index *parser.Node, items []any, env *Environment) (any, error) {
+// pickItem applies a number-literal subscript. As in jsonata-js, an array
+// item it picks is the whole result.
+func pickItem(index *parser.Node, items []any, keepArray bool, env *Environment) (any, error) {
 	i, _, err := subscriptIndex(evalNumber(index, env), len(items))
 	if err != nil || i < 0 || i >= len(items) {
 		return nil, err
 	}
-	if item := items[i]; item != nil {
+	item := items[i]
+	if _, isArr := AsArray(item); isArr {
 		return item, nil
 	}
-	return Null, nil
+	if item == nil {
+		item = Null
+	}
+	if keepArray {
+		return KeptArray{item}, nil
+	}
+	return item, nil
 }
 
 // filterByPredicate evaluates predicate against each item and keeps it as
@@ -328,8 +312,8 @@ func contextFree(predicate *parser.Node, indexVar string) bool {
 
 // evalSubscriptLeft evaluates the left side of a subscript and normalizes
 // the result to a slice. Returns (left, items, err); left==nil means no match.
-func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any, items []any, _ error) {
-	left, err := Eval(node.Left, input, env)
+func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any, items []any, err error) {
+	left, err = Eval(node.Left, input, env)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -344,20 +328,16 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 		} else {
 			items = []any(v)
 		}
-	case []any:
-		items = v
 	case *Sequence:
-		collapsed := CollapseSequence(v)
-		if collapsed == nil {
+		if len(v.Values) == 0 {
 			return nil, nil, nil
 		}
-		if arr, ok := AsArray(collapsed); ok {
-			items = arr
-		} else {
-			items = []any{collapsed}
-		}
+		items = v.Values
 	default:
-		items = []any{left}
+		var isArr bool
+		if items, isArr = AsArray(left); !isArr {
+			items = []any{left}
+		}
 	}
 	return left, items, nil
 }
@@ -450,15 +430,5 @@ func evalSubscriptBlockParent(node *parser.Node, input any, env *Environment) (a
 			seq.Values = append(seq.Values, tctx.value)
 		}
 	}
-	result := CollapseSequence(seq)
-	if !keepArray {
-		return result, nil
-	}
-	if result == nil {
-		return []any{}, nil
-	}
-	if arr, ok := result.([]any); ok {
-		return arr, nil
-	}
-	return []any{result}, nil
+	return CollapseAndKeep(seq, keepArray), nil
 }

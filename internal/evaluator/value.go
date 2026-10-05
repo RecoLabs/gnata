@@ -28,64 +28,104 @@ func IsNull(v any) bool {
 // does not auto-map into its elements the way it maps a result sequence.
 type ConsArray []any
 
-// AsArray returns the slice behind a []any or ConsArray.
+// KeptArray is a one-item result sequence the [] operator kept as an
+// array, as in o.b[]. jsonata-js marks such a sequence keep-singleton: it
+// reads as an array, but a path step flattens it like any sequence, so
+// o.(b[]) is 5.
+type KeptArray []any
+
+// AsArray returns the slice behind a []any or a typed array (see typedArray).
 func AsArray(v any) ([]any, bool) {
-	switch a := v.(type) {
-	case []any:
+	if a, ok := v.([]any); ok {
 		return a, true
+	}
+	return typedArray(v)
+}
+
+// typedArray returns the slice behind a ConsArray or KeptArray, the
+// evaluator's internal array types.
+func typedArray(v any) ([]any, bool) {
+	switch a := v.(type) {
 	case ConsArray:
+		return []any(a), true
+	case KeptArray:
 		return []any(a), true
 	}
 	return nil, false
 }
 
-// StripCons converts ConsArray values to []any, recursively. Used at the
+// StripTypedArrays converts the evaluator's internal array types to []any,
+// recursively, including inside objects the evaluator built. Used at the
 // public Eval boundary so callers see ordinary slices.
-func StripCons(v any) any {
-	switch a := v.(type) {
-	case ConsArray:
-		return stripConsSlice([]any(a))
-	case []any:
-		return stripConsSliceIfNeeded(a)
-	default:
-		return v
-	}
+func StripTypedArrays(v any) any {
+	stripped, _ := stripTypedArrays(v)
+	return stripped
 }
 
-func stripConsSlice(s []any) []any {
-	out := make([]any, len(s))
+// stripTypedArrays returns v without internal array types in one pass,
+// copying a container only when something inside it changed. A frozen map
+// is decoded input, which never holds one.
+func stripTypedArrays(v any) (any, bool) {
+	if arr, ok := typedArray(v); ok {
+		if out, changed := stripSlice(arr); changed {
+			return out, true
+		}
+		return arr, true
+	}
+	switch a := v.(type) {
+	case []any:
+		if out, changed := stripSlice(a); changed {
+			return out, true
+		}
+	case *OrderedMap:
+		if a.frozen {
+			return v, false
+		}
+		var out *OrderedMap
+		for i, k := range a.keys {
+			val, changed := stripTypedArrays(a.data[k])
+			if changed && out == nil {
+				out = NewOrderedMapWithCapacity(len(a.keys))
+				for _, prev := range a.keys[:i] {
+					out.Set(prev, a.data[prev])
+				}
+			}
+			if out != nil {
+				out.Set(k, val)
+			}
+		}
+		if out != nil {
+			return out, true
+		}
+	}
+	return v, false
+}
+
+// stripSlice strips each element of s, returning a copy and true when one
+// changed, or nil and false.
+func stripSlice(s []any) ([]any, bool) {
+	var out []any
 	for i, e := range s {
-		out[i] = StripCons(e)
+		val, changed := stripTypedArrays(e)
+		if changed && out == nil {
+			out = make([]any, len(s))
+			copy(out, s[:i])
+		}
+		if out != nil {
+			out[i] = val
+		}
 	}
-	return out
-}
-
-func stripConsSliceIfNeeded(s []any) []any {
-	if slices.ContainsFunc(s, containsCons) {
-		return stripConsSlice(s)
-	}
-	return s
-}
-
-func containsCons(v any) bool {
-	switch a := v.(type) {
-	case ConsArray:
-		return true
-	case []any:
-		return slices.ContainsFunc(a, containsCons)
-	}
-	return false
+	return out, out != nil
 }
 
 // Sequence is the core multi-value container used throughout evaluation.
 // It represents an ordered collection of values that may be collapsed to a
 // single value or remain as a sequence depending on context.
 type Sequence struct {
-	Values        []any
-	KeepSingleton bool // do NOT unwrap single-element sequences
-	ConsArray     bool // explicitly constructed via [...]; prevents flattening
-	OuterWrapper  bool // input was a JSON array; treated as a single document
-	TupleStream   bool // contains tuple objects {"@": value, varName: value}
+	Values       []any
+	ConsArray    bool // explicitly constructed via [...]; prevents flattening
+	OuterWrapper bool // input was a JSON array; treated as a single document
+	TupleStream  bool // contains tuple objects {"@": value, varName: value}
 }
 
 // CreateSequence creates a Sequence optionally pre-populated with one value.
@@ -97,49 +137,40 @@ func CreateSequence(items ...any) *Sequence {
 
 // CollapseSequence applies JSONata singleton-collapsing rules:
 //   - len 0 → nil (undefined)
-//   - len 1 → elem[0] unless KeepSingleton is set
+//   - len 1 → elem[0]
 //   - len > 1 → []any(seq.Values) — ownership transfer; callers must not mutate
 func CollapseSequence(s *Sequence) any {
 	switch len(s.Values) {
 	case 0:
 		return nil
 	case 1:
-		if s.KeepSingleton {
-			return []any{s.Values[0]}
-		}
 		return s.Values[0]
 	default:
 		return slices.Clip(s.Values)
 	}
 }
 
-// CollapseAndKeep normalizes a function call result for callers that need
-// KeepArray (the [] suffix) support. Builtins returning *Sequence rely on
-// CollapseSequence; when keepArray is true, singletons are preserved as
-// one-element arrays instead of being unwrapped.
+// CollapseAndKeep normalizes a function call result. A *Sequence collapses
+// to a single value, an array or undefined; with keepArray (the [] suffix) a
+// one-item result is kept as a KeptArray instead.
 func CollapseAndKeep(result any, keepArray bool) any {
 	if seq, ok := result.(*Sequence); ok {
-		if keepArray {
-			s := *seq
-			s.KeepSingleton = true
-			seq = &s
+		if keepArray && len(seq.Values) == 1 {
+			return KeptArray{seq.Values[0]}
 		}
 		result = CollapseSequence(seq)
 	}
-	if keepArray {
-		switch result.(type) {
-		case []any, ConsArray:
-			return result
-		case nil:
-			return nil
-		default:
-			return []any{result}
-		}
+	if !keepArray {
+		return result
 	}
-	return result
+	switch result.(type) {
+	case nil, []any, ConsArray, KeptArray:
+		return result
+	}
+	return KeptArray{result}
 }
 
-// IsArray returns true for []any and ConsArray values (not *Sequence).
+// IsArray reports whether AsArray accepts v (a *Sequence is not an array).
 func IsArray(v any) bool {
 	_, ok := AsArray(v)
 	return ok
@@ -194,10 +225,9 @@ func ToBoolean(v any) bool {
 		return val.Len() > 0
 	case map[string]any:
 		return len(val) > 0
-	case []any:
-		return arrayToBoolean(val)
-	case ConsArray:
-		return arrayToBoolean(val)
+	case []any, ConsArray, KeptArray:
+		arr, _ := AsArray(val)
+		return arrayToBoolean(arr)
 	case *Sequence:
 		return ToBoolean(CollapseSequence(val))
 	}
@@ -266,7 +296,7 @@ func DeepEqualPrec(a, b any, prec int) bool { //nolint:gocyclo // type-switch fa
 	case string:
 		bv, ok := b.(string)
 		return ok && av == bv
-	case []any, ConsArray:
+	case []any, ConsArray, KeptArray:
 		bv, ok := AsArray(b)
 		avSlice, _ := AsArray(av)
 		if !ok || len(avSlice) != len(bv) {

@@ -355,10 +355,13 @@ var subscriptCases = []exprCase{
 	{expr: `$boolean(0/0)`, want: `false`},
 	{expr: `[[1,2],[3]][[0]]`, want: `[1,2]`},
 	{expr: `n[[0]]`, data: `{"n":[[2,1],[3,4]]}`, want: `[2,1]`},
+	{expr: `[[1,2],[3]][$[0]=1][]`, want: `[[1,2]]`},
+	{expr: `[[1,2],[3]][0][]`, want: `[1,2]`},
 	{expr: `a[b]`, data: `{"a":[{"b":1},{"b":0}]}`, want: undefined},
 	{expr: `a[b-1]`, data: `{"a":[{"b":1},{"b":0}]}`, want: `[{"b":1},{"b":0}]`},
 	{expr: `[1,2,3][$ > 1 ? 0 : 1]`, want: undefined},
 	{expr: `[1,2,3][[2,0,0]]`, want: `[1,1,3]`},
+	{expr: `[[1,2],[3]][0+0][]`, want: `[[1,2]]`},
 }
 
 var operatorCases = []exprCase{
@@ -393,6 +396,40 @@ var operatorCases = []exprCase{
 	{expr: `[[o.[b,c]]]`, data: pairsJSON, want: `[[5,6]]`},
 }
 
+// keepArrayCases cover the [] operator: it keeps a one-item result as an
+// array, which a later path step still flattens like any sequence.
+var keepArrayCases = []exprCase{
+	{expr: `o.b[]`, data: pairsJSON, want: `[5]`},
+	{expr: `o.(b[])`, data: pairsJSON, want: `5`},
+	{expr: `o.($.b[])`, data: pairsJSON, want: `5`},
+	{expr: `a.(b[])`, data: pairsJSON, want: `[1,3]`},
+	{expr: `($x := o.b[]; $x)`, data: pairsJSON, want: `[5]`},
+	{expr: `($x := o.b[]; o.$x)`, data: pairsJSON, want: `5`},
+	{expr: `($x := o.b[]; a.$x)`, data: pairsJSON, want: `[5,5]`},
+	{expr: `($f := function(){o.b[]}; $f())`, data: pairsJSON, want: `[5]`},
+	{expr: `o^(b)[]`, data: pairsJSON, want: `[{"b":5,"c":6}]`},
+	{expr: `o.(b^($)[])`, data: pairsJSON, want: `5`},
+	{expr: `o.[b,c]^(>$[0])[]`, data: pairsJSON, want: `[[5,6]]`},
+	{expr: `o.{"k": b[]}`, data: pairsJSON, want: `{"k":[5]}`},
+	{expr: `{"k": o.b[]}.k`, data: pairsJSON, want: `5`},
+	{expr: `a#$i.b[]`, data: pairsJSON, want: `[1,3]`},
+	{expr: `o#$i.[b,c][]`, data: pairsJSON, want: `[5,6]`},
+	{expr: `b[]`, data: `{"b":5}`, want: `[5]`},
+	{expr: `$type(b[])`, data: `{"b":5}`, want: `"array"`},
+	{expr: `a{b: c[]}`, data: `{"a":[{"b":"k","c":1},{"b":"j"}]}`, want: `{"k":[1]}`},
+	{expr: `a{b: (c)[]}`, data: `{"a":[{"b":"k","c":1},{"b":"j"}]}`, want: `{"k":1}`},
+	{expr: `x.(x ? [1])`, data: `{"x":[{"x":true},{}]}`, want: `[1]`},
+	{expr: `[1,2][$>5][]`, want: undefined},
+	{expr: `[{"k": o.b[]},{"k": 2}].k`, data: pairsJSON, want: `[5,2]`},
+	{expr: `[{"k": o.b[]}][k = 5]`, data: pairsJSON, want: `{"k":[5]}`},
+	{expr: `($o := {"k": o.b[]}; [$o, $o].k)`, data: pairsJSON, want: `[5,5]`},
+	{expr: `[{"k": o.[b,c]}, {"k": 1}].k`, data: pairsJSON, want: `[[5,6],1]`},
+	{expr: `$map([1], function($v){$$.o.b[]}).($type($))`, data: pairsJSON, want: `"number"`},
+	{expr: `($x := o[]; $x^(b))`, data: pairsJSON, want: `{"b":5,"c":6}`},
+	{expr: `o.b[]^($)`, data: pairsJSON, want: `[5]`},
+	{expr: `(o.b[])^($)`, data: pairsJSON, want: `5`},
+}
+
 func TestPathAndOperatorSemantics(t *testing.T) {
 	t.Run("parent operator", func(t *testing.T) { runExprCases(t, parentOperatorCases) })
 	t.Run("binding operators", func(t *testing.T) { runExprCases(t, bindingOperatorCases) })
@@ -400,5 +437,6 @@ func TestPathAndOperatorSemantics(t *testing.T) {
 	t.Run("transform", func(t *testing.T) { runExprCases(t, transformCases) })
 	t.Run("path steps", func(t *testing.T) { runExprCases(t, pathStepCases) })
 	t.Run("subscripts", func(t *testing.T) { runExprCases(t, subscriptCases) })
+	t.Run("keep array", func(t *testing.T) { runExprCases(t, keepArrayCases) })
 	t.Run("operators", func(t *testing.T) { runExprCases(t, operatorCases) })
 }

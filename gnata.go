@@ -225,10 +225,9 @@ func normalizeValue(v any, shared bool) any {
 			return evaluator.NormalizedView(val, normalizeOrderedMapShared)
 		}
 		return normalizeOrderedMap(val, false)
-	case []any:
-		return normalizeSlice(val, shared)
-	case evaluator.ConsArray:
-		return normalizeSlice([]any(val), shared)
+	case []any, evaluator.ConsArray, evaluator.KeptArray:
+		arr, _ := evaluator.AsArray(val)
+		return normalizeSlice(arr, shared)
 	}
 	return v
 }
@@ -269,7 +268,7 @@ func needsNormalize(v any) bool {
 		return true
 	case *evaluator.Sequence:
 		return true
-	case []any, evaluator.ConsArray:
+	case []any, evaluator.ConsArray, evaluator.KeptArray:
 		return true
 	}
 	return evaluator.IsNull(v)
@@ -323,7 +322,7 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 	if seq, ok := result.(*evaluator.Sequence); ok {
 		result = evaluator.CollapseSequence(seq)
 	}
-	return evaluator.StripCons(result), nil
+	return evaluator.StripTypedArrays(result), nil
 }
 
 // Eval evaluates the expression against pre-parsed Go data (map[string]any, []any, scalar, nil).

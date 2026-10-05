@@ -137,6 +137,13 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$keys()`, want: undefined},
 	{expr: `$spread([{"a":1,"b":2}, 3])`, want: `[{"a":1},{"b":2},3]`},
 	{expr: `$spread([])`, want: undefined},
+	{expr: `$map(a, $keys)[]`, data: pairsJSON, want: `[["b","c"],["b","c"]]`},
+	{expr: `$map(a, function($v){$v.b[]})`, data: pairsJSON, want: `[[1],[3]]`},
+	{expr: `$keys({"a":1})[]`, want: `["a"]`},
+	{expr: `$lookup([{"b":1}], "b")[]`, want: `[1]`},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[[0]]`, want: `[1,2]`},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[true][]`, want: `[[1,2]]`},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[0][]`, want: `[1,2]`},
 }
 
 var numericBuiltinCases = []exprCase{

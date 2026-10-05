@@ -6,18 +6,14 @@ import (
 
 func deepClone(v any) any {
 	switch val := v.(type) {
-	case *OrderedMap:
-		m := NewOrderedMapWithCapacity(val.Len())
-		val.Range(func(k string, vv any) bool {
+	case *OrderedMap, map[string]any:
+		// An *OrderedMap even for a Go map, so the public boundary strips
+		// internal array types an update stores in it (see StripTypedArrays).
+		m := NewOrderedMapWithCapacity(MapLen(val))
+		MapRange(val, func(k string, vv any) bool {
 			m.Set(k, deepClone(vv))
 			return true
 		})
-		return m
-	case map[string]any:
-		m := make(map[string]any, len(val))
-		for k, vv := range val {
-			m[k] = deepClone(vv)
-		}
 		return m
 	case []any:
 		s := make([]any, len(val))

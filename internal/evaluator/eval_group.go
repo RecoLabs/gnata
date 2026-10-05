@@ -30,20 +30,14 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	}
 
 	var items []any
-	switch v := base.(type) {
-	case []any:
-		items = v
-	case ConsArray:
-		items = v
-	case *Sequence:
-		if collapsed := CollapseSequence(v); collapsed == nil {
+	if seq, ok := base.(*Sequence); ok {
+		if base = CollapseSequence(seq); base == nil {
 			return nil, nil
-		} else if arr, ok := collapsed.([]any); ok {
-			items = arr
-		} else {
-			items = []any{collapsed}
 		}
-	default:
+	}
+	if arr, ok := AsArray(base); ok {
+		items = arr
+	} else {
 		items = []any{base}
 	}
 	return groupItems(groupPairs(node.Group.Pairs), items, env)
@@ -132,13 +126,6 @@ func groupItems(pairs iter.Seq2[*parser.Node, *parser.Node], items []any, env *E
 				var err error
 				if valResult, err = Eval(valNode, groupInput, childEnv); err != nil {
 					return nil, err
-				}
-				if valNode.KeepArray && valResult == nil {
-					valResult = []any{}
-				} else if valNode.KeepArray {
-					if _, isArr := valResult.([]any); !isArr {
-						valResult = []any{valResult}
-					}
 				}
 			}
 			if valResult != nil {

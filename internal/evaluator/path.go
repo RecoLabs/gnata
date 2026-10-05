@@ -95,7 +95,7 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 			return nil, nil
 		}
 		if seq, ok := result.(*Sequence); ok {
-			result = CollapseSequence(seq)
+			result = flattenKept(CollapseSequence(seq))
 			if i > 0 && result == nil {
 				return nil, nil
 			}
@@ -110,12 +110,12 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 		case i > 0 && step.Type == parser.NodeVariable:
 			result, err = evalVariableStep(step, result, env, i == len(node.Steps)-1)
 		default:
-			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray)
+			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray, i == len(node.Steps)-1)
 		}
 		if err != nil {
 			return nil, err
 		}
-		result = spreadSortIndexStage(step, result)
+		result = flattenKept(spreadSortIndexStage(step, result))
 		// Mapping over a one-item array nests a constructed array for [];
 		// unnest it so later steps see it whole and it is wrapped once.
 		if prevWasMapper && node.KeepSingletonArray {
@@ -161,18 +161,25 @@ func unnestCons(v any) any {
 	return v
 }
 
-// keepSingletonArray applies a path's [] suffix: the result is always an
-// array, and a constructed array stays one item.
+// flattenKept returns the item of a KeptArray, which a path step flattens
+// like any sequence: o.(b[]) is 5.
+func flattenKept(v any) any {
+	if kept, ok := v.(KeptArray); ok {
+		return kept[0]
+	}
+	return v
+}
+
+// keepSingletonArray applies a path's [] suffix: a single value, including a
+// constructed array, becomes a KeptArray, while an array result stays as is.
 func keepSingletonArray(result any) any {
 	switch v := result.(type) {
-	case []any:
+	case []any, KeptArray:
 		return v
-	case ConsArray:
-		return []any{v}
 	case nil:
 		return nil
 	}
-	return []any{result}
+	return KeptArray{result}
 }
 
 // evalConsArrayStep evaluates a step whose input is an array constructed
@@ -185,7 +192,7 @@ func evalConsArrayStep(step *parser.Node, input any, env *Environment, keepSingl
 	case step.Type == parser.NodeUnary && step.Value == "{":
 		return consArrayGroup(step, input, env)
 	}
-	return evalPathStep(step, input, env, false, keepSingleton)
+	return evalPathStep(step, input, env, false, keepSingleton, false)
 }
 
 // consArrayGroup applies a {...} step to a constructed array taken as one
@@ -226,19 +233,15 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 	}
 	result := CollapseSequence(seq)
 
-	if node.KeepSingletonArray {
-		switch v := result.(type) {
-		case []any:
-			return v, nil
-		case ConsArray:
-			return []any(v), nil
-		default:
-			if result != nil {
-				return []any{result}, nil
-			}
-		}
+	if !node.KeepSingletonArray {
+		return result, nil
 	}
-	return result, nil
+	// A tuple stream holds a constructed array's items, as in jsonata-js:
+	// o#$i.[b,c][] is [5,6].
+	if cons, ok := result.(ConsArray); ok {
+		return []any(cons), nil
+	}
+	return keepSingletonArray(result), nil
 }
 
 // streamPos says where a walked path sits relative to the tuple stream.
@@ -642,7 +645,7 @@ func walkPrefixSteps(steps []*parser.Node, input any, env *Environment, keepSing
 			if val == nil {
 				continue
 			}
-			result, err := evalPathStep(step, val, ctx.env, false, keepSingleton)
+			result, err := evalPathStep(step, val, ctx.env, false, keepSingleton, false)
 			if err != nil {
 				return nil, err
 			}
@@ -668,7 +671,7 @@ func expandLastStep(lastStep *parser.Node, prefixCtxs []pathCtx) ([]pathCtx, err
 		if val == nil {
 			continue
 		}
-		result, err := evalPathStep(lastStep, val, ctx.env, false, false)
+		result, err := evalPathStep(lastStep, val, ctx.env, false, false, false)
 		if err != nil {
 			return nil, err
 		}
@@ -816,7 +819,7 @@ func evalJoinFilter(ctxs, dst []pathCtx, leftNode, predicate *parser.Node, focus
 		if val == nil {
 			continue
 		}
-		leftResult, err := evalPathStep(leftNode, val, ctx.env, false, false)
+		leftResult, err := evalPathStep(leftNode, val, ctx.env, false, false, false)
 		if err != nil {
 			return nil, err
 		}
@@ -891,29 +894,18 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 		return elem
 	}
 
-	switch rv := result.(type) {
-	case ConsArray:
-		for j, elem := range rv {
-			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
-		}
-	case []any:
-		for j, elem := range rv {
-			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
-		}
-	case *Sequence:
-		collapsed := CollapseSequence(rv)
-		if collapsed == nil {
+	if seq, ok := result.(*Sequence); ok {
+		if result = CollapseSequence(seq); result == nil {
 			return
 		}
-		if arr, ok := AsArray(collapsed); ok {
-			for j, elem := range arr {
-				*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
-			}
-		} else {
-			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(collapsed), env: bindAt(0, collapsed)})
-		}
-	default:
+	}
+	arr, ok := AsArray(result)
+	if !ok {
 		*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(result), env: bindAt(0, result)})
+		return
+	}
+	for j, elem := range arr {
+		*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
 	}
 }
 
@@ -927,29 +919,18 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 		}
 		return e
 	}
-	switch rv := result.(type) {
-	case ConsArray:
-		for j, elem := range rv {
-			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
-		}
-	case []any:
-		for j, elem := range rv {
-			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
-		}
-	case *Sequence:
-		collapsed := CollapseSequence(rv)
-		if collapsed == nil {
+	if seq, ok := result.(*Sequence); ok {
+		if result = CollapseSequence(seq); result == nil {
 			return
 		}
-		if arr, ok := AsArray(collapsed); ok {
-			for j, elem := range arr {
-				*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
-			}
-		} else {
-			*nextCtxs = append(*nextCtxs, pathCtx{value: collapsed, env: bindAt(0, collapsed)})
-		}
-	default:
+	}
+	arr, ok := AsArray(result)
+	if !ok {
 		*nextCtxs = append(*nextCtxs, pathCtx{value: result, env: bindAt(0, result)})
+		return
+	}
+	for j, elem := range arr {
+		*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
 	}
 }
 
@@ -1130,8 +1111,11 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 //
 // keepSingletonArray, when true, means the path has [] — group steps should
 // NOT collapse their 1-element result (e.g. $.[v,e][] for 1 item → [[v,e]]).
+//
+// lastStep, when true, returns a lone plain-array item result unflattened,
+// as jsonata-js evaluateStep does: x.(x ? [1]) is [1].
 func evalPathStep(
-	step *parser.Node, input any, env *Environment, prevWasMapper, keepSingletonArray bool,
+	step *parser.Node, input any, env *Environment, prevWasMapper, keepSingletonArray, lastStep bool,
 ) (any, error) {
 	// Steps that already handle array inputs natively (field lookup, wildcard,
 	// descendant, variable, literals, sort) are delegated directly.
@@ -1184,6 +1168,8 @@ func evalPathStep(
 	if step.Type == parser.NodeFunction {
 		evalItem = evalPathFunctionStep
 	}
+	var lone any // the last defined item result
+	defined := 0
 	for _, item := range arr {
 		val, err := evalItem(step, item, env)
 		if err != nil {
@@ -1197,14 +1183,14 @@ func evalPathStep(
 			seq.Values = append(seq.Values, val)
 			continue
 		}
-		switch v := val.(type) {
-		case []any:
-			seq.Values = append(seq.Values, v...)
-		case *Sequence:
-			seq.Values = append(seq.Values, v.Values...)
-		default:
-			appendToSequence(seq, val)
-		}
+		defined++
+		lone = val
+		appendFlattened(seq, val)
+	}
+	// As jsonata-js evaluateStep does, a last step returns a lone item
+	// result that is a plain array as is; a sequence would be flattened.
+	if plain, ok := lone.([]any); ok && lastStep && defined == 1 {
+		return plain, nil
 	}
 	if len(seq.Values) == 0 {
 		return nil, nil
@@ -1215,6 +1201,19 @@ func evalPathStep(
 		return seq.Values, nil
 	}
 	return CollapseSequence(seq), nil
+}
+
+// appendFlattened appends a step's result for one item to seq, flattening
+// an array or sequence, but not a constructed array, as jsonata-js
+// evaluateStep does.
+func appendFlattened(seq *Sequence, val any) {
+	switch v := val.(type) {
+	case []any, KeptArray:
+		arr, _ := AsArray(v)
+		seq.Values = append(seq.Values, arr...)
+	default:
+		appendToSequence(seq, val)
+	}
 }
 
 // tupleStage is one predicate of a step, with the #$var bound after it.
@@ -1320,7 +1319,7 @@ func evalTupleContextStep(step *parser.Node, val any, env *Environment, keepSing
 	case step.Type == parser.NodeWildcard:
 		result, err = evalWildcard(step, val, env)
 	default:
-		result, err = evalPathStep(step, val, env, false, keepSingleton)
+		result, err = evalPathStep(step, val, env, false, keepSingleton, false)
 	}
 	if err != nil {
 		return nil, err
@@ -1589,11 +1588,7 @@ func evalVariableStep(step *parser.Node, input any, env *Environment, lastStep b
 	}
 	seq := CreateSequence()
 	for _, val := range results {
-		if arr, ok := val.([]any); ok {
-			seq.Values = append(seq.Values, arr...)
-			continue
-		}
-		appendToSequence(seq, val)
+		appendFlattened(seq, val)
 	}
 	if len(seq.Values) == 0 {
 		return nil, nil

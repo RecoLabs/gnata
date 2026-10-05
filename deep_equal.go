@@ -59,8 +59,9 @@ func deepEqNorm(a, b any) bool {
 			}
 		}
 		return true
-	case evaluator.ConsArray:
-		return deepEqNorm([]any(av), b)
+	case evaluator.ConsArray, evaluator.KeptArray:
+		arr, _ := evaluator.AsArray(av)
+		return deepEqNorm(arr, b)
 	case map[string]any:
 		if !evaluator.IsMap(b) || evaluator.MapLen(b) != len(av) {
 			return false

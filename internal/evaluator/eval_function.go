@@ -163,34 +163,34 @@ func stackOverflowError(counter *callCounter) error {
 	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 }
 
-// callBuiltin calls a builtin with each constructed-array argument as a
-// plain array. jsonata-js passes the array object itself, so a builtin that
-// returns an argument unchanged returns the constructed array.
+// callBuiltin calls a builtin with each typed array argument (see
+// typedArray) as a plain array. jsonata-js passes the array object
+// itself, so a builtin that returns an argument unchanged returns it as is.
 func callBuiltin(args []any, call func([]any) (any, error)) (any, error) {
-	result, err := call(unconsArgs(args))
+	result, err := call(plainArrayArgs(args))
 	if err != nil {
 		return nil, err
 	}
 	if arr, ok := result.([]any); ok && len(arr) > 0 {
 		for _, arg := range args {
-			if cons, ok := arg.(ConsArray); ok && len(cons) == len(arr) && &cons[0] == &arr[0] {
-				return cons, nil
+			if typed, ok := typedArray(arg); ok && len(typed) == len(arr) && &typed[0] == &arr[0] {
+				return arg, nil
 			}
 		}
 	}
 	return result, nil
 }
 
-// unconsArgs returns args with each top-level ConsArray as a plain []any,
-// copying args only when one is found.
-func unconsArgs(args []any) []any {
+// plainArrayArgs returns args with each top-level typed array as a plain
+// []any, copying args only when one is found.
+func plainArrayArgs(args []any) []any {
 	out, copied := args, false
 	for i, arg := range args {
-		if cons, ok := arg.(ConsArray); ok {
+		if typed, ok := typedArray(arg); ok {
 			if !copied {
 				out, copied = slices.Clone(args), true
 			}
-			out[i] = []any(cons)
+			out[i] = typed
 		}
 	}
 	return out

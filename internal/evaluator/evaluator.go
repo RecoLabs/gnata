@@ -30,6 +30,9 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodeVariable:
 		return evalVariable(node, input, env)
 	case parser.NodeName:
+		if node.KeepArray {
+			return keepStepResult(evalName(node, input, env))
+		}
 		return evalName(node, input, env)
 	case parser.NodeWildcard:
 		return evalWildcard(node, input, env)
@@ -54,12 +57,7 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodePartial:
 		return evalPartial(node, input, env)
 	case parser.NodeSort:
-		// If any sort term references %, we need tuple-aware path evaluation so
-		// that each item carries its parent context during sorting.
-		if slices.ContainsFunc(node.Terms, func(t parser.SortTerm) bool { return nodeHasParentRef(t.Expression) }) {
-			return evalSortWithParentTracking(node, input, env)
-		}
-		return evalSort(node, input, env)
+		return evalSortNode(node, input, env)
 	case parser.NodeRegex:
 		return evalRegex(node.Value), nil
 	case parser.NodeTransform:
@@ -75,6 +73,34 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	default:
 		return nil, fmt.Errorf("unknown node type: %s", node.Type)
 	}
+}
+
+// evalSortNode evaluates a sort outside a path. jsonata-js makes the sort
+// a step of its left path, so a [] there or on the sort applies to the
+// sorted result: o.b[]^($) is [5].
+func evalSortNode(node *parser.Node, input any, env *Environment) (any, error) {
+	sortFn := evalSort
+	// If any sort term references %, we need tuple-aware path evaluation so
+	// that each item carries its parent context during sorting.
+	if slices.ContainsFunc(node.Terms, func(t parser.SortTerm) bool { return nodeHasParentRef(t.Expression) }) {
+		sortFn = evalSortWithParentTracking
+	}
+	if parser.ChainKeepsArray(node) {
+		return keepStepResult(sortFn(node, input, env))
+	}
+	return sortFn(node, input, env)
+}
+
+// keepStepResult applies a [] suffix to a name or sort outside a path, which
+// jsonata-js evaluates as a one-step path: o^(b)[] is [o].
+func keepStepResult(result any, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	if seq, ok := result.(*Sequence); ok {
+		result = CollapseSequence(seq)
+	}
+	return keepSingletonArray(result), nil
 }
 
 // evalDescendant evaluates the ** operator, enforcing the sequence guardrail

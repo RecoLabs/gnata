@@ -53,7 +53,7 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 				} else {
 					result = append(result, v.Values...)
 				}
-			case []any, ConsArray:
+			case []any, ConsArray, KeptArray:
 				if isExplicitArray {
 					result = append(result, val)
 				} else {

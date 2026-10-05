@@ -389,7 +389,7 @@ func TestRegressionJSON(t *testing.T) { //nolint:funlen // TDT data
 			desc:    "empty_array_filter_keepArray",
 			expr:    `arr[][$contains($, "x")]`,
 			payload: `{"arr":[]}`,
-			want:    []any{},
+			want:    nil,
 		},
 		// $string serialization
 		{

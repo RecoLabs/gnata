@@ -122,7 +122,8 @@ func TestCustomFuncArgs_CallerDecodedValuesAreNotCached(t *testing.T) {
 }
 
 // TestCustomFuncArgs_ConstructedArraysArePlainSlices checks that arrays built
-// by [...] path steps reach a custom function as []any at any depth.
+// by [...] path steps or kept by [] reach a custom function as []any at any
+// depth.
 func TestCustomFuncArgs_ConstructedArraysArePlainSlices(t *testing.T) {
 	isSlice := func(args []any, _ any) (any, error) {
 		outer, ok := args[0].([]any)
@@ -137,15 +138,22 @@ func TestCustomFuncArgs_ConstructedArraysArePlainSlices(t *testing.T) {
 		return true, nil
 	}
 	se := gnata.NewStreamEvaluator(nil, gnata.WithCustomFunctions(map[string]gnata.CustomFunc{"isSlice": isSlice}))
-	idx, err := se.Compile(`$isSlice(a.[b, c])`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := se.EvalMany(context.Background(), json.RawMessage(`{"a":[{"b":1,"c":2},{"b":3,"c":4}]}`), "cons", []int{idx})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res[0] != true {
-		t.Fatalf("$isSlice(a.[b, c]) = %v, want true", res[0])
+	for _, expr := range []string{
+		`$isSlice(a.[b, c])`,
+		`$isSlice($map(a, function($v){$v.b[]}))`,
+	} {
+		t.Run(expr, func(t *testing.T) {
+			idx, err := se.Compile(expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := se.EvalMany(context.Background(), json.RawMessage(`{"a":[{"b":1,"c":2},{"b":3,"c":4}]}`), "cons", []int{idx})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res[0] != true {
+				t.Fatalf("%s = %v, want true", expr, res[0])
+			}
+		})
 	}
 }

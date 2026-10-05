@@ -214,7 +214,7 @@ func containsValue(arr, elem any, prec int) bool {
 		return false
 	}
 	switch v := arr.(type) {
-	case []any, ConsArray:
+	case []any, ConsArray, KeptArray:
 		items, _ := AsArray(v)
 		for _, item := range items {
 			if DeepEqualPrec(item, elem, prec) {
@@ -261,7 +261,9 @@ func evalVariable(node *parser.Node, input any, env *Environment) (any, error) {
 // whether the field was ever found to distinguish "undefined" from "found
 // as an empty array", singleton-collapse a single match) are mirrored by
 // path_bytes.go's walkPureSteps/stepArray for the gjson-based fast path.
-// Keep the two in sync: a change here needs the matching change there.
+// Keep the two in sync: a change here needs the matching change there
+// (internal array types never occur in decoded input, so their handling is
+// evaluator-only).
 func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 	switch v := input.(type) {
 	case *OrderedMap:
@@ -269,19 +271,13 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 		if !ok {
 			return nil, nil
 		}
-		if val == nil {
-			return Null, nil
-		}
-		return val, nil
+		return fieldValue(val), nil
 	case map[string]any:
 		val, ok := v[node.Value]
 		if !ok {
 			return nil, nil
 		}
-		if val == nil {
-			return Null, nil
-		}
-		return val, nil
+		return fieldValue(val), nil
 	case []any:
 		// JSONata maps field lookups across arrays.
 		// Per the JSONata spec, array results from each field lookup are
@@ -289,7 +285,7 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 		seq := CreateSequence()
 		fieldFound := false
 		for _, item := range v {
-			val, err := evalName(node, item, nil)
+			val, err := lookupItem(node, item)
 			if err != nil {
 				return nil, err
 			}
@@ -297,10 +293,11 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 				continue
 			}
 			fieldFound = true
-			// Flatten plain []any results from navigating through arrays.
-			// This matches JSONata's automatic flattening semantics.
-			switch inner := val.(type) {
-			case []any:
+			// Flatten array results from navigating through arrays, except a
+			// constructed array, as jsonata-js evaluateStep does.
+			switch val.(type) {
+			case []any, KeptArray:
+				inner, _ := AsArray(val)
 				for _, sv := range inner {
 					if sv == nil {
 						sv = Null
@@ -324,13 +321,38 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 			return seq.Values[0], nil
 		}
 		return CollapseSequence(seq), nil
-	case ConsArray:
-		return evalName(node, []any(v), nil)
+	case ConsArray, KeptArray:
+		arr, _ := AsArray(v)
+		return evalName(node, arr, nil)
 	case *Sequence:
 		return evalName(node, CollapseSequence(v), nil)
 	default:
 		return nil, nil
 	}
+}
+
+// lookupItem looks a name up in one item of an array: an object's field
+// value as stored, so the caller can flatten a kept array it holds, or the
+// name's result for any other item.
+func lookupItem(node *parser.Node, item any) (any, error) {
+	if !IsMap(item) {
+		return evalName(node, item, nil)
+	}
+	val, ok := MapGet(item, node.Value)
+	if ok && val == nil {
+		return Null, nil
+	}
+	return val, nil
+}
+
+// fieldValue returns a field's value as a name step yields it. jsonata-js
+// evaluates a name as a one-step path, which flattens a kept array the
+// field holds: {"k": o.b[]}.k is 5.
+func fieldValue(val any) any {
+	if val == nil {
+		return Null
+	}
+	return flattenKept(val)
 }
 
 // evalWildcard evaluates * against one context item (see wildcardItem).

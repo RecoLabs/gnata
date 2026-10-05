@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -235,5 +236,53 @@ func TestCustomFunctionPanicIsRecovered(t *testing.T) {
 				t.Fatalf("err = %v, want it to contain %q", err, tC.want)
 			}
 		})
+	}
+}
+
+// TestEvalResultHasNoInternalArrays checks that results, including values
+// inside objects the expression built, reach the caller as plain slices.
+func TestEvalResultHasNoInternalArrays(t *testing.T) {
+	for _, expr := range []string{
+		`{"k": o.b[]}`,
+		`{"k": o.[b, c]}`,
+		`{"k": [{"j": o.b[]}]}`,
+		`$ ~> |o|{"z": b[]}|`,
+	} {
+		t.Run(expr, func(t *testing.T) {
+			compiled, err := gnata.Compile(expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := compiled.Eval(context.Background(), map[string]any{"o": map[string]any{"b": 5.0, "c": 6.0}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNoInternalArrays(t, got)
+		})
+	}
+}
+
+func assertNoInternalArrays(t *testing.T, v any) {
+	t.Helper()
+	switch val := v.(type) {
+	case []any:
+		for _, elem := range val {
+			assertNoInternalArrays(t, elem)
+		}
+	case *gnata.OrderedMap:
+		for _, k := range val.Keys() {
+			elem, _ := val.Get(k)
+			assertNoInternalArrays(t, elem)
+		}
+	case map[string]any:
+		for _, elem := range val {
+			assertNoInternalArrays(t, elem)
+		}
+	default:
+		// The internal array types are unexported from gnata, so match any
+		// type of the evaluator package rather than a list that can go stale.
+		if typ := fmt.Sprintf("%T", v); strings.HasPrefix(typ, "evaluator.") {
+			t.Fatalf("result holds internal type %s", typ)
+		}
 	}
 }

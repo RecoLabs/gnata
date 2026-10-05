@@ -19,14 +19,10 @@ func fnCount(args []any, _ any) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return float64(0), nil
 	}
-	switch v := args[0].(type) {
-	case []any:
-		return float64(len(v)), nil
-	case evaluator.ConsArray:
-		return float64(len(v)), nil
-	default:
-		return float64(1), nil
+	if arr, ok := evaluator.AsArray(args[0]); ok {
+		return float64(len(arr)), nil
 	}
+	return float64(1), nil
 }
 
 // ── $append ───────────────────────────────────────────────────────────────────
@@ -70,7 +66,7 @@ func wrapArray(v any) []any {
 	return []any{v}
 }
 
-// tryAsArray returns a []any if v is an array-like type ([]any, ConsArray, or *Sequence),
+// tryAsArray returns a []any if v is an array (see evaluator.AsArray) or a *Sequence,
 // or nil if v is a scalar. Used for auto-mapping: functions that expect a
 // scalar can map over arrays when one is provided.
 func tryAsArray(v any) []any {
