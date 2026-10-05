@@ -256,12 +256,14 @@ func evalVariable(node *parser.Node, input any, env *Environment) (any, error) {
 	return val, nil
 }
 
-// evalBoundedName evaluates a field lookup outside a path step. A lookup
-// over an array builds a sequence, which counts against the sequence
-// guardrail; in a path, the step's result is checked instead.
+// evalBoundedName evaluates a field lookup outside a path step, which
+// jsonata-js evaluates as a one-step path, against the sequence guardrail;
+// in a path, the step's result is checked instead. A lone context's value is
+// returned as is, except over the array jsonata-js wraps as one context,
+// whose lookup builds a sequence.
 func evalBoundedName(node *parser.Node, input any, env *Environment) (any, error) {
-	result, err := evalName(node, input, env)
-	if _, isArr := input.([]any); isArr && err == nil {
+	result, lone, err := evalNameLone(node, input)
+	if arr, isArr := input.([]any); isArr && err == nil && (!lone || env.isOuterInput(arr)) {
 		err = checkSequenceLength(result, env)
 	}
 	return result, err
@@ -273,40 +275,55 @@ func evalBoundedName(node *parser.Node, input any, env *Environment) (any, error
 // path_bytes.go's walkPureSteps/stepArray for the gjson-based fast path.
 // Keep the two in sync: a change here needs the matching change there.
 func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
+	result, _, err := evalNameLone(node, input)
+	return result, err
+}
+
+// evalNameLone is evalName also reporting lone: exactly one context has the
+// field, and its value is an array. A nested array context
+// builds a sequence of its own, so it is never lone. As a path's last step,
+// jsonata-js returns a lone value as is.
+func evalNameLone(node *parser.Node, input any) (result any, lone bool, _ error) {
 	switch v := input.(type) {
 	case *OrderedMap:
 		val, ok := v.Get(node.Value)
 		if !ok {
-			return nil, nil
+			return nil, false, nil
 		}
 		if val == nil {
-			return Null, nil
+			return Null, false, nil
 		}
-		return val, nil
+		return val, false, nil
 	case map[string]any:
 		val, ok := v[node.Value]
 		if !ok {
-			return nil, nil
+			return nil, false, nil
 		}
 		if val == nil {
-			return Null, nil
+			return Null, false, nil
 		}
-		return val, nil
+		return val, false, nil
 	case []any:
 		// JSONata maps field lookups across arrays.
 		// Per the JSONata spec, array results from each field lookup are
 		// flattened into the result sequence (not nested).
 		seq := CreateSequence()
-		fieldFound := false
+		fieldFound, contributed := false, 0
 		for _, item := range v {
 			val, err := evalName(node, item, nil)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if val == nil {
 				continue
 			}
 			fieldFound = true
+			// A nested array is a context whose lookup builds a sequence,
+			// which jsonata-js does not pass through as a lone result.
+			_, nested := item.([]any)
+			_, isArr := val.([]any)
+			contributed++
+			lone = isArr && !nested
 			// Flatten plain []any results from navigating through arrays.
 			// This matches JSONata's automatic flattening semantics.
 			switch inner := val.(type) {
@@ -326,20 +343,20 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 				// At least one element had this field defined (e.g. as an
 				// empty array []). Return empty array rather than nil so
 				// downstream $exists sees the field as present.
-				return []any{}, nil
+				return []any{}, lone && contributed == 1, nil
 			}
-			return nil, nil
+			return nil, false, nil
 		}
 		if len(seq.Values) == 1 {
-			return seq.Values[0], nil
+			return seq.Values[0], false, nil
 		}
-		return CollapseSequence(seq), nil
+		return CollapseSequence(seq), lone && contributed == 1, nil
 	case ConsArray:
-		return evalName(node, []any(v), nil)
+		return evalNameLone(node, []any(v))
 	case *Sequence:
-		return evalName(node, CollapseSequence(v), nil)
+		return evalNameLone(node, CollapseSequence(v))
 	default:
-		return nil, nil
+		return nil, false, nil
 	}
 }
 

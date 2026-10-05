@@ -113,7 +113,7 @@ func groupItems(pairs iter.Seq2[*parser.Node, *parser.Node], items []any, env *E
 		groups := map[string]*groupEntry{}
 
 		for i, item := range items {
-			keyVal, err := Eval(keyNode, item, env)
+			keyVal, err := Eval(keyNode, unwrapOuter(item, env), env)
 			if err != nil {
 				return nil, err
 			}
@@ -140,7 +140,7 @@ func groupItems(pairs iter.Seq2[*parser.Node, *parser.Node], items []any, env *E
 				return nil, &JSONataError{Code: "D1009", Message: fmt.Sprintf("duplicate key: %q", keyStr)}
 			}
 			entry := groups[keyStr]
-			groupInput := groupContext(entry.items)
+			groupInput := unwrapOuter(groupContext(entry.items), env)
 
 			childEnv := NewChildEnvironment(env)
 			childEnv.Bind("$index", float64(entry.firstIdx))

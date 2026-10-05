@@ -327,6 +327,9 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 		}
 	}
 	env.Bind("$", data)
+	if arr, isArr := data.([]any); isArr {
+		env.SetOuterInput(arr)
+	}
 	for k, v := range vars {
 		env.Bind(k, v)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/recolabs/gnata/internal/parser"
@@ -224,6 +225,60 @@ func (e *Environment) SetMaxStackDepth(n int) {
 	c := e.callCounter()
 	c.max = clampInt32(n)
 	c.stackIsLimit = true
+}
+
+// outerInputKey is the binding name of the outerInput; a variable name
+// cannot start with %, so it cannot collide with one.
+const outerInputKey = "%%w"
+
+// outerInput is the array that jsonata-js wraps as one context, the
+// evaluation's input or $eval's, and the copy of it that group-by and
+// object constructors see, as they iterate the wrapper.
+type outerInput struct{ arr, items []any }
+
+// SetOuterInput records arr as the array that jsonata-js wraps as one
+// context, so that a field lookup over it builds a sequence. Only the
+// sequence guardrail reads it, so without one it records nothing.
+func (e *Environment) SetOuterInput(arr []any) {
+	if e.callCounter().maxSequence > 0 {
+		e.Bind(outerInputKey, &outerInput{arr: arr})
+	}
+}
+
+// outer returns the outerInput that holds arr, or nil.
+func (e *Environment) outer(arr []any) *outerInput {
+	if e.callCounter().maxSequence <= 0 {
+		return nil
+	}
+	v, _ := e.Lookup(outerInputKey)
+	o, _ := v.(*outerInput)
+	if o == nil || len(o.arr) != len(arr) || len(arr) > 0 && &o.arr[0] != &arr[0] {
+		return nil
+	}
+	return o
+}
+
+// isOuterInput reports whether arr is the array recorded by SetOuterInput.
+func (e *Environment) isOuterInput(arr []any) bool {
+	return e.outer(arr) != nil
+}
+
+// unwrapOuter returns the copy of v when v is the array recorded by
+// SetOuterInput, so that it is seen as a sequence of contexts, and v
+// otherwise. The copy is made once per evaluation.
+func unwrapOuter(v any, env *Environment) any {
+	arr, ok := v.([]any)
+	if !ok {
+		return v
+	}
+	o := env.outer(arr)
+	if o == nil {
+		return v
+	}
+	if o.items == nil {
+		o.items = slices.Clone(arr)
+	}
+	return o.items
 }
 
 // SetMaxSequence sets the guardrail sequence-length limit (0 = unlimited).

@@ -50,6 +50,11 @@ func makeFnEval() evaluator.EnvAwareBuiltin {
 			ctx = args[1]
 		}
 		childEnv := evaluator.NewChildEnvironment(env)
+		// Only an array passed explicitly as $eval's context is wrapped as one
+		// context, as in jsonata-js.
+		if arr, isArr := ctx.([]any); isArr && len(args) >= 2 && args[1] != nil {
+			childEnv.SetOuterInput(arr)
+		}
 		result, evalErr := evaluator.Eval(ast, ctx, childEnv)
 		if evalErr != nil {
 			if je := new(evaluator.JSONataError); errors.As(evalErr, &je) && !slices.Contains(evalPassthroughCodes, je.Code) {

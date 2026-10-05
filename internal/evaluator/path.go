@@ -116,20 +116,20 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 			singleContext = true
 		}
 		mapped := prevWasMapper && !singleConsArray
-		stepInput := result
+		stepInput, lone := result, false
 		var err error
 		switch {
 		case singleConsArray:
 			result, err = evalConsArrayStep(step, result, env, node.KeepSingletonArray)
 		case i > 0 && step.Type == parser.NodeVariable:
-			result, err = evalVariableStep(step, result, env, prevWasCons, i == len(node.Steps)-1)
+			result, lone, err = evalVariableStep(step, result, env, prevWasCons, i == len(node.Steps)-1)
 		default:
-			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray)
+			result, lone, err = evalPathStepLone(step, result, env, prevWasMapper, node.KeepSingletonArray)
 		}
 		if err != nil {
 			return nil, err
 		}
-		if err := checkPathStep(step, stepInput, result, singleContext, i == len(node.Steps)-1, env); err != nil {
+		if err := checkPathStep(stepInput, result, singleContext, lone, i == len(node.Steps)-1, env); err != nil {
 			return nil, err
 		}
 		// An array constructed from a single context, as in a.[b, c], is one
@@ -160,51 +160,18 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 
 // checkPathStep applies the sequence guardrail to a path step's result. As
 // in jsonata-js, a last step returns the result of a lone context as is
-// rather than building a sequence: that of a single context, or of the one
-// context that has a field among several.
-func checkPathStep(step *parser.Node, stepInput, result any, singleContext, lastStep bool, env *Environment) error {
-	items, isArr := stepInput.([]any)
-	if lastStep && (!isArr || singleContext) {
+// rather than building a sequence. That context is either the step's only
+// one, or the only one of several that yields a value (lone).
+func checkPathStep(stepInput, result any, singleContext, lone, lastStep bool, env *Environment) error {
+	if _, isArr := stepInput.([]any); lastStep && (!isArr || singleContext || lone) {
 		return nil
 	}
-	err := checkSequenceLength(result, env)
-	if err != nil && lastStep && step.Type == parser.NodeName && loneFieldMatch(step.Value, items) {
-		return nil
-	}
-	return err
+	return checkSequenceLength(result, env)
 }
 
-// loneFieldMatch reports whether exactly one of items is an object with the
-// field. It is false when a nested array has the field: that item's lookup
-// builds a sequence of its own, which jsonata-js does not pass through.
-func loneFieldMatch(field string, items []any) bool {
-	matches := 0
-	for _, item := range items {
-		if nested, isArr := item.([]any); isArr {
-			if hasField(field, nested) {
-				return false
-			}
-			continue
-		}
-		if _, ok := MapGet(item, field); ok {
-			matches++
-		}
-	}
-	return matches == 1
-}
-
-// hasField reports whether a field lookup over items finds any value.
-func hasField(field string, items []any) bool {
-	return slices.ContainsFunc(items, func(item any) bool {
-		if nested, isArr := item.([]any); isArr {
-			return hasField(field, nested)
-		}
-		_, ok := MapGet(item, field)
-		return ok
-	})
-}
-
-// checkSequenceLength applies the sequence guardrail to a built sequence.
+// checkSequenceLength applies the sequence guardrail to a built sequence. A
+// constructed array (ConsArray) is one value of its step, as in jsonata-js,
+// so it does not count.
 func checkSequenceLength(result any, env *Environment) error {
 	switch v := result.(type) {
 	case []any:
@@ -939,7 +906,15 @@ func mergeGroupEnvs(envs []*Environment, pathEnv *Environment) (*Environment, er
 	return merged, nil
 }
 
-// evalPathStep evaluates a single path step against input.
+// evalPathStep is evalPathStepLone without its lone result.
+func evalPathStep(
+	step *parser.Node, input any, env *Environment, prevWasMapper, keepSingletonArray bool,
+) (any, error) {
+	result, _, err := evalPathStepLone(step, input, env, prevWasMapper, keepSingletonArray)
+	return result, err
+}
+
+// evalPathStepLone evaluates a single path step against input.
 // For steps that don't natively handle arrays (like blocks, function calls,
 // binary operators, subscripts), it maps the step over each element of an
 // array input.
@@ -952,40 +927,43 @@ func mergeGroupEnvs(envs []*Environment, pathEnv *Environment) (*Environment, er
 //
 // keepSingletonArray, when true, means the path has [] — group steps should
 // NOT collapse their 1-element result (e.g. $.[v,e][] for 1 item → [[v,e]]).
-func evalPathStep(
+// lone reports that exactly one context yielded a value and that the value
+// is an array. As a path's last step, jsonata-js returns it as is rather
+// than building a sequence.
+func evalPathStepLone(
 	step *parser.Node, input any, env *Environment, prevWasMapper, keepSingletonArray bool,
-) (any, error) {
+) (result any, lone bool, _ error) {
 	// Steps that already handle array inputs natively (field lookup, wildcard,
 	// descendant, variable, literals, sort) are delegated directly.
 	switch step.Type {
 	case parser.NodeNumber:
 		// S0213: a numeric literal is not a valid path step (use [n] subscript notation instead).
-		return nil, &JSONataError{Code: "S0213", Token: step.Value, Message: "invalid step in path: numeric literal is not a field name"}
+		return nil, false, &JSONataError{Code: "S0213", Token: step.Value, Message: "invalid step in path: numeric literal is not a field name"}
 	case parser.NodeName:
 		// The path checks each step's result against the sequence
 		// guardrail, so a field step skips evalBoundedName's check.
 		if step.Group == nil {
-			return evalName(step, input, env)
+			return evalNameLone(step, input)
 		}
-		return Eval(step, input, env)
+		return noLone(Eval(step, input, env))
 	case parser.NodeWildcard,
 		parser.NodeVariable, parser.NodeString, parser.NodeValue,
 		parser.NodeSort: // Sort steps must be applied to the full accumulated input, not mapped per-element.
-		return Eval(step, input, env)
+		return noLone(Eval(step, input, env))
 	case parser.NodeBlock:
 		// A block not preceded by a mapping step (prevWasMapper=false) should receive
 		// the full input so that $^(age) inside can sort the whole array.
 		// A block preceded by a mapper is handled by per-element fallthrough below.
 		if !prevWasMapper {
-			return Eval(step, input, env)
+			return noLone(Eval(step, input, env))
 		}
 	case parser.NodeDescendant:
-		return evalPathStepDescendant(input, env)
+		return noLone(evalPathStepDescendant(input, env))
 	case parser.NodeBinary:
 		// Subscript steps map per-element when preceded by a mapping step (prevWasMapper=true).
 		// When NOT preceded by a mapper, apply the subscript to the whole collected array.
 		if step.Value == "[" && step.Left != nil && !prevWasMapper {
-			return Eval(step, input, env)
+			return noLone(Eval(step, input, env))
 		}
 	}
 
@@ -993,17 +971,23 @@ func evalPathStep(
 	// are literal expressions that should be evaluated once (e.g. [1,2,3].$).
 	// When preceded by a mapper (prevWasMapper=true), they are mapped per-element.
 	if step.Type == parser.NodeUnary && step.Value == "[" && !prevWasMapper {
-		return Eval(step, input, env)
+		return noLone(Eval(step, input, env))
 	}
 
 	arr, ok := pathStepArray(input)
 	if !ok {
 		if step.Type == parser.NodeFunction {
-			return evalPathFunctionStep(step, input, env)
+			return noLone(evalPathFunctionStep(step, input, env))
 		}
-		return Eval(step, input, env)
+		return noLone(Eval(step, input, env))
 	}
 
+	return mapPathStep(step, arr, env, keepSingletonArray)
+}
+
+// mapPathStep evaluates step against each item of arr, flattening the results
+// into one sequence.
+func mapPathStep(step *parser.Node, arr []any, env *Environment, keepSingletonArray bool) (result any, lone bool, _ error) {
 	// isGroupStep is true for .[...] — the array-constructor group step.
 	// Group steps produce one array per input element that must NOT be flattened;
 	// each per-element result is kept as a nested array in the output sequence.
@@ -1011,14 +995,21 @@ func evalPathStep(
 	if step.Type == parser.NodeFunction {
 		evalItem = evalPathFunctionStep
 	}
+	contributed := 0
 	for _, item := range arr {
 		val, err := evalItem(step, item, env)
 		if err != nil {
-			return nil, err
+			return nil, false, err
+		}
+		if seq, ok := val.(*Sequence); ok && len(seq.Values) == 0 {
+			// jsonata-js evaluates an empty sequence result to undefined.
+			continue
 		}
 		if val == nil {
 			continue
 		}
+		contributed++
+		_, lone = AsArray(val)
 		if isGroupStep {
 			// Keep the per-element array as a nested element (no flattening).
 			seq.Values = append(seq.Values, val)
@@ -1034,14 +1025,18 @@ func evalPathStep(
 		}
 	}
 	if len(seq.Values) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	if isGroupStep && keepSingletonArray {
 		// With [] (keepSingletonArray), prevent singleton collapse so that a
 		// path like $.[v,e][] with 1 input element returns [[v,e]] not [v,e].
-		return seq.Values, nil
+		return seq.Values, false, nil
 	}
-	return CollapseSequence(seq), nil
+	return CollapseSequence(seq), lone && contributed == 1, nil
+}
+
+func noLone(value any, err error) (result any, lone bool, _ error) {
+	return value, false, err
 }
 
 // tupleStage is one predicate of a step, with the #$var bound after it.
@@ -1263,16 +1258,16 @@ func blockPathSteps(block *parser.Node) []*parser.Node {
 // built by the preceding array-constructor step: $ returns that item itself,
 // which stays one value (a.[$].$ is [[1],[2]]). A last step with a single
 // array result returns that array unchanged.
-func evalVariableStep(step *parser.Node, input any, env *Environment, consItems, lastStep bool) (any, error) {
+func evalVariableStep(step *parser.Node, input any, env *Environment, consItems, lastStep bool) (result any, lone bool, _ error) {
 	items, ok := input.([]any)
 	if !ok {
-		return Eval(step, input, env)
+		return noLone(Eval(step, input, env))
 	}
 	results := make([]any, 0, len(items))
 	for _, item := range items {
 		val, err := Eval(step, item, env)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if val != nil {
 			results = append(results, val)
@@ -1280,7 +1275,7 @@ func evalVariableStep(step *parser.Node, input any, env *Environment, consItems,
 	}
 	if len(results) == 1 && lastStep {
 		if arr, ok := results[0].([]any); ok {
-			return arr, nil
+			return arr, true, nil
 		}
 	}
 	keepItems := consItems && step.Value == ""
@@ -1293,9 +1288,9 @@ func evalVariableStep(step *parser.Node, input any, env *Environment, consItems,
 		appendToSequence(seq, val)
 	}
 	if len(seq.Values) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
-	return CollapseSequence(seq), nil
+	return CollapseSequence(seq), false, nil
 }
 
 // pathStepArray returns the array to map a step over. A ConsArray is

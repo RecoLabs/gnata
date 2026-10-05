@@ -208,8 +208,6 @@ func TestWithSequence(t *testing.T) {
 		{desc: "join stream", expr: "a@$v[$v.b<3]", data: data},
 		{desc: "filter", expr: "x.a[true]", data: data},
 		{desc: "sort", expr: "x.a^(b)", data: data},
-		// jsonata-js returns the long array when it is the only result.
-		{desc: "last block step over several contexts", expr: "m.(b)", data: data},
 		{desc: "binding with nothing after it", expr: "a#$i", data: data},
 		{desc: "array constructor", expr: "[a]", data: data},
 		{desc: "growing array constructor", expr: "$reduce([1..5], function($acc, $x){[$acc,$acc]}, [1])"},
@@ -219,6 +217,7 @@ func TestWithSequence(t *testing.T) {
 		{desc: "$lookup", expr: `$lookup(a, "b")`, data: data},
 		{desc: "$match", expr: `$match("aaaaaaaaaaaa", /a/)`},
 		{desc: "group variables", expr: `x.a@$e{"k": $e}`, data: data},
+		{desc: "$eval of an array context", expr: `$eval("b", a)`, data: data},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
@@ -277,10 +276,15 @@ func TestWithSequence_Allowed(t *testing.T) {
 		"o": []any{map[string]any{"a": items}},
 		"m": []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
 		"n": []any{map[string]any{"b": items}, []any{map[string]any{"c": 1.0}}},
+		"p": []any{[]any{map[string]any{"b": items}}, map[string]any{"c": 1.0}},
 	}
+	// group-by iterates jsonata-js's wrapper of a root array, so its values
+	// see the array's items as contexts.
+	rootArray := []any{map[string]any{"a": items}, map[string]any{"c": 1.0}}
 	testCases := []struct {
 		desc string
 		expr string
+		data any // the shared data when nil
 		want any
 	}{
 		{desc: "range under the guardrail", expr: "1..5", want: []any{1.0, 2.0, 3.0, 4.0, 5.0}},
@@ -289,6 +293,11 @@ func TestWithSequence_Allowed(t *testing.T) {
 		{desc: "last step against a one-item array", expr: "$count(o.a)", want: 20.0},
 		{desc: "last field step with one matching context", expr: "$count(m.b)", want: 20.0},
 		{desc: "last field step beside a nested array without the field", expr: "$count(n.b)", want: 20.0},
+		{desc: "last block step with one context yielding", expr: "$count(m.(b))", want: 20.0},
+		{desc: "last function step with one context yielding", expr: `$count(m.$lookup($, "b"))`, want: 20.0},
+		{desc: "last block step with an array context", expr: "$count(p.(b))", want: 20.0},
+		{desc: "group-by over a root array", expr: `{"k": $count(a)}`, data: rootArray, want: map[string]any{"k": 20.0}},
+		{desc: "$eval of the current context in a group", expr: `{"k": $count($eval("a"))}`, data: rootArray, want: map[string]any{"k": 20.0}},
 		{desc: "subscript of a stored array", expr: "x.a[0].b", want: 0.0},
 		{desc: "filter under the guardrail", expr: "a[b<5].b", want: []any{0.0, 1.0, 2.0, 3.0, 4.0}},
 	}
@@ -298,7 +307,11 @@ func TestWithSequence_Allowed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compile: %v", err)
 			}
-			got, err := e.Eval(context.Background(), data)
+			input := tC.data
+			if input == nil {
+				input = data
+			}
+			got, err := e.Eval(context.Background(), input)
 			if err != nil {
 				t.Fatalf("expected no error, got %v", err)
 			}

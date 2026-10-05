@@ -91,6 +91,7 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 
 func evalObjectConstructor(node *parser.Node, input any, env *Environment) (any, error) {
 	result := NewOrderedMap()
+	input = unwrapOuter(input, env)
 	for i := 0; i+1 < len(node.LHS); i += 2 {
 		keyNode := node.LHS[i]
 		valNode := node.LHS[i+1]
