@@ -83,3 +83,36 @@ func TestAnalyzeFuncFastPath_Rejected(t *testing.T) {
 		})
 	}
 }
+
+func TestDecimalSafeFastPath(t *testing.T) {
+	tests := []struct {
+		desc                    string
+		expr                    string
+		wantCmp, wantFn, wantBl bool
+	}{
+		{desc: "number comparison dropped", expr: `a = 0.3`},
+		{desc: "string comparison kept", expr: `a = "x"`, wantCmp: true},
+		{desc: "numeric function dropped", expr: `$sum(a)`},
+		{desc: "string function kept", expr: `$lowercase(a)`, wantFn: true},
+		{desc: "and with number comparison dropped", expr: `a = 0.3 and b`},
+		{desc: "or with numeric function dropped", expr: `b or $sum(a)`},
+		{desc: "not with number comparison dropped", expr: `$not(a = 1e20)`},
+		{desc: "nested number comparison dropped", expr: `b and (c or a != 1)`},
+		{desc: "and of safe leaves kept", expr: `$exists(a) and b = "x"`, wantBl: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			fp := parser.AnalyzeFastPath(mustParse(t, tc.expr))
+			fp.DecimalSafe()
+			if got := fp.CmpFast != nil; got != tc.wantCmp {
+				t.Errorf("CmpFast kept = %v, want %v", got, tc.wantCmp)
+			}
+			if got := fp.FuncFast != nil; got != tc.wantFn {
+				t.Errorf("FuncFast kept = %v, want %v", got, tc.wantFn)
+			}
+			if got := fp.BoolFast != nil; got != tc.wantBl {
+				t.Errorf("BoolFast kept = %v, want %v", got, tc.wantBl)
+			}
+		})
+	}
+}

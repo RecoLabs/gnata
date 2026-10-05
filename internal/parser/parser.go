@@ -2,7 +2,6 @@ package parser
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/recolabs/gnata/internal/lexer"
@@ -243,7 +242,11 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		// Fold unary minus into number literal.
 		if sub.Type == NodeNumber {
 			sub.NumVal = -sub.NumVal
-			sub.Value = strconv.FormatFloat(sub.NumVal, 'f', -1, 64)
+			if v, ok := strings.CutPrefix(sub.Value, "-"); ok {
+				sub.Value = v
+			} else {
+				sub.Value = "-" + sub.Value
+			}
 			return sub, nil
 		}
 		return &Node{Type: NodeUnary, Value: "-", Expression: sub, Pos: tok.Pos}, nil

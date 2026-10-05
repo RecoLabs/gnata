@@ -72,6 +72,35 @@ var funcFastKinds = map[string]FuncFastKind{
 	"average": FuncFastAverage,
 }
 
+// decimalSafeFuncKinds classifies every FuncFastKind for WithDecimalPrecision.
+// A kind is true only when its fast path neither computes with nor converts
+// numbers, so it agrees with the decimal evaluator; anything missing is unsafe.
+var decimalSafeFuncKinds = map[FuncFastKind]bool{
+	FuncFastExists:    true,
+	FuncFastContains:  true,
+	FuncFastString:    false, // formats numbers in exponent form through float64
+	FuncFastBoolean:   true,
+	FuncFastNumber:    false,
+	FuncFastKeys:      true,
+	FuncFastDistinct:  false,
+	FuncFastNot:       true,
+	FuncFastLowercase: true,
+	FuncFastUppercase: true,
+	FuncFastTrim:      true,
+	FuncFastLength:    true,
+	FuncFastType:      true,
+	FuncFastAbs:       false,
+	FuncFastFloor:     false,
+	FuncFastCeil:      false,
+	FuncFastSqrt:      false,
+	FuncFastCount:     true,
+	FuncFastReverse:   false,
+	FuncFastSum:       false,
+	FuncFastMax:       false,
+	FuncFastMin:       false,
+	FuncFastAverage:   false,
+}
+
 type (
 	rhsKind int
 
@@ -186,6 +215,33 @@ func AnalyzeFastPath(node *Node) fastPathResult {
 		return fastPathResult{BoolFast: b}
 	}
 	return fastPathResult{IsFastPath: false}
+}
+
+// DecimalSafe drops the fast paths that compare or compute numbers in
+// float64, which WithDecimalPrecision leaves to the full evaluator. Pure paths
+// are kept, as their numbers can be returned as json.Number.
+func (r *fastPathResult) DecimalSafe() {
+	if !r.CmpFast.decimalSafe() {
+		r.CmpFast = nil
+	}
+	if !r.FuncFast.decimalSafe() {
+		r.FuncFast = nil
+	}
+	if !r.BoolFast.decimalSafe() {
+		r.BoolFast = nil
+	}
+}
+
+func (c *ComparisonFastPath) decimalSafe() bool {
+	return c == nil || c.RHSKind != RHSKindNumber
+}
+
+func (f *FuncFastPath) decimalSafe() bool {
+	return f == nil || decimalSafeFuncKinds[f.Kind]
+}
+
+func (b *BoolFastPath) decimalSafe() bool {
+	return b == nil || b.Cmp.decimalSafe() && b.Func.decimalSafe() && b.Left.decimalSafe() && b.Right.decimalSafe()
 }
 
 // rawStepNames returns the un-escaped field names of a node already proven
