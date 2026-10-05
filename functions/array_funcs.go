@@ -58,16 +58,7 @@ func fnAppend(args []any, _ any, env *evaluator.Environment) (any, error) {
 }
 
 func wrapArray(v any) []any {
-	if v == nil {
-		return []any{}
-	}
-	if arr, ok := evaluator.AsArray(v); ok {
-		return arr
-	}
-	if seq, ok := v.(*evaluator.Sequence); ok {
-		return evaluator.CollapseToSlice(seq)
-	}
-	return []any{v}
+	return evaluator.AppendItems(v)
 }
 
 // tryAsArray returns a []any if v is an array-like type ([]any, ConsArray, or *Sequence),
@@ -310,7 +301,7 @@ func distinct(args []any, prec int) (any, error) {
 
 // ── $flatten ──────────────────────────────────────────────────────────────────
 
-func fnFlatten(args []any, _ any) (any, error) {
+func fnFlatten(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
@@ -325,23 +316,15 @@ func fnFlatten(args []any, _ any) (any, error) {
 		depth = evaluator.ToIntClamped(df)
 	}
 
-	return flattenArray(arr, depth), nil
-}
-
-func flattenArray(arr []any, depth int) []any {
 	result := make([]any, 0, len(arr))
-	for _, v := range arr {
-		if nested, ok := v.([]any); ok && depth != 0 {
-			nextDepth := depth - 1
-			if depth < 0 {
-				nextDepth = -1
-			}
-			result = append(result, flattenArray(nested, nextDepth)...)
-		} else {
-			result = append(result, v)
-		}
+	err := evaluator.EachLeaf(arr, depth, env, func(item any) error {
+		result = append(result, item)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return result
+	return result, nil
 }
 
 // ── $zip ──────────────────────────────────────────────────────────────────────

@@ -10,36 +10,42 @@ import (
 
 // ── $keys ─────────────────────────────────────────────────────────────────────
 
-func fnKeys(args []any, _ any) (any, error) {
+func fnKeys(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	var keys []string
-	seen := make(map[string]bool)
-	switch v := args[0].(type) {
-	case *evaluator.OrderedMap:
-		keys = v.Keys()
-	case map[string]any:
-		keys = sortedKeyStrings(v)
-	case []any:
-		for _, item := range v {
-			if evaluator.IsMap(item) {
-				for _, k := range evaluator.MapKeys(item) {
-					if !seen[k] {
-						seen[k] = true
-						keys = append(keys, k)
-					}
-				}
-			}
-		}
-	default:
-		return nil, nil
+	keys, err := appendKeys(args[0], make(map[string]bool), env)
+	if err != nil {
+		return nil, err
+	}
+	if err := env.CheckSequence(len(keys)); err != nil {
+		return nil, err
 	}
 	seq := evaluator.CreateSequence()
 	for _, k := range keys {
 		seq.Values = append(seq.Values, k)
 	}
 	return seq, nil
+}
+
+// appendKeys returns the keys of v not yet seen; as in jsonata-js, the keys
+// of an array are those of its items, nested arrays included.
+func appendKeys(v any, seen map[string]bool, env *evaluator.Environment) ([]string, error) {
+	var keys []string
+	add := func(obj any) error {
+		for _, k := range evaluator.MapKeys(obj) {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+		return nil
+	}
+	if arr, ok := evaluator.AsArray(v); ok {
+		err := evaluator.EachLeaf(arr, -1, env, add)
+		return keys, err
+	}
+	return keys, add(v)
 }
 
 func sortedKeyStrings(m map[string]any) []string {
@@ -97,39 +103,57 @@ func fnValues(args []any, _ any) (any, error) {
 
 // ── $spread ───────────────────────────────────────────────────────────────────
 
-func fnSpread(args []any, _ any) (any, error) {
+func fnSpread(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	spreadOne := func(obj any) []any {
-		keys := evaluator.MapKeys(obj)
-		result := make([]any, len(keys))
-		for i, k := range keys {
-			om := evaluator.NewOrderedMap()
-			v, _ := evaluator.MapGet(obj, k)
-			om.Set(k, v)
-			result[i] = om
+	return spreadValue(args[0], env)
+}
+
+// spreadValue splits an object into one-key objects. As in jsonata-js, an
+// array's items are spread and appended in turn, nested arrays included, so
+// a spread array is a plain array that does not collapse to one item.
+func spreadValue(v any, env *evaluator.Environment) (any, error) {
+	arr, isArr := evaluator.AsArray(v)
+	if !isArr {
+		if !evaluator.IsMap(v) {
+			return v, nil
 		}
-		return result
+		objs, err := spreadObject(v, nil, env)
+		return &evaluator.Sequence{Values: objs}, err
 	}
-	if evaluator.IsMap(args[0]) {
-		return &evaluator.Sequence{Values: spreadOne(args[0])}, nil
+	if len(arr) == 0 {
+		return evaluator.CreateSequence(), nil
 	}
-	if arr, ok := args[0].([]any); ok {
-		var result []any
-		for _, item := range arr {
-			if evaluator.IsMap(item) {
-				result = append(result, spreadOne(item)...)
-			} else {
-				result = append(result, item)
-			}
+	result := []any{}
+	err := evaluator.EachLeaf(arr, -1, env, func(item any) error {
+		if evaluator.IsMap(item) {
+			var err error
+			result, err = spreadObject(item, result, env)
+			return err
 		}
-		if result == nil {
-			return nil, nil
-		}
-		return result, nil
+		result = append(result, nullIfNil(item))
+		return env.CheckSequence(len(result))
+	})
+	if err != nil {
+		return nil, err
 	}
-	return args[0], nil
+	return result, nil
+}
+
+// spreadObject appends a one-key object to dst for each key of obj.
+func spreadObject(obj any, dst []any, env *evaluator.Environment) ([]any, error) {
+	keys := evaluator.MapKeys(obj)
+	if err := env.CheckSequence(len(dst) + len(keys)); err != nil {
+		return nil, err
+	}
+	for _, k := range keys {
+		om := evaluator.NewOrderedMap()
+		val, _ := evaluator.MapGet(obj, k)
+		om.Set(k, val)
+		dst = append(dst, om)
+	}
+	return dst, nil
 }
 
 // ── $merge ────────────────────────────────────────────────────────────────────
@@ -280,7 +304,7 @@ func fnError(args []any, _ any) (any, error) {
 
 // ── $lookup ───────────────────────────────────────────────────────────────────
 
-func fnLookup(args []any, _ any) (any, error) {
+func fnLookup(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) < 2 {
 		return nil, &evaluator.JSONataError{Code: "D3006", Message: "$lookup: requires 2 arguments"}
 	}
@@ -291,30 +315,40 @@ func fnLookup(args []any, _ any) (any, error) {
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("$lookup: key must be a string, got %T", args[1])}
 	}
+	return lookupValue(args[0], key, env)
+}
 
-	if evaluator.IsMap(args[0]) {
-		val, exists := evaluator.MapGet(args[0], key)
+// nullIfNil returns JSON null for a Go nil, as a nil value in data decoded
+// with encoding/json is a JSON null.
+func nullIfNil(v any) any {
+	if v == nil {
+		return evaluator.Null
+	}
+	return v
+}
+
+// lookupValue returns an object's value for key. As in jsonata-js, an
+// array's items are looked up in turn, nested arrays included, and array
+// values are flattened into the result.
+func lookupValue(v any, key string, env *evaluator.Environment) (any, error) {
+	arr, isArr := evaluator.AsArray(v)
+	if !isArr {
+		if val, exists := evaluator.MapGet(v, key); exists {
+			return nullIfNil(val), nil
+		}
+		return nil, nil
+	}
+	seq := evaluator.CreateSequence()
+	err := evaluator.EachLeaf(arr, -1, env, func(item any) error {
+		val, exists := evaluator.MapGet(item, key)
 		if !exists {
-			return nil, nil
+			return nil
 		}
-		return val, nil
+		seq.Values = append(seq.Values, wrapArray(nullIfNil(val))...)
+		return env.CheckSequence(len(seq.Values))
+	})
+	if err != nil {
+		return nil, err
 	}
-	if arr, ok := args[0].([]any); ok {
-		var result []any
-		for _, item := range arr {
-			if evaluator.IsMap(item) {
-				if val, exists := evaluator.MapGet(item, key); exists {
-					result = append(result, val)
-				}
-			}
-		}
-		if len(result) == 0 {
-			return nil, nil
-		}
-		if len(result) == 1 {
-			return result[0], nil
-		}
-		return result, nil
-	}
-	return nil, nil
+	return seq, nil
 }

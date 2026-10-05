@@ -117,6 +117,16 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$keys()`, want: undefined},
 	{expr: `$spread([{"a":1,"b":2}, 3])`, want: `[{"a":1},{"b":2},3]`},
 	{expr: `$spread([])`, want: undefined},
+	{expr: `$lookup([{"b":[1,2]},{"b":3}], "b")`, want: `[1,2,3]`},
+	{expr: `$lookup([[{"b":1}],{"b":2}], "b")`, want: `[1,2]`},
+	{expr: `$keys([{"a":1},[{"b":2}],{"a":3,"c":1}])`, want: `["a","b","c"]`},
+	{expr: `$keys([[{"a":1}]])`, want: `"a"`},
+	{expr: `$spread([{"a":1,"b":2},3,[{"c":4}]])`, want: `[{"a":1},{"b":2},3,{"c":4}]`},
+	{expr: `$spread([[]])`, want: `[]`},
+	{expr: `$spread([{"a":1}])`, want: `[{"a":1}]`},
+	{expr: `$count($keys($reduce([1..1000], function($a,$x){[[$a]]}, [{"k":1}])))`, want: `1`},
+	{expr: `$count($spread($reduce([1..1000], function($a,$x){[[$a]]}, [{"k":1}])))`, want: `1`},
+	{expr: `$lookup($reduce([1..1000], function($a,$x){[[$a]]}, [{"k":1}]), "k")`, want: `1`},
 }
 
 var numericBuiltinCases = []exprCase{

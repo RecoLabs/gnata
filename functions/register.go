@@ -41,15 +41,11 @@ var builtinFuncs = []struct {
 	{"count", fnCount},
 	{"reverse", fnReverse},
 	{"shuffle", fnShuffle},
-	{"flatten", fnFlatten},
 	{"zip", fnZip},
 	// ── Object ────────────────────────────────────────────────────────────────
-	{"keys", fnKeys},
 	{"values", fnValues},
-	{"spread", fnSpread},
 	{"merge", fnMerge},
 	{"error", fnError},
-	{"lookup", fnLookup},
 	// ── Boolean ───────────────────────────────────────────────────────────────
 	{"boolean", fnBoolean},
 	{"not", fnNot},
@@ -99,6 +95,10 @@ func RegisterAll(env *evaluator.Environment, evalFn EvalFn) {
 		env.Bind(b.name, withDecimal(b.fn, b.dec))
 	}
 	env.Bind("append", evaluator.EnvAwareBuiltin(fnAppend))
+	env.Bind("flatten", evaluator.EnvAwareBuiltin(fnFlatten))
+	env.Bind("keys", evaluator.EnvAwareBuiltin(fnKeys))
+	env.Bind("spread", evaluator.EnvAwareBuiltin(fnSpread))
+	env.Bind("lookup", evaluator.EnvAwareBuiltin(fnLookup))
 	env.Bind("now", evaluator.EnvAwareBuiltin(fnNow))
 	env.Bind("millis", evaluator.EnvAwareBuiltin(fnMillis))
 	env.Bind("toMillis", evaluator.EnvAwareBuiltin(fnToMillis))

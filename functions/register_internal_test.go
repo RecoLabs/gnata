@@ -18,8 +18,8 @@ var floatOnlyNumeric = map[string]string{
 // compare numbers, so decimal precision does not apply to them.
 var nonNumeric = []string{
 	"length", "substring", "substringBefore", "substringAfter", "trim", "pad", "contains", "split", "join",
-	"encodeUrl", "encodeUrlComponent", "decodeUrl", "decodeUrlComponent", "reverse", "shuffle", "flatten",
-	"zip", "keys", "values", "spread", "merge", "error", "lookup", "boolean", "not", "exists", "assert",
+	"encodeUrl", "encodeUrlComponent", "decodeUrl", "decodeUrlComponent", "reverse", "shuffle",
+	"zip", "values", "merge", "error", "boolean", "not", "exists", "assert",
 	"type", "now", "base64encode", "base64decode",
 }
 

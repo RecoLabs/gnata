@@ -151,6 +151,54 @@ func CollapseToSlice(s *Sequence) []any {
 	return slices.Clip(s.Values)
 }
 
+// AppendItems returns the items $append adds for v, as jsonata-js fn.append
+// does: an array's or sequence's items, nothing for undefined, or v itself.
+func AppendItems(v any) []any {
+	if v == nil {
+		return []any{}
+	}
+	if arr, ok := AsArray(v); ok {
+		return arr
+	}
+	if seq, ok := v.(*Sequence); ok {
+		return CollapseToSlice(seq)
+	}
+	return []any{v}
+}
+
+// EachLeaf calls visit, in order, for every item of arr that is not an
+// array, descending up to depth levels (-1 for all) into nested arrays. It
+// walks iteratively so that deep nesting cannot overflow the stack, and
+// checks the evaluation's deadline as it goes, as nested arrays can share
+// items.
+func EachLeaf(arr []any, depth int, env *Environment, visit func(item any) error) error {
+	type frame struct {
+		items       []any
+		next, depth int
+	}
+	stack := []frame{{items: arr, depth: depth}}
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		if top.next == len(top.items) {
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		item := top.items[top.next]
+		top.next++
+		if err := env.Err(); err != nil {
+			return err
+		}
+		if nested, ok := AsArray(item); ok && top.depth != 0 {
+			stack = append(stack, frame{items: nested, depth: max(top.depth-1, -1)})
+			continue
+		}
+		if err := visit(item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ToFloat64 converts a numeric value to float64, handling both float64 and json.Number.
 func ToFloat64(v any) (float64, bool) {
 	switch n := v.(type) {

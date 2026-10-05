@@ -43,7 +43,7 @@ func makeFnMatch(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		var result []any
 		err = eachRegexMatch(re, s, limit, func(m *evaluator.Match) error {
 			result = append(result, matchResult(evaluator.NewMatchObject(s, m)))
-			return nil
+			return env.CheckSequence(len(result))
 		})
 		if err != nil {
 			return nil, err
@@ -158,6 +158,9 @@ func matchWithCustomMatcher(s string, matcherFn any, limit int, evalFn EvalFn, e
 	res, err := callMatcher(matcherFn, []any{s, float64(0)}, evalFn, env)
 	for count := 0; err == nil && res != nil && (limit < 0 || count < limit); count++ {
 		result = append(result, matchResult(res))
+		if err = env.CheckSequence(len(result)); err != nil {
+			break
+		}
 		nextFn, _ := evaluator.MapGet(res, "next")
 		if nextFn == nil {
 			break

@@ -123,6 +123,29 @@ func TestWithTimeout_SlowCallsBoundOverrun(t *testing.T) {
 	}
 }
 
+// Arrays nested by $reduce share their items, so the value is small but
+// $keys, $lookup, $spread and $flatten walk 2^30 leaves; the walk checks the
+// deadline.
+func TestWithTimeout_NestedArrayWalk(t *testing.T) {
+	for _, fn := range []string{"$keys($v)", `$lookup($v, "k")`, "$spread($v)", "$flatten($v)"} {
+		t.Run(fn, func(t *testing.T) {
+			expr := "($v := $reduce([1..30], function($a, $x){[$a, $a]}, [{\"k\": 1}]); " + fn + ")"
+			e, err := gnata.Compile(expr, gnata.WithTimeout(50*time.Millisecond))
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			start := time.Now()
+			_, err = e.Eval(context.Background(), nil)
+			if err == nil || !strings.Contains(err.Error(), "D1012") {
+				t.Fatalf("expected D1012, got %v", err)
+			}
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Fatalf("walk ran %v past the deadline", elapsed)
+			}
+		})
+	}
+}
+
 func TestWithTimeout_ParentCancellationPreserved(t *testing.T) {
 	e, err := gnata.Compile("1+1", gnata.WithTimeout(time.Minute))
 	if err != nil {
@@ -187,6 +210,10 @@ func TestWithSequence(t *testing.T) {
 		{desc: "sort", expr: "x.a^(b)", data: data},
 		// jsonata-js returns the long array when it is the only result.
 		{desc: "last block step over several contexts", expr: "m.(b)", data: data},
+		{desc: "$keys", expr: "$keys($)", data: wideObject},
+		{desc: "$spread", expr: "$spread($)", data: wideObject},
+		{desc: "$lookup", expr: `$lookup(a, "b")`, data: data},
+		{desc: "$match", expr: `$match("aaaaaaaaaaaa", /a/)`},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
