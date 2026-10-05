@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"errors"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -110,5 +111,34 @@ func TestSignatureInject(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tC.want)
 			}
 		})
+	}
+}
+
+// matchFixed must choose what solve chooses for a signature without '+';
+// mismatchError blames with solve.
+func TestMatchFixedAgreesWithSolve(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	const modifiers = "?-"
+	for range 20000 {
+		var sig strings.Builder
+		for range 1 + rng.IntN(5) {
+			sig.WriteByte("snbalofx"[rng.IntN(8)])
+			for range rng.IntN(3) {
+				sig.WriteByte(modifiers[rng.IntN(len(modifiers))])
+			}
+		}
+		compiled, err := compileSig(sig.String())
+		if err != nil {
+			continue
+		}
+		symbols := make([]uint8, rng.IntN(6))
+		for i := range symbols {
+			symbols[i] = symbolBit(sigSymbols[rng.IntN(len(sigSymbols))])
+		}
+		fixed, fixedOK := compiled.matchFixed(symbols, nil)
+		solved, _, solvedOK := compiled.solve(symbols, len(compiled.params), true, nil)
+		if fixedOK != solvedOK || fixedOK && !slices.Equal(fixed, solved) {
+			t.Fatalf("<%s> on %v: matchFixed %v %v, solve %v %v", sig.String(), symbols, fixed, fixedOK, solved, solvedOK)
+		}
 	}
 }
