@@ -3,6 +3,7 @@ package functions
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ func parseWithPicture(input, picture string, now time.Time) (millis float64, mat
 	}
 	setParseWidths(parts)
 
-	match := pictureMatch{parts: parts, input: []rune(input), values: make([]int, len(parts)), failed: map[[2]int]bool{}}
+	match := newPictureMatch(parts, input)
 	if !match.from(0, 0) {
 		return 0, false, nil
 	}
@@ -59,19 +60,41 @@ func parseWithPicture(input, picture string, now time.Time) (millis float64, mat
 }
 
 // maxYieldRunes caps how many runes a marker gives back to the parts after
-// it. It covers any literal, word or numeral that can follow a marker while
-// keeping the search linear in the input: each retry re-parses the rest.
+// it, beyond their fixed length. It covers any word or numeral that can
+// follow a marker while keeping the search linear in the input: each retry
+// re-parses the rest.
 const maxYieldRunes = 64
 
 // pictureMatch matches input against a picture's parts as jsonata-js's
 // anchored regex does: each marker reads as much as it can, then gives back
-// one rune at a time, up to maxYieldRunes, until the parts after it match.
-// failed memoizes the (part, position) pairs that cannot match.
+// one rune at a time until the parts after it match, up to maxYieldRunes more
+// than the fixed length of those parts. failed memoizes the (part, position)
+// pairs that cannot match.
 type pictureMatch struct {
 	parts  []datePicturePart
 	input  []rune
 	values []int
+	yield  []int // how many runes the marker at each index may give back
 	failed map[[2]int]bool
+}
+
+// newPictureMatch prepares parts for matching input. A part's fixed length is
+// its literal's runes or its fixed parse width.
+func newPictureMatch(parts []datePicturePart, input string) *pictureMatch {
+	pm := &pictureMatch{
+		parts: parts, input: []rune(input), values: make([]int, len(parts)),
+		yield: make([]int, len(parts)), failed: map[[2]int]bool{},
+	}
+	fixed := 0
+	for i := len(parts) - 1; i >= 0; i-- {
+		pm.yield[i] = maxYieldRunes + fixed
+		width := utf8.RuneCountInString(parts[i].literal)
+		if parts[i].isMarker {
+			width = max(parts[i].marker.parseWidth, 0)
+		}
+		fixed = min(fixed, len(pm.input)) + min(width, len(pm.input))
+	}
+	return pm
 }
 
 // from reports whether parts[i:] match input[pos:] exactly, recording each
@@ -96,7 +119,7 @@ func (pm *pictureMatch) from(i, pos int) bool {
 		}
 	default:
 		longest := longestMatch(rest, part.marker)
-		for k := longest; k >= max(1, longest-maxYieldRunes); k-- {
+		for k := longest; k >= max(1, longest-pm.yield[i]); k-- {
 			if value, n := parseMarkerValue(rest[:k], part.marker); n == k && pm.from(i+1, pos+k) {
 				pm.values[i] = value
 				return true
@@ -135,22 +158,11 @@ func setParseWidths(parts []datePicturePart) {
 		}
 		mandatory, _ := decimalPictureDigits(prev.presentation)
 		prev.parseWidth = max(mandatory, prev.minWidth)
-		if prev.component == 'Y' && hasMaxWidth(prev.modifier) {
+		if prev.component == 'Y' && prev.maxWidthGiven {
 			// A maximum that is 0 or not a number leaves jsonata-js no width.
 			prev.parseWidth = max(prev.maxWidth, 0)
 		}
 	}
-}
-
-// hasMaxWidth reports whether a marker's width modifier gives a maximum other
-// than "*", even one jsonata-js's parseInt reads as NaN, like "2-" or "*-x".
-func hasMaxWidth(modifier string) bool {
-	comma := strings.LastIndexByte(modifier, ',')
-	if comma < 0 {
-		return false
-	}
-	_, maxSpec, found := strings.Cut(modifier[comma+1:], "-")
-	return found && maxSpec != "*"
 }
 
 // integerComponents are the components a non-name presentation formats as an
@@ -210,12 +222,12 @@ func parseMarkerValue(runes []rune, m dateMarker) (value, consumed int) {
 		if n == 0 {
 			return -1, -1
 		}
-		v, err := strconv.Atoi(string(runes[:min(n, 3)]))
-		if err != nil {
-			return -1, -1
-		}
-		for w := n; w < 3; w++ {
+		v := 0
+		for w := range 3 {
 			v *= 10
+			if w < n {
+				v += int(runes[w] - '0')
+			}
 		}
 		return v, n
 	case 'P':
@@ -348,13 +360,19 @@ const maxDateMillis = 8.64e15
 // components too large for time.Date's int arithmetic are rejected first.
 func nearDateRange(year, month, day, hour, minute, second int) bool {
 	const msPerDay, daysPerYear, slackDays = 86_400_000, 365.2425, 2
+	// A saturated component is out of range even where a 32-bit int's
+	// math.MaxInt alone would not be.
+	if slices.Contains([]int{year, month, day, hour, minute, second}, math.MaxInt) {
+		return false
+	}
 	days := (float64(year)-1970)*daysPerYear + float64(month-1)*daysPerYear/12 + float64(day-1) +
 		(float64(hour)*3600+float64(minute)*60+float64(second))/86_400
 	return math.Abs(days) <= maxDateMillis/msPerDay+slackDays
 }
 
 // consumeNameOrNumber returns how many runes of a name (any run of letters, as
-// jsonata-js accepts) or number start runes, depending on the presentation.
+// jsonata-js accepts) or number start runes, depending on the presentation:
+// parseWidth digits when set, with an ordinal's required suffix.
 func consumeNameOrNumber(runes []rune, m dateMarker) int {
 	if m.ordinal && !isNamePresentation(m.presentation) {
 		_, consumed := parseOrdinalNumber(runes, m.parseWidth)
@@ -497,28 +515,19 @@ func parseNumericValue(runes []rune, width int) (value, consumed int) {
 	if i == 0 {
 		return -1, -1
 	}
-	n, ok := atoiSaturating(runes[:i])
-	if !ok {
-		return -1, -1
-	}
-	return n, i
+	return atoiSaturating(runes[:i]), i
 }
 
-// atoiSaturating reads ASCII digits, saturating at math.MaxInt so that a huge
-// component puts the date out of range, as it does in jsonata-js. A 32-bit
-// int saturates low enough to be a valid date, so there it reports false.
-func atoiSaturating(digits []rune) (int, bool) {
-	n, err := strconv.Atoi(string(digits))
-	return n, err == nil || strconv.IntSize == 64
+// atoiSaturating reads ASCII digits, saturating at math.MaxInt, which
+// nearDateRange reads as out of range, as a huge component is in jsonata-js.
+func atoiSaturating(digits []rune) int {
+	n, _ := strconv.Atoi(string(digits)) // ASCII digits fail only by overflow
+	return n
 }
 
 func parseOrdinalNumber(runes []rune, width int) (value, consumed int) {
-	i := leadingDigits(runes, width)
-	if i == 0 {
-		return -1, -1
-	}
-	n, ok := atoiSaturating(runes[:i])
-	if !ok {
+	n, i := parseNumericValue(runes, width)
+	if i <= 0 {
 		return -1, -1
 	}
 	// jsonata-js requires the suffix, though not the one matching the number.

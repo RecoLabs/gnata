@@ -187,6 +187,14 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("2018-04-01 10+54545", "[Y]-[M]-[D] [H][Z0101][m]5[s]")`, want: `1522559085000`},
 	{expr: `$toMillis("2018-04-01T+0151500034", "[Y]-[M]-[D]T[Z0101][H01][d]")`, want: `1519458000000`},
 	{expr: `$toMillis("2018 IVIII", "[Y] [MI][DI]")`, want: `1527811200000`},
+	{
+		expr: `$toMillis("10:30:05.5` + strings.Repeat("0", 70) + `", "[H01]:[m01]:[s01].[f]` + strings.Repeat("0", 70) + `") % 86400000`,
+		want: `37805500`,
+	},
+	{
+		expr: `$toMillis("10:30:05.5` + strings.Repeat("0", 69) + `51", "[H01]:[m01]:[s01].[f][s,70][H]") % 86400000`,
+		want: `5405500`,
+	},
 	{expr: `$toMillis("2018 cab", "[Y] [Ma][Da]")`, want: `1719878400000`},
 	{expr: `$toMillis("275760-09-13", "[Y]-[M]-[D]")`, want: `8640000000000000`},
 	{expr: `$toMillis("275760-09-13T00:00-01:00", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: `8640000003600000`},

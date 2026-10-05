@@ -76,13 +76,16 @@ const noWidth = -1
 
 // dateMarker is a parsed variable marker such as [MNn,*-3] (XPath F&O §9.8.4).
 type dateMarker struct {
-	component    byte
-	modifier     string // everything after the component, for the f/Z/z/P formatters
-	presentation string // first presentation modifier, e.g. "Nn", "01" or "w"
-	ordinal      bool
-	minWidth     int
-	maxWidth     int
-	parseWidth   int // exact digits $toMillis reads; 0 reads every digit
+	component byte
+	ordinal   bool
+	// maxWidthGiven is set for any maximum but "*", even one that reads as
+	// noWidth, like "2-" or "*-x", which jsonata-js's parseInt reads as NaN.
+	maxWidthGiven bool
+	modifier      string // everything after the component, for the f/Z/z/P formatters
+	presentation  string // first presentation modifier, e.g. "Nn", "01" or "w"
+	minWidth      int
+	maxWidth      int
+	parseWidth    int // exact digits $toMillis reads; 0 reads every digit
 }
 
 // datePicturePart is a literal or, when isMarker is set, a variable marker.
@@ -178,8 +181,9 @@ func parseDateMarker(marker string) (dateMarker, error) {
 	presentation := m.modifier
 	if comma := strings.LastIndexByte(marker, ','); comma > 0 {
 		presentation = marker[1:comma]
-		minSpec, maxSpec, _ := strings.Cut(marker[comma+1:], "-")
+		minSpec, maxSpec, hasMax := strings.Cut(marker[comma+1:], "-")
 		m.minWidth, m.maxWidth = parseMarkerWidth(minSpec), parseMarkerWidth(maxSpec)
+		m.maxWidthGiven = hasMax && maxSpec != "*"
 	}
 	switch last := presentation[max(len(presentation)-1, 0):]; {
 	case presentation == "":
