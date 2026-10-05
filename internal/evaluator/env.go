@@ -62,9 +62,10 @@ const (
 // applications, compositions, function-argument wrappers and transforms.
 // Each calls further functions on the Go stack and the call depth does not
 // count it, so a long chain of them would overflow the Go stack, which cannot
-// be recovered. It is fixed, unlike the call depth WithStack sets, and
-// assumes the gc runtime's growable stacks.
-const maxNestedCalls = 50_000
+// be recovered. It is fixed, unlike the call depth WithStack sets. Native
+// builds have room for far more, but js/wasm hosts such as Node overflow
+// near 50,000 partial applications.
+const maxNestedCalls = 10_000
 
 // callCounter.nested must hold maxNestedCalls.
 const _ uint16 = maxNestedCalls

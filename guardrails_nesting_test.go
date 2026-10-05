@@ -35,25 +35,25 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 			n, strings.Repeat("(", depth), strings.Repeat(")", depth))
 	}
 	nested := func(depth int) string { return strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth) }
-	const tooNested = "U1001: stack overflow error: function values nested more than 50000 deep"
+	const tooNested = "U1001: stack overflow error: function values nested more than 10000 deep"
 	testCases := []struct {
 		desc string
 		expr string
 		want any
 		code string
 	}{
-		{desc: "partial applications within nesting limit", expr: partials(49_999), want: float64(5)},
-		{desc: "partial applications exceed nesting limit", expr: partials(50_001), code: tooNested},
-		{desc: "compositions within nesting limit", expr: compositions(49_999), want: "5"},
-		{desc: "compositions exceed nesting limit", expr: compositions(50_001), code: tooNested},
-		{desc: "transforms within nesting limit", expr: transforms(10_000), want: map[string]any{"k": float64(1)}},
+		{desc: "partial applications within nesting limit", expr: partials(9_999), want: float64(5)},
+		{desc: "partial applications exceed nesting limit", expr: partials(10_001), code: tooNested},
+		{desc: "compositions within nesting limit", expr: compositions(9_999), want: "5"},
+		{desc: "compositions exceed nesting limit", expr: compositions(10_001), code: tooNested},
+		{desc: "transforms within nesting limit", expr: transforms(2_000), want: map[string]any{"k": float64(1)}},
 		{desc: "transforms exceed nesting limit", expr: transforms(3_000_000), code: tooNested},
 		{desc: "deep transforms exceed nesting limit", expr: deepTransforms(1_000, 3_000), code: tooNested},
 		{desc: "recursion through a transform within default stack", expr: recursiveTransform(99), want: float64(2)},
 		{desc: "deep transforms in a group exceed nesting limit", expr: groupedTransforms(10_000, 3_000), code: tooNested},
 		{
 			desc: "inner transform charged when called, not with the outer one",
-			expr: `($f := function($n){$n = 0 ? {} : ({"a":1} ~> | $ | ($ ~> | $ | {"b": $f($n-1), "c": ` + nested(250) +
+			expr: `($f := function($n){$n = 0 ? {} : ({"a":1} ~> | $ | ($ ~> | $ | {"b": $f($n-1), "c": ` + nested(80) +
 				`} |) |)}; $count($keys($f(99))))`,
 			want: float64(3),
 		},

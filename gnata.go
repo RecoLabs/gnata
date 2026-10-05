@@ -66,7 +66,7 @@ type Option func(*compileOptions)
 // of 100 (error U1001) — WithStack only changes the limit and the resulting
 // error code, matching jsonata-js's `stack` guardrail.
 // Calls through partial applications, compositions, function arguments and
-// transforms have a separate fixed limit of 50,000 nested calls (U1001),
+// transforms have a separate fixed limit of 10,000 nested calls (U1001),
 // which WithStack does not change.
 func WithStack(n int) Option {
 	return func(o *compileOptions) { o.stack = n }
