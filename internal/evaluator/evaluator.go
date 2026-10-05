@@ -30,7 +30,7 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodeVariable:
 		return evalVariable(node, input, env)
 	case parser.NodeName:
-		return evalName(node, input, env)
+		return evalBoundedName(node, input, env)
 	case parser.NodeWildcard:
 		return evalWildcard(node, input, env)
 	case parser.NodeDescendant:

@@ -83,9 +83,15 @@ func WithTimeout(d time.Duration) Option {
 }
 
 // WithSequence limits the length of sequences built during evaluation: the
-// range operator (..), $append, $map, $filter, $each, wildcard (*), and
-// descendant (**). Exceeding it returns error D2015, matching jsonata-js's
-// `sequence` guardrail. Without this option, only the built-in 10,000,000
+// range operator (..), $append, $map, $filter, $each, wildcard (*),
+// descendant (**), sorts, filters, every path step and every tuple stream
+// of a #/@ binding. Exceeding it returns error D2015, matching jsonata-js's
+// `sequence` guardrail. As in jsonata-js, a path step mapping over input
+// data counts too, so a.b over more than n items of a exceeds it; a last
+// step against a single context returns its value as is and is exempt.
+// The README lists what is not bounded, such as array constructors and a
+// binding with nothing after it. Expressions compiled with it always use
+// the full evaluator. Without this option, only the built-in 10,000,000
 // element hard caps (D2014 / D3010) apply.
 func WithSequence(n int) Option {
 	return func(o *compileOptions) { o.sequence = n }
@@ -136,7 +142,7 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 			fp.DecimalSafe()
 		}
 	}
-	return &Expression{
+	e := &Expression{
 		src:       expr,
 		ast:       ast,
 		fastPath:  fp.IsFastPath,
@@ -146,7 +152,14 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 		funcFast:  fp.FuncFast,
 		boolFast:  fp.BoolFast,
 		options:   o,
-	}, nil
+	}
+	if o != nil && o.sequence > 0 {
+		// The gjson fast paths walk arrays outside the evaluator, where the
+		// sequence guardrail is enforced.
+		e.fastPath, e.paths, e.pathSteps = false, nil, nil
+		e.cmpFast, e.funcFast, e.boolFast = nil, nil, nil
+	}
+	return e, nil
 }
 
 // CustomFunc is a user-defined function that can be registered with gnata.

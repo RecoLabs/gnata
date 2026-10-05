@@ -36,6 +36,9 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 		arr = []any{items}
 		wasArray = false
 	}
+	if err := env.CheckSequence(len(arr)); err != nil {
+		return nil, err
+	}
 
 	if len(node.Terms) == 0 {
 		if !wasArray && len(arr) == 1 {

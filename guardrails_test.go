@@ -2,6 +2,7 @@ package gnata_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -135,10 +136,26 @@ func TestWithTimeout_ParentCancellationPreserved(t *testing.T) {
 	}
 }
 
+// twentyItems returns 20 objects {"b": i}, twice the guardrail used by the
+// WithSequence tests.
+func twentyItems() []any {
+	items := make([]any, 20)
+	for i := range items {
+		items[i] = map[string]any{"b": float64(i)}
+	}
+	return items
+}
+
 func TestWithSequence(t *testing.T) {
 	wideObject := map[string]any{}
 	for i := range 20 {
 		wideObject[fmt.Sprintf("k%d", i)] = i
+	}
+	items := twentyItems()
+	data := map[string]any{
+		"a": items,
+		"x": map[string]any{"a": items},
+		"m": []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
 	}
 	testCases := []struct {
 		desc string
@@ -155,6 +172,21 @@ func TestWithSequence(t *testing.T) {
 		},
 		{desc: "wildcard exceeds sequence guardrail", expr: "*", data: wideObject},
 		{desc: "descendant exceeds sequence guardrail", expr: "**", data: wideObject},
+		{desc: "field step over a sequence", expr: "a.b", data: data},
+		{desc: "field step through a stored array", expr: "x.a.b", data: data},
+		{desc: "field step over a root array", expr: "b", data: items},
+		{desc: "variable step", expr: "a.$", data: data},
+		{desc: "block step", expr: "a.(b)", data: data},
+		{desc: "function step", expr: "a.$string(b)", data: data},
+		{desc: "tuple expansion", expr: "a#$i.b", data: data},
+		{desc: "stages after a binding", expr: "a#$i[true][true]", data: data},
+		{desc: "stream of a first-step binding", expr: "a#$i[$i<3]", data: data},
+		{desc: "stream of a binding after a filter", expr: "a[b<3]#$i", data: data},
+		{desc: "join stream", expr: "a@$v[$v.b<3]", data: data},
+		{desc: "filter", expr: "x.a[true]", data: data},
+		{desc: "sort", expr: "x.a^(b)", data: data},
+		// jsonata-js returns the long array when it is the only result.
+		{desc: "last block step over several contexts", expr: "m.(b)", data: data},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
@@ -172,8 +204,7 @@ func TestWithSequence(t *testing.T) {
 
 // A tuple filter whose predicate repeats each tuple's own position keeps it
 // once per repeat, so 200 tuples × 200 repeats grows past the guardrail while
-// every intermediate sequence stays under it. Filtering input data larger
-// than the guardrail is not growth and stays allowed.
+// every intermediate sequence stays under it.
 func TestWithSequence_RepeatedTuplePositions(t *testing.T) {
 	items := make([]any, 200)
 	for i := range items {
@@ -187,25 +218,61 @@ func TestWithSequence_RepeatedTuplePositions(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "D2015") {
 		t.Fatalf("expected D2015, got %v", err)
 	}
-	e, err = gnata.Compile("$count(a.b#$i[true])", gnata.WithSequence(100))
+}
+
+// The gjson fast paths would otherwise walk the array outside the guardrail.
+func TestWithSequence_EvalBytes(t *testing.T) {
+	e, err := gnata.Compile("a.b", gnata.WithSequence(10))
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if got, err := e.Eval(context.Background(), map[string]any{"a": items}); err != nil || got != 200.0 {
-		t.Fatalf("filtering input larger than the guardrail: got %v, %v", got, err)
+	data, err := json.Marshal(map[string]any{"a": twentyItems()})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := e.EvalBytes(context.Background(), data); err == nil || !strings.Contains(err.Error(), "D2015") {
+		t.Fatalf("expected D2015, got %v", err)
 	}
 }
 
-func TestWithSequence_UnderLimitUnaffected(t *testing.T) {
-	e, err := gnata.Compile("1..5", gnata.WithSequence(10))
-	if err != nil {
-		t.Fatalf("compile: %v", err)
+// A last step against a single context returns its value without building a
+// sequence, so a stored array longer than the guardrail passes through.
+func TestWithSequence_Allowed(t *testing.T) {
+	items := twentyItems()
+	data := map[string]any{
+		"a": items,
+		"x": map[string]any{"a": items},
+		"o": []any{map[string]any{"a": items}},
+		"m": []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
+		"n": []any{map[string]any{"b": items}, []any{map[string]any{"c": 1.0}}},
 	}
-	got, err := e.Eval(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+	testCases := []struct {
+		desc string
+		expr string
+		want any
+	}{
+		{desc: "range under the guardrail", expr: "1..5", want: []any{1.0, 2.0, 3.0, 4.0, 5.0}},
+		{desc: "stored array as a field", expr: "$count(a)", want: 20.0},
+		{desc: "stored array as a last step", expr: "$count(x.a)", want: 20.0},
+		{desc: "last step against a one-item array", expr: "$count(o.a)", want: 20.0},
+		{desc: "last field step with one matching context", expr: "$count(m.b)", want: 20.0},
+		{desc: "last field step beside a nested array without the field", expr: "$count(n.b)", want: 20.0},
+		{desc: "subscript of a stored array", expr: "x.a[0].b", want: 0.0},
+		{desc: "filter under the guardrail", expr: "a[b<5].b", want: []any{0.0, 1.0, 2.0, 3.0, 4.0}},
 	}
-	if !gnata.DeepEqual(got, []any{1.0, 2.0, 3.0, 4.0, 5.0}) {
-		t.Fatalf("got %v", got)
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr, gnata.WithSequence(10))
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := e.Eval(context.Background(), data)
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if !gnata.DeepEqual(got, tC.want) {
+				t.Fatalf("got %v, want %v", got, tC.want)
+			}
+		})
 	}
 }

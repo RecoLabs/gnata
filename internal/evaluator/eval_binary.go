@@ -184,6 +184,13 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	if err != nil || left == nil {
 		return nil, err
 	}
+	// A #$i or @$v binding makes the items a tuple stream, which counts
+	// against the sequence guardrail as in jsonata-js.
+	if stepHasBinding(node) {
+		if err := env.CheckSequence(len(items)); err != nil {
+			return nil, err
+		}
+	}
 
 	// keepArray is true when the [] operator was applied to this subscript (or any
 	// node in the left chain), forcing the result to be returned as an array even
@@ -237,7 +244,7 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 
 	// Array index: when subscript evaluates to an array of all-numeric indices,
 	// select multiple elements. Non-numeric arrays fall through to predicate filter.
-	if result, ok, err := selectByIndices(rightVal, items); err != nil || ok {
+	if result, ok, err := selectByIndices(rightVal, items, env); err != nil || ok {
 		return result, err
 	}
 
@@ -271,6 +278,9 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 		} else if ToBoolean(val) {
 			seq.Values = append(seq.Values, item)
 		}
+	}
+	if err := env.CheckSequence(len(seq.Values)); err != nil {
+		return nil, err
 	}
 	return CollapseSequence(seq), nil
 }
@@ -320,7 +330,7 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 // of all-numeric values, it selects the corresponding elements from items.
 // ok is false when an index is not a number, so the caller falls through to
 // the predicate filter; an infinite index raises D1001.
-func selectByIndices(rightVal any, items []any) (selected any, ok bool, err error) {
+func selectByIndices(rightVal any, items []any, env *Environment) (selected any, ok bool, err error) {
 	indexArr, isArr := rightVal.([]any)
 	if !isArr {
 		return nil, false, nil
@@ -335,6 +345,9 @@ func selectByIndices(rightVal any, items []any) (selected any, ok bool, err erro
 		if i >= 0 && i < len(items) {
 			result = append(result, items[i])
 		}
+	}
+	if err := env.CheckSequence(len(result)); err != nil {
+		return nil, false, err
 	}
 	if len(result) == 0 {
 		return nil, true, nil

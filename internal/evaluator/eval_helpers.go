@@ -256,6 +256,17 @@ func evalVariable(node *parser.Node, input any, env *Environment) (any, error) {
 	return val, nil
 }
 
+// evalBoundedName evaluates a field lookup outside a path step. A lookup
+// over an array builds a sequence, which counts against the sequence
+// guardrail; in a path, the step's result is checked instead.
+func evalBoundedName(node *parser.Node, input any, env *Environment) (any, error) {
+	result, err := evalName(node, input, env)
+	if _, isArr := input.([]any); isArr && err == nil {
+		err = checkSequenceLength(result, env)
+	}
+	return result, err
+}
+
 // evalName's array-mapping semantics (flatten one level per step, track
 // whether the field was ever found to distinguish "undefined" from "found
 // as an empty array", singleton-collapse a single match) are mirrored by
