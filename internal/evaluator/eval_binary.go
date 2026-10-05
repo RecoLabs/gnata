@@ -159,16 +159,6 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 	}
 }
 
-func hasKeepArrayInChain(node *parser.Node) bool {
-	for node != nil {
-		if node.KeepArray {
-			return true
-		}
-		node = node.Left
-	}
-	return false
-}
-
 func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) {
 	// When Left is a Block containing a single path expression and the
 	// predicate references % (parent), evaluate the inner path in tuple mode
@@ -188,7 +178,7 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	// keepArray is true when the [] operator was applied to this subscript (or any
 	// node in the left chain), forcing the result to be returned as an array even
 	// if singular. We walk the left chain to propagate KeepArray through sort steps.
-	keepArray := node.KeepArray || hasKeepArrayInChain(node.Left)
+	keepArray := node.KeepArray || parser.ChainKeepsArray(node.Left)
 
 	if len(items) == 0 {
 		if keepArray {
@@ -287,7 +277,12 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 	}
 	switch v := left.(type) {
 	case ConsArray:
-		items = []any(v)
+		// A sort of one constructed array returns it as one item (see classifySortStep).
+		if isSort, indexStage := classifySortStep(node.Left); isSort && !indexStage {
+			items = []any{v}
+		} else {
+			items = []any(v)
+		}
 	case []any:
 		items = v
 	case *Sequence:
@@ -401,7 +396,7 @@ func evalArithFloat64(l, r float64, op string) (any, error) {
 
 func evalSubscriptBlockParent(node *parser.Node, input any, env *Environment) (any, error) {
 	innerPath := node.Left.Expressions[0]
-	tupleCtxs, err := expandPathTuple(innerPath.Steps, []pathCtx{{value: input, env: env}})
+	tupleCtxs, err := expandPathTuple(innerPath.Steps, []pathCtx{{value: input, env: env}}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +404,7 @@ func evalSubscriptBlockParent(node *parser.Node, input any, env *Environment) (a
 		return nil, nil
 	}
 
-	keepArray := node.KeepArray || hasKeepArrayInChain(node.Left)
+	keepArray := node.KeepArray || parser.ChainKeepsArray(node.Left)
 	seq := CreateSequence()
 	for _, tctx := range tupleCtxs {
 		predResult, err := Eval(node.Right, tctx.value, tctx.env)

@@ -48,7 +48,7 @@ type Node struct {
 	KeepSingletonArray bool // path has at least one keepArray step
 	ConsArray          bool // step is an array constructor used as a path step
 	Thunk              bool // lambda is a TCO thunk
-	Tuple              bool // step participates in a tuple stream
+	Tuple              bool // sort whose Left binds #$var or @$var, or the path wrapping it (see wrapBoundSort)
 	RootContext        bool // wildcard step starting a path over the root input (see markRootContext)
 
 	// Focus / index variable names (set by @ and # operators)

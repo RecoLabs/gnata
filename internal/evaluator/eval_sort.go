@@ -18,6 +18,7 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 
 	var arr []any
 	wasArray := true
+	items = spreadSortIndexStage(node.Left, items)
 	switch v := items.(type) {
 	case []any:
 		arr = v
@@ -103,4 +104,30 @@ func compareSortTerms(terms []parser.SortTerm, aVal, bVal any, aEnv, bEnv *Envir
 		}
 	}
 	return 0, nil
+}
+
+// classifySortStep reports whether step is a sort, with or without predicates as
+// in ^(x)[p], and whether its last predicate is a number literal. A sort
+// keeps one constructed array as one item, except that jsonata-js
+// evaluateFilter returns an array that a number-literal predicate picks as
+// the whole result sequence, so later steps map over its elements.
+func classifySortStep(step *parser.Node) (isSort, indexStage bool) {
+	if step == nil {
+		return false, false
+	}
+	base, stages := splitTupleStages(step)
+	isSort = base.Type == parser.NodeSort
+	indexStage = isSort && len(stages) > 0 && stages[len(stages)-1].predicate.Type == parser.NodeNumber
+	return isSort, indexStage
+}
+
+// spreadSortIndexStage returns a constructed array picked by a sort's
+// number-literal predicate as a plain array (see classifySortStep).
+func spreadSortIndexStage(step *parser.Node, result any) any {
+	if cons, ok := result.(ConsArray); ok {
+		if _, indexStage := classifySortStep(step); indexStage {
+			return []any(cons)
+		}
+	}
+	return result
 }

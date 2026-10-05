@@ -1,5 +1,7 @@
 package parser
 
+import "slices"
+
 // ProcessAST runs the post-processing pass over the raw Pratt-parsed tree,
 // transforming it into a form suitable for evaluation.
 //
@@ -8,6 +10,8 @@ package parser
 //   - Propagates KeepSingletonArray when any step has KeepArray=true.
 //   - Marks array-constructor steps as ConsArray (jsonata-js consarray).
 //   - Attaches group expressions from path-step binary("{") to the path.
+//   - Flags sorts whose Left binds #$var or @$var (Tuple) and wraps them,
+//     with any subscripts, in a one-step path (see wrapBoundSort).
 //   - Recursively processes all child nodes.
 func ProcessAST(node *Node) (*Node, error) {
 	if node == nil {
@@ -19,7 +23,11 @@ func ProcessAST(node *Node) (*Node, error) {
 		if node.Value == "." {
 			return processDotBinary(node)
 		}
-		return processBinaryChildren(node)
+		processed, err := processBinaryChildren(node)
+		if err != nil {
+			return nil, err
+		}
+		return wrapBoundSort(processed), nil
 
 	case NodeUnary:
 		return processUnaryChildren(node)
@@ -43,7 +51,11 @@ func ProcessAST(node *Node) (*Node, error) {
 		return processTransformChildren(node)
 
 	case NodeSort:
-		return processSortChildren(node)
+		processed, err := processSortChildren(node)
+		if err != nil {
+			return nil, err
+		}
+		return wrapBoundSort(processed), nil
 
 	case NodePath:
 		return processPathChildren(node)
@@ -87,16 +99,9 @@ func processDotBinary(node *Node) (*Node, error) {
 
 	// Propagate KeepSingletonArray when any step (or a subscript step's left side)
 	// has KeepArray=true. This covers both A[].B and A[][filter].B patterns.
-	for _, s := range steps {
-		if s.KeepArray {
-			path.KeepSingletonArray = true
-			break
-		}
-		// A[][filter] — the KeepArray flag is on the Name/Var left of the subscript.
-		if s.Type == NodeBinary && s.Value == "[" && s.Left != nil && s.Left.KeepArray {
-			path.KeepSingletonArray = true
-			break
-		}
+	// A[][filter] and a[]^(b) keep the flag on a node along the step's Left chain.
+	if slices.ContainsFunc(steps, ChainKeepsArray) {
+		path.KeepSingletonArray = true
 	}
 
 	// Process group-by key/value pairs so nested dot expressions within them are resolved.
@@ -346,6 +351,7 @@ func processSortChildren(node *Node) (*Node, error) {
 			return nil, err
 		}
 	}
+	node.Tuple = hasBinding(node.Left)
 	return node, nil
 }
 
@@ -357,7 +363,7 @@ func processPathChildren(node *Node) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		if node.Steps[i].KeepArray {
+		if ChainKeepsArray(node.Steps[i]) {
 			node.KeepSingletonArray = true
 		}
 	}
@@ -442,4 +448,54 @@ func markRootContext(node *Node) {
 	case NodeSort:
 		markRootContext(node.Left)
 	}
+}
+
+// wrapBoundSort wraps a sort whose Left binds #$var or @$var, as in
+// a#$j^(b), in a one-step path, since only path evaluation tracks its tuple
+// stream. A subscript on it, as in a#$j^(b)[0], filters that stream, so it
+// replaces the sort as the path's step; a chain [p1][p2] extends the same
+// path, keeping each wrap O(1).
+func wrapBoundSort(node *Node) *Node {
+	switch {
+	case node.Type == NodeSort && node.Tuple:
+		return &Node{Type: NodePath, Steps: []*Node{node}, Pos: node.Pos, Tuple: true, KeepSingletonArray: ChainKeepsArray(node)}
+	case node.Type == NodeBinary && node.Value == "[" && IsBoundSortPath(node.Left):
+		keep := node.KeepArray || node.Left.KeepSingletonArray
+		node.Left = node.Left.Steps[0]
+		return &Node{Type: NodePath, Steps: []*Node{node}, Pos: node.Pos, Tuple: true, KeepSingletonArray: keep}
+	}
+	return node
+}
+
+// IsBoundSortPath reports whether node is a path wrapBoundSort made.
+func IsBoundSortPath(node *Node) bool {
+	return node != nil && node.Type == NodePath && node.Tuple && len(node.Steps) == 1
+}
+
+// ChainKeepsArray reports whether node or a node along its Left chain has a
+// [] suffix, or is a path that does.
+func ChainKeepsArray(node *Node) bool {
+	for ; node != nil; node = node.Left {
+		if node.KeepArray || node.Type == NodePath && node.KeepSingletonArray {
+			return true
+		}
+	}
+	return false
+}
+
+// hasBinding reports whether node or any node in its Left, Right or Steps
+// subtrees has a #$var or @$var binding. A processed sort or wrapBoundSort
+// path answers from its Tuple flag, so a chain of sorts is checked in linear
+// time.
+func hasBinding(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Index != "" || node.Focus != "" || node.Tuple {
+		return true
+	}
+	if node.Type == NodeSort {
+		return false
+	}
+	return hasBinding(node.Left) || hasBinding(node.Right) || slices.ContainsFunc(node.Steps, hasBinding)
 }
