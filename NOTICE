@@ -13,3 +13,11 @@ The gnata source code in this repository was implemented independently in Go.
 Some materials in testdata/ are derived from the upstream jsonata-js test
 suite; attribution and the upstream MIT license text for those materials are
 included in testdata/NOTICE.
+
+internal/third_party/apd/ is a copy of cockroachdb/apd
+(https://github.com/cockroachdb/apd), Copyright The Cockroach Authors,
+licensed under the Apache License, Version 2.0; its license text is in
+internal/third_party/apd/LICENSE and its changes from upstream are listed in
+internal/third_party/apd/README.gnata.md. Its testdata/*.decTest files are the
+General Decimal Arithmetic test cases, Copyright (c) Mike Cowlishaw and IBM
+Corporation.

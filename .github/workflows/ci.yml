@@ -15,7 +15,8 @@ jobs:
           go-version-file: go.mod
       - name: Test
         run: |
-          go test -race -count=1 -coverprofile=coverage.out -coverpkg=./... ./...
+          # The coverage gate measures gnata's own code, not the vendored copy in internal/third_party.
+          go test -race -count=1 -coverprofile=coverage.out -coverpkg="$(go list ./... | grep -v /internal/third_party/ | paste -sd, -)" ./...
           go tool cover -func=coverage.out
           total=$(go tool cover -func=coverage.out | awk '/^total:/{gsub(/%/,"",$NF); print $NF}')
           awk -v t="$total" 'BEGIN { if (t+0 < 80) { printf "coverage %.1f%% is below 80%%\n", t; exit 1 } }'

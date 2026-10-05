@@ -84,6 +84,7 @@ linters:
       text: Error return value of `.*log.*ger.*\.Log` is not checked
     paths:
     - third_party$
+    - internal/third_party/
     - builtin$
     - examples$
 issues:
@@ -97,5 +98,6 @@ formatters:
   exclusions:
     paths:
     - third_party$
+    - internal/third_party/
     - builtin$
     - examples$
