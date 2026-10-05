@@ -95,6 +95,8 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$map([1,2], function($v,$i,$a){$v + $i + $count($a)})`, want: `[3,5]`},
 	{expr: `$filter([1,2,3], function($v){$v>1})`, want: `[2,3]`},
 	{expr: `[1,2,3] ~> $filter(function($v){$v>1})`, want: `[2,3]`},
+	{expr: `$filter([1,2,3], function($v){$v>2})`, want: `3`},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[0]`, want: `[1,2]`},
 	{expr: `$single()`, want: undefined},
 	{expr: `$single(5)`, want: `5`},
 	{expr: `$reduce([], function($a,$b){$a+$b})`, want: undefined},

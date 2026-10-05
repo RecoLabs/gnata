@@ -110,7 +110,6 @@ func makeFnFilter(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		if arrVal == nil {
 			return nil, nil
 		}
-		_, inputWasArray := arrVal.([]any)
 		arr := wrapArray(arrVal)
 
 		seq := evaluator.CreateSequence()
@@ -129,13 +128,13 @@ func makeFnFilter(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 				}
 			}
 		}
-		if inputWasArray {
-			if len(seq.Values) == 0 {
-				return nil, nil
+		// jsonata-js applies a call's predicates and [] to the one-item
+		// sequence before collapsing it; collapsing a lone array here would
+		// let $filter(...)[0] index into that array instead.
+		if len(seq.Values) == 1 {
+			if _, isArr := evaluator.AsArray(seq.Values[0]); isArr {
+				return []any{seq.Values[0]}, nil
 			}
-			out := make([]any, len(seq.Values))
-			copy(out, seq.Values)
-			return out, nil
 		}
 		return evaluator.CollapseSequence(seq), nil
 	}
