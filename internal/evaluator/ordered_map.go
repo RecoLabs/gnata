@@ -20,8 +20,8 @@ type OrderedMap struct {
 	// frozen marks maps the evaluator decoded from its own input for the
 	// duration of one evaluation call (DecodeInput, DecodeRawMap); evaluation
 	// never mutates them. Only frozen maps cache their normalized form (see
-	// NormalizedView). Maps from the public DecodeJSON are never frozen, since
-	// callers may keep and mutate them.
+	// CachedNormalizedView). Maps from the public DecodeJSON are never
+	// frozen, since callers may keep and mutate them.
 	frozen bool
 	norm   atomic.Pointer[map[string]any]
 }
@@ -70,21 +70,28 @@ func (m *OrderedMap) Delete(key string) {
 	m.keys = slices.DeleteFunc(m.keys, func(k string) bool { return k == key })
 }
 
-// NormalizedView returns build(m), caching the result on frozen maps so
-// repeated custom-function calls over the same input object do not rebuild
-// it. For frozen maps the result is shared and must be treated as read-only.
-// It is a function rather than a method so it stays out of the public API of
-// the gnata.OrderedMap alias.
-func NormalizedView(m *OrderedMap, build func(*OrderedMap) map[string]any) map[string]any {
+// CachedNormalizedView returns the normalized view of m cached by
+// CacheNormalizedView, if any, and whether m can cache one: only frozen maps
+// do, so repeated custom-function calls over the same input object do not
+// rebuild it. The view is shared and must be treated as read-only. These are
+// functions rather than methods so they stay out of the public API of the
+// gnata.OrderedMap alias.
+func CachedNormalizedView(m *OrderedMap) (view map[string]any, cacheable bool) {
 	if !m.frozen {
-		return build(m)
+		return nil, false
 	}
 	if p := m.norm.Load(); p != nil {
-		return *p
+		return *p, true
 	}
-	n := build(m)
-	m.norm.Store(&n)
-	return n
+	return nil, true
+}
+
+// CacheNormalizedView caches view, complete, as the normalized view of m if
+// m is frozen.
+func CacheNormalizedView(m *OrderedMap, view map[string]any) {
+	if m.frozen {
+		m.norm.Store(&view)
+	}
 }
 
 func (m *OrderedMap) freeze() { m.frozen = true }
@@ -166,7 +173,8 @@ func DecodeJSON(b json.RawMessage) (any, error) {
 
 // DecodeInput decodes input the evaluator parses for a single evaluation call.
 // Its objects are frozen so custom functions can share their normalized views
-// (see NormalizedView); it must not be used for values handed to callers.
+// (see CachedNormalizedView); it must not be used for values handed to
+// callers.
 func DecodeInput(b json.RawMessage) (any, error) {
 	return decodeJSON(b, true)
 }

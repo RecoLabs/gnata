@@ -215,54 +215,111 @@ func NormalizeValue(v any) any {
 // normalizeValue implements NormalizeValue. With shared, objects decoded from
 // input JSON return a normalized map cached on the object and shared by every
 // caller, which must therefore not modify it.
+//
+// It copies nested objects and arrays from an explicit stack of slots to fill
+// rather than by recursion, so a deeply nested value cannot overflow the
+// goroutine stack. A shared view is cached only once it is complete.
 func normalizeValue(v any, shared bool) any {
-	if v == nil {
-		return nil
-	}
-	if evaluator.IsNull(v) {
-		return nil
-	}
-	switch val := v.(type) {
-	case *evaluator.Sequence:
-		return normalizeValue(evaluator.CollapseSequence(val), shared)
-	case *evaluator.OrderedMap:
-		if shared {
-			return evaluator.NormalizedView(val, normalizeOrderedMapShared)
+	var buf [8]normalizeSlot
+	out, pending := normalizeOne(v, shared, buf[:0])
+	for len(pending) > 0 {
+		slot := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if slot.cache != nil {
+			evaluator.CacheNormalizedView(slot.cache, slot.view)
+			continue
 		}
-		return normalizeOrderedMap(val, false)
-	case []any:
-		return normalizeSlice(val, shared)
-	case evaluator.ConsArray:
-		return normalizeSlice([]any(val), shared)
-	}
-	return v
-}
-
-func normalizeOrderedMapShared(om *evaluator.OrderedMap) map[string]any {
-	return normalizeOrderedMap(om, true)
-}
-
-func normalizeOrderedMap(om *evaluator.OrderedMap, shared bool) map[string]any {
-	m := om.ToMap()
-	out := make(map[string]any, len(m))
-	for k, mv := range m {
-		out[k] = normalizeValue(mv, shared)
+		var val any
+		val, pending = normalizeOne(slot.src, shared, pending)
+		slot.fill(val)
 	}
 	return out
+}
+
+// normalizeSlot is a place in a normalized object or array still to be
+// filled with the normalized src, or, with cache set, the point after which
+// view is complete and can be cached on it.
+type normalizeSlot struct {
+	src   any
+	array []any
+	index int
+	obj   map[string]any
+	key   string
+	cache *evaluator.OrderedMap
+	view  map[string]any
+}
+
+func (s *normalizeSlot) fill(v any) {
+	if s.obj != nil {
+		s.obj[s.key] = v
+		return
+	}
+	s.array[s.index] = v
+}
+
+// normalizeOne normalizes v. Of a normalized object or array it sets the
+// values that need no walk, and appends slots for the rest to pending.
+func normalizeOne(v any, shared bool, pending []normalizeSlot) (any, []normalizeSlot) {
+	v = evaluator.CollapseSequences(v)
+	if out, ok := normalizeLeaf(v); ok {
+		return out, pending
+	}
+	switch val := v.(type) {
+	case *evaluator.OrderedMap:
+		var cacheable bool
+		if shared {
+			var view map[string]any
+			if view, cacheable = evaluator.CachedNormalizedView(val); view != nil {
+				return view, pending
+			}
+		}
+		m := val.ToMap()
+		out := make(map[string]any, len(m))
+		if cacheable {
+			pending = append(pending, normalizeSlot{cache: val, view: out})
+		}
+		for k, mv := range m {
+			var ok bool
+			if out[k], ok = normalizeLeaf(mv); !ok {
+				pending = append(pending, normalizeSlot{src: mv, obj: out, key: k})
+			}
+		}
+		return out, pending
+	case []any:
+		return normalizeSlice(val, pending)
+	case evaluator.ConsArray:
+		return normalizeSlice([]any(val), pending)
+	}
+	return v, pending
 }
 
 // normalizeSlice only allocates a copy when at least one element
 // needs conversion (OrderedMap, null sentinel, or nested slice).
-func normalizeSlice(s []any, shared bool) any {
-	needsCopy := slices.ContainsFunc(s, needsNormalize)
-	if !needsCopy {
-		return s
+func normalizeSlice(s []any, pending []normalizeSlot) (any, []normalizeSlot) {
+	if !slices.ContainsFunc(s, needsNormalize) {
+		return s, pending
 	}
 	out := make([]any, len(s))
 	for i, elem := range s {
-		out[i] = normalizeValue(elem, shared)
+		var ok bool
+		if out[i], ok = normalizeLeaf(elem); !ok {
+			pending = append(pending, normalizeSlot{src: elem, array: out, index: i})
+		}
 	}
-	return out
+	return out, pending
+}
+
+// normalizeLeaf normalizes v unless it is an *OrderedMap, an array or a
+// sequence, which it reports with ok false. A plain map is passed through.
+func normalizeLeaf(v any) (any, bool) {
+	if v == nil || evaluator.IsNull(v) {
+		return nil, true
+	}
+	switch v.(type) {
+	case *evaluator.Sequence, *evaluator.OrderedMap, []any, evaluator.ConsArray:
+		return nil, false
+	}
+	return v, true
 }
 
 func needsNormalize(v any) bool {

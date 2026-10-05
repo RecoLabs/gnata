@@ -115,6 +115,38 @@ func TestDeepNestingDeepEqual(t *testing.T) {
 	}
 }
 
+// A custom function's argument and NormalizeValue's result are normalized
+// copies of a built object.
+func TestDeepNestingNormalize(t *testing.T) {
+	limitStack(t)
+	isMap := func(args []any, _ any) (any, error) {
+		_, ok := args[0].(map[string]any)
+		return ok, nil
+	}
+	env := gnata.NewCustomEnv(map[string]gnata.CustomFunc{"isMap": isMap})
+	e, err := gnata.Compile("$isMap(" + deepBuilt + ")")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	got, err := e.EvalWithCustomFuncs(context.Background(), nil, env)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if got != true {
+		t.Fatalf("custom function got %v, want true", got)
+	}
+	if e, err = gnata.Compile(deepBuilt); err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	built, err := e.Eval(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if !gnata.DeepEqual(gnata.NormalizeValue(built), deepObject()) {
+		t.Fatal("normalized object differs")
+	}
+}
+
 // Past the fast decoder's depth limit, decoding falls back to encoding/json's
 // token decoder, which errors on input this deep from Go 1.27 and accepts it
 // before. Either way it must not overflow the stack.
