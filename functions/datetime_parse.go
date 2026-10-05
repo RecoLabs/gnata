@@ -58,6 +58,11 @@ func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, er
 		if n <= 0 {
 			return time.Time{}, false, nil
 		}
+		if part.marker.component == 'f' {
+			if keep := n - digitsNeeded(parts[i+1:]); keep > 0 && keep < n {
+				value, n = parseMarkerValue(inputRunes[pos:pos+keep], part.marker)
+			}
+		}
 		if isNamePresentation(part.marker.presentation) && i+1 < len(parts) {
 			if yielded := yieldToNext(inputRunes[pos:], n, &parts[i+1]); yielded != n {
 				if value, n = parseMarkerValue(inputRunes[pos:pos+yielded], part.marker); n != yielded {
@@ -101,6 +106,27 @@ func isIntegerMarker(part *datePicturePart) bool {
 	c := rune(part.marker.component)
 	return part.isMarker && (c == 'f' || strings.ContainsRune(integerComponents, c)) &&
 		!isNamePresentation(part.marker.presentation)
+}
+
+// digitsNeeded returns how many digits the run of decimal integer markers
+// starting at parts[0] needs. [f] reads every digit, but jsonata-js's regex
+// backtracks to leave each marker of the run its fixed width, or one digit.
+func digitsNeeded(parts []datePicturePart) int {
+	needed := 0
+	for i := range parts {
+		next := &parts[i]
+		if !isIntegerMarker(next) || next.marker.component == 'f' {
+			break
+		}
+		if mandatory, _ := decimalPictureDigits(next.marker.presentation); mandatory == 0 {
+			break
+		}
+		if next.marker.parseWidth <= 0 {
+			return needed + 1
+		}
+		needed += next.marker.parseWidth
+	}
+	return needed
 }
 
 func isNamePresentation(presentation string) bool {
