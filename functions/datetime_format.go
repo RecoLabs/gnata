@@ -78,6 +78,9 @@ const noWidth = -1
 type dateMarker struct {
 	component byte
 	ordinal   bool
+	// tzSeparator is the rune between an offset's hours and minutes that
+	// $toMillis expects for [Z] and [z], 0 for none.
+	tzSeparator rune
 	// maxWidthGiven is set for any maximum but "*", even one that reads as
 	// noWidth, like "2-" or "*-x", which jsonata-js's parseInt reads as NaN.
 	maxWidthGiven bool
@@ -225,10 +228,11 @@ func paddingWidth(m dateMarker) int {
 	return max(m.minWidth, 0)
 }
 
-// parseMarkerWidth reads a width the way JavaScript's parseInt does, taking the
-// leading digits and ignoring the rest; "*" or no digits means no width, and a
-// width too large for an int reads as math.MaxInt.
+// parseMarkerWidth reads a width the way JavaScript's parseInt does, taking an
+// optional "+" and the leading digits and ignoring the rest; "*" or no digits
+// means no width, and a width too large for an int reads as math.MaxInt.
 func parseMarkerWidth(spec string) int {
+	spec = strings.TrimPrefix(spec, "+")
 	end := 0
 	for end < len(spec) && spec[end] >= '0' && spec[end] <= '9' {
 		end++

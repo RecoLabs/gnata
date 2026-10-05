@@ -23,10 +23,13 @@ func parseWithPicture(input, picture string, now time.Time, stop func() error) (
 	if err != nil {
 		return 0, false, err
 	}
-	for _, part := range parts {
+	for i, part := range parts {
 		m := part.marker
 		if !part.isMarker {
 			continue
+		}
+		if m.component == 'Z' || m.component == 'z' {
+			parts[i].marker.tzSeparator = offsetSeparator(m.presentation)
 		}
 		// jsonata-js matches [C] and [E] as names whatever their presentation.
 		if (isNamePresentation(m.presentation) && !strings.ContainsRune("MxFPZzf", rune(m.component))) ||
@@ -85,7 +88,7 @@ func newPictureMatch(parts []datePicturePart, input string, stop func() error) *
 	runes := []rune(input)
 	return &pictureMatch{
 		parts: parts, input: runes, values: make([]int, len(parts)), failed: map[[2]int]bool{},
-		steps: matchStepsPerRune * (len(runes) + len(parts) + 1), stop: stop,
+		steps: matchStepsPerRune * min(len(runes)+len(parts)+1, math.MaxInt/matchStepsPerRune), stop: stop,
 	}
 }
 
@@ -361,8 +364,8 @@ const maxDateMillis = 8.64e15
 // components too large for time.Date's int arithmetic are rejected first.
 func nearDateRange(year, month, day, hour, minute, second int) bool {
 	const msPerDay, daysPerYear, slackDays = 86_400_000, 365.2425, 2
-	// A saturated component is out of range even where a 32-bit int's
-	// math.MaxInt alone would not be.
+	// math.MaxInt marks a component that overflowed (atoiSaturating). With
+	// 32-bit ints it can still estimate in range, as minutes for example.
 	if slices.Contains([]int{year, month, day, hour, minute, second}, math.MaxInt) {
 		return false
 	}
@@ -371,16 +374,13 @@ func nearDateRange(year, month, day, hour, minute, second int) bool {
 	return math.Abs(days) <= maxDateMillis/msPerDay+slackDays
 }
 
-// consumeNameOrNumber returns how many runes of a name (any run of letters, as
-// jsonata-js accepts) or number start runes, depending on the presentation:
-// parseWidth digits when set, with an ordinal's required suffix.
+// consumeNameOrNumber returns how many runes of a weekday or week marker
+// start runes: a name (any run of letters, as jsonata-js accepts) or a number
+// in the marker's presentation, 0 when none does.
 func consumeNameOrNumber(runes []rune, m dateMarker) int {
-	if m.ordinal && !isNamePresentation(m.presentation) {
-		_, consumed := parseOrdinalNumber(runes, m.parseWidth)
-		return consumed
-	}
 	if !isNamePresentation(m.presentation) {
-		return leadingDigits(runes, m.parseWidth)
+		_, consumed := parseTokenValue(runes, m)
+		return max(consumed, 0)
 	}
 	i := 0
 	for i < len(runes) && isASCIILetter(runes[i]) {
@@ -450,15 +450,7 @@ func scanTZ(runes []rune, m dateMarker) (sign int, hours, mins []rune, consumed 
 	}
 	hours = runes[i : i+n]
 	i += n
-	// jsonata-js drops a ";" format modifier before reading the picture.
-	picture := m.presentation
-	if semicolon := strings.LastIndexByte(picture, ';'); semicolon >= 0 {
-		picture = picture[:semicolon]
-	}
-	separator := rune(0)
-	if mandatory, _ := decimalPictureDigits(picture); mandatory > 0 {
-		separator = regularGroupingSeparator(picture)
-	}
+	separator := m.tzSeparator
 	minuteDigits := 0
 	if separator != 0 && i < len(runes) && runes[i] == separator {
 		minuteDigits = leadingDigits(runes[i+1:], 0)
@@ -473,6 +465,19 @@ func scanTZ(runes []rune, m dateMarker) (sign int, hours, mins []rune, consumed 
 		hours, mins = hours[:2], hours[2:]
 	}
 	return sign, hours, mins, i
+}
+
+// offsetSeparator returns the rune an offset picture puts between hours and
+// minutes: its regular grouping separator, read as jsonata-js does after
+// dropping a ";" format modifier, or 0.
+func offsetSeparator(presentation string) rune {
+	if semicolon := strings.LastIndexByte(presentation, ';'); semicolon >= 0 {
+		presentation = presentation[:semicolon]
+	}
+	if mandatory, _ := decimalPictureDigits(presentation); mandatory == 0 {
+		return 0
+	}
+	return regularGroupingSeparator(presentation)
 }
 
 // offsetSeconds converts an offset's hour and minute digits to seconds,
