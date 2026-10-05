@@ -60,6 +60,7 @@ func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, er
 		}
 		if endsInDigitRun(&part) {
 			if keep := n - digitsNeeded(parts[i+1:]); keep > 0 && keep < n {
+				keep = yieldDigitsToNext(inputRunes[pos:], keep, &parts[i+1])
 				if value, n = parseMarkerValue(inputRunes[pos:pos+keep], part.marker); n != keep {
 					return time.Time{}, false, nil
 				}
@@ -147,7 +148,7 @@ func digitsNeeded(parts []datePicturePart) int {
 		if !next.isMarker {
 			digits := 0
 			for _, c := range next.literal {
-				if !unicode.IsDigit(c) {
+				if !isASCIIDigit(c) {
 					return needed + digits
 				}
 				digits++
@@ -195,6 +196,11 @@ func isASCIILetter(c rune) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
+// isASCIIDigit matches the digits jsonata-js accepts in a number, [0-9].
+func isASCIIDigit(c rune) bool {
+	return c >= '0' && c <= '9'
+}
+
 // maxYieldLetters caps how many letters yieldToNext gives back. It covers any
 // literal, word or numeral that can follow a name while keeping the search
 // linear in the input: each retry re-parses the rest of it.
@@ -207,22 +213,39 @@ func yieldToNext(runes []rune, n int, next *datePicturePart) int {
 	if next.isMarker && (next.marker.component == 'C' || next.marker.component == 'E') {
 		return n
 	}
-	matches := func(k int) bool {
-		if !next.isMarker {
-			return hasFoldPrefix(runes[k:], next.literal)
-		}
-		_, consumed := parseMarkerValue(runes[k:], next.marker)
-		return consumed > 0
-	}
-	if matches(n) {
+	if partMatches(runes[n:], next) {
 		return n
 	}
 	for k := n - 1; k >= max(1, n-maxYieldLetters) && isASCIILetter(runes[k]); k-- {
-		if matches(k) {
+		if partMatches(runes[k:], next) {
 			return k
 		}
 	}
 	return n
+}
+
+// yieldDigitsToNext gives back further trailing digits of the keep runes a
+// digit run kept when the picture part after it does not match there, as
+// jsonata-js's backtracking regex does: "12535" against [f]5[m] keeps "12".
+func yieldDigitsToNext(runes []rune, keep int, next *datePicturePart) int {
+	if partMatches(runes[keep:], next) {
+		return keep
+	}
+	for k := keep - 1; k >= max(1, keep-maxYieldLetters) && isASCIIDigit(runes[k]); k-- {
+		if partMatches(runes[k:], next) {
+			return k
+		}
+	}
+	return keep
+}
+
+// partMatches reports whether a picture part matches at the start of runes.
+func partMatches(runes []rune, part *datePicturePart) bool {
+	if !part.isMarker {
+		return hasFoldPrefix(runes, part.literal)
+	}
+	_, consumed := parseMarkerValue(runes, part.marker)
+	return consumed > 0
 }
 
 func hasFoldPrefix(runes []rune, literal string) bool {
@@ -369,6 +392,10 @@ func resolveParsedDate(components map[byte]int, now time.Time) (time.Time, error
 // consumeNameOrNumber returns how many runes of a name (any run of letters, as
 // jsonata-js accepts) or number start runes, depending on the presentation.
 func consumeNameOrNumber(runes []rune, m dateMarker) int {
+	if m.ordinal && !isNamePresentation(m.presentation) {
+		_, consumed := parseOrdinalNumber(runes, m.parseWidth)
+		return consumed
+	}
 	if !isNamePresentation(m.presentation) {
 		return leadingDigits(runes, m.parseWidth)
 	}
@@ -383,7 +410,7 @@ func consumeNameOrNumber(runes []rune, m dateMarker) int {
 // when width is positive, else all of them; 0 when they do not match.
 func leadingDigits(runes []rune, width int) int {
 	i := 0
-	for i < len(runes) && unicode.IsDigit(runes[i]) && (width <= 0 || i < width) {
+	for i < len(runes) && isASCIIDigit(runes[i]) && (width <= 0 || i < width) {
 		i++
 	}
 	if width > 0 && i < width {
