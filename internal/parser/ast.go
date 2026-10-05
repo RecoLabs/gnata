@@ -98,8 +98,7 @@ type Slot struct {
 	Index int    // sequential index across all parent operators
 }
 
-// Signature is the parsed type signature of a lambda or built-in function.
-// The full parsing logic lives in functions/signature.go; this type is shared.
+// Signature is a lambda's type signature, as parsed by ParseSig.
 type Signature struct {
 	Params []ParamSpec // the parsed parameters of a signature such as "<s-n?:s>"
 }

@@ -406,14 +406,13 @@ type EnvAwareBuiltin func(args []any, focus any, env *Environment) (any, error)
 // application or composition with its arity, or a wrapper that applies a
 // function argument (Argument, never itself a wrapper) with a null context.
 // Every call except a partial application fills a missing context argument
-// from the call's context and, when Validate is set, validates its
+// from the call's context and, when Validated is set, validates its
 // arguments, as jsonata-js's apply does.
 type SignedBuiltin struct {
 	Name      string // the builtin's name; "" for a partial application, composition or argument wrapper
 	Fn        EnvAwareBuiltin
-	Sig       string
 	Signature *Signature // nil: no signature
-	Validate  bool       // validate the arguments against Signature, not just fill the context
+	Validated bool       // validate the arguments against Signature, not just fill the context
 	Arity     int        // parameters of the jsonata-js implementation, for HOF callbacks; -1 if unknown
 	Argument  any        // a function argument this applies with a null context, or nil
 }

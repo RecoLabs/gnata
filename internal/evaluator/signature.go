@@ -14,7 +14,7 @@ import (
 // validate turns on jsonata-js's argument validation; otherwise the
 // signature only fills arguments left to the context.
 func NewSignedBuiltin(name string, fn EnvAwareBuiltin, sig string, arity int, validate bool) (*SignedBuiltin, error) {
-	sb := &SignedBuiltin{Name: name, Fn: fn, Sig: sig, Arity: arity}
+	sb := &SignedBuiltin{Name: name, Fn: fn, Arity: arity}
 	if sig == "" {
 		return sb, nil
 	}
@@ -23,7 +23,7 @@ func NewSignedBuiltin(name string, fn EnvAwareBuiltin, sig string, arity int, va
 		return nil, err
 	}
 	sb.Signature = compileSignature(specs)
-	sb.Validate = validate
+	sb.Validated = validate
 	return sb, nil
 }
 
@@ -38,7 +38,7 @@ func checkCallArgs(fn any, args []any, focus any) ([]any, error) {
 	)
 	switch f := fn.(type) {
 	case *SignedBuiltin:
-		sig, validate = f.Signature, f.Validate
+		sig, validate = f.Signature, f.Validated
 	case *Lambda:
 		sig, validate = f.Signature, true
 	}
@@ -72,6 +72,7 @@ type sigParam struct {
 	variadic bool  // '+'
 	lazy     bool  // takes as few arguments as it can, see parser.ParamSpec.Lazy
 	context  bool  // '-'
+	anyFocus bool  // the context value may have any type, see parser.ParamSpec.AnyContext
 	array    bool  // type 'a', whose non-array arguments are wrapped in an array
 	subtype  byte  // the content type of an array, or 0
 }
@@ -86,6 +87,7 @@ func compileSignature(specs []parser.ParamSpec) *Signature {
 			variadic: spec.Variadic,
 			lazy:     spec.Lazy,
 			context:  spec.Context,
+			anyFocus: spec.AnyContext,
 			array:    len(spec.Types) == 1 && spec.Types[0] == 'a',
 			subtype:  spec.ContentType,
 		}
@@ -308,7 +310,7 @@ func (param sigParam) arrayArg(arg any, symbol byte, single bool, argIndex int) 
 // checkFocus raises T0411 when focus cannot fill the context parameter at
 // argument index argIndex.
 func checkFocus(param sigParam, focus any, argIndex int) error {
-	if param.symbols&symbolBit(focusSymbol(focus)) != 0 {
+	if param.anyFocus || param.symbols&symbolBit(focusSymbol(focus)) != 0 {
 		return nil
 	}
 	return &JSONataError{

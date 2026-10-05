@@ -65,8 +65,8 @@ func TestJSSpecsAreRegistered(t *testing.T) {
 		if (spec.sig != "") != (sb.Signature != nil) {
 			t.Fatalf("$%s: signature %q, bound signature %v", name, spec.sig, sb.Signature)
 		}
-		if spec.validate != sb.Validate {
-			t.Fatalf("$%s: validated is %v, want %v", name, sb.Validate, spec.validate)
+		if spec.validate != sb.Validated {
+			t.Fatalf("$%s: validated is %v, want %v", name, sb.Validated, spec.validate)
 		}
 	}
 }
