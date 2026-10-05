@@ -30,14 +30,16 @@ const pathBytesTestData = `{
 // evalBytesMatchesEvalCase runs one EvalBytes-vs-Eval differential check,
 // shared by the pure-path and aggregate-fast test suites below (they differ
 // only in which fast-path classifier they assert and the fixture used).
-func evalBytesMatchesEvalCase(t *testing.T, expr string, rawData json.RawMessage, decoded any, wantFastPath func(*gnata.Expression) bool) {
+func evalBytesMatchesEvalCase(
+	t *testing.T, expr string, rawData json.RawMessage, decoded any, wantClassifier func(*gnata.Expression) bool,
+) {
 	t.Helper()
 	compiled, err := gnata.Compile(expr)
 	if err != nil {
 		t.Fatalf("Compile(%q): %v", expr, err)
 	}
-	if !wantFastPath(compiled) {
-		t.Fatalf("Compile(%q): expected the relevant fast-path classifier to be true", expr)
+	if !wantClassifier(compiled) {
+		t.Fatalf("Compile(%q): fast-path classification mismatch", expr)
 	}
 
 	wantResult, wantErr := compiled.Eval(context.Background(), decoded)

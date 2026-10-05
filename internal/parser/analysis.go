@@ -268,7 +268,7 @@ func rawStepNames(node *Node) []string {
 // built-in function with a pure-path first argument. Returns nil when the
 // pattern does not match.
 func tryCollectFunc(node *Node) *FuncFastPath {
-	if node == nil || node.Type != NodeFunction {
+	if node == nil || node.Type != NodeFunction || node.KeepArray {
 		return nil
 	}
 	if node.Procedure == nil || node.Procedure.Type != NodeVariable {
@@ -369,7 +369,7 @@ func collectPaths(node *Node) ([]string, bool) {
 	switch node.Type {
 	case NodeName:
 		// Simple field name — GJSON path is just the name.
-		if len(node.Stages) > 0 || node.Group != nil || node.Focus != "" {
+		if len(node.Stages) > 0 || node.Group != nil || node.Focus != "" || node.KeepArray {
 			return nil, false
 		}
 		escaped, ok := gjsonEscapeName(node.Value)

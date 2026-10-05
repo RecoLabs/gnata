@@ -103,6 +103,31 @@ func TestEvalBytes_ExistsContainsAcrossArrays_MatchesEval(t *testing.T) {
 	}
 }
 
+// TestEvalBytes_KeepArray_MatchesEval checks that the EvalBytes fast paths
+// leave a [] suffix to the evaluator.
+func TestEvalBytes_KeepArray_MatchesEval(t *testing.T) {
+	testCases := []struct {
+		desc string
+		expr string
+	}{
+		{desc: "kept field", expr: `Account[]`},
+		{desc: "builtin of a kept field", expr: `$type(Account[])`},
+		{desc: "kept builtin result", expr: `$keys(Account)[]`},
+	}
+
+	rawData := json.RawMessage(comparisonBytesTestData)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	noFastPath := func(e *gnata.Expression) bool { return !e.IsFastPath() && !e.IsFuncFastPath() }
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			evalBytesMatchesEvalCase(t, tC.expr, rawData, decoded, noFastPath)
+		})
+	}
+}
+
 func TestEvalMap_ArrayAutoMap_MatchesEval(t *testing.T) {
 	testCases := []struct {
 		desc string
