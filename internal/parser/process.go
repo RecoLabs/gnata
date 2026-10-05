@@ -6,7 +6,7 @@ package parser
 // Current transformations:
 //   - Flattens nested binary(".") nodes into path nodes with Steps slices.
 //   - Propagates KeepSingletonArray when any step has KeepArray=true.
-//   - Marks last-step array constructors as ConsArray (jsonata-js consarray).
+//   - Marks array-constructor steps as ConsArray (jsonata-js consarray).
 //   - Attaches group expressions from path-step binary("{") to the path.
 //   - Recursively processes all child nodes.
 func ProcessAST(node *Node) (*Node, error) {
@@ -233,15 +233,18 @@ func processBlockChildren(node *Node) (*Node, error) {
 	return node, nil
 }
 
-// markUnaryArraySteps flags first/last path steps that are array constructors
-// so evaluation can treat them as cons arrays (jsonata-js processAST).
+// markUnaryArraySteps flags array-constructor steps as cons arrays, so each
+// array they build stays one value in later steps. jsonata-js flags a path's
+// first and last constructor steps, and since a.[b,c].d parses as
+// (a.[b,c]).d, every constructor after the first was once a last step. A
+// leading constructor in a longer path stays unflagged: jsonata-js evaluates
+// it once and maps later steps over its items, which gnata does for a plain
+// array.
 func markUnaryArraySteps(steps []*Node) {
-	if len(steps) == 0 {
-		return
-	}
-	last := steps[len(steps)-1]
-	if isUnaryArrayCtor(last) {
-		last.ConsArray = true
+	for i, step := range steps {
+		if (i > 0 || len(steps) == 1) && isUnaryArrayCtor(step) {
+			step.ConsArray = true
+		}
 	}
 }
 
