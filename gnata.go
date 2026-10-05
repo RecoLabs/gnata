@@ -737,10 +737,10 @@ func (e *Expression) RequiredPaths() []string {
 
 // DeepEqual reports whether two JSONata values are structurally equal.
 // This is the same equality used by the = and != operators.
+// The null sentinel equals nil, so evaluator output compares equal to values
+// decoded by encoding/json, where JSON null becomes nil.
 func DeepEqual(a, b any) bool {
-	// Delegates to the internal evaluator implementation.
-	// Imported here so callers don't need to reference internal packages.
-	return deepEqualInternal(a, b)
+	return evaluator.DeepEqualNullAsNil(a, b)
 }
 
 // IsNull reports whether v is the JSONata null sentinel value.

@@ -280,7 +280,13 @@ func normalizeNumber(v any) any {
 
 // DeepEqual implements JSONata structural equality.
 func DeepEqual(a, b any) bool {
-	return DeepEqualPrec(a, b, 0)
+	return deepEqual(a, b, equality{})
+}
+
+// DeepEqualNullAsNil is DeepEqual with the null sentinel equal to nil, for
+// comparing evaluator output with values decoded by encoding/json.
+func DeepEqualNullAsNil(a, b any) bool {
+	return deepEqual(a, b, equality{nullAsNil: true})
 }
 
 // DeepEqualPrec is DeepEqual comparing numbers in decimal to prec significant
@@ -288,28 +294,40 @@ func DeepEqual(a, b any) bool {
 // from an explicit stack of frames rather than by recursion, so a deeply
 // nested value cannot overflow the goroutine stack.
 func DeepEqualPrec(a, b any, prec int) bool {
+	return deepEqual(a, b, equality{prec: prec})
+}
+
+// equality is how deepEqual compares values: numbers in decimal to prec
+// significant digits, or in float64 when prec is 0, and with nullAsNil the
+// null sentinel equal to nil.
+type equality struct {
+	prec      int
+	nullAsNil bool
+}
+
+func deepEqual(a, b any, eq equality) bool {
 	var frame equalFrame
-	if open, equal := equalShallow(a, b, prec, &frame); !open {
+	if open, equal := equalShallow(a, b, eq, &frame); !open {
 		return equal
 	}
-	return equalItems(&frame, prec)
+	return equalItems(&frame, eq)
 }
 
 // equalItems compares the items of frame, keeping the frames of enclosing
 // arrays and objects on a stack while it compares a nested one.
-func equalItems(frame *equalFrame, prec int) bool {
+func equalItems(frame *equalFrame, eq equality) bool {
 	var (
 		buf   [8]equalFrame
 		child equalFrame
 	)
 	stack := buf[:0]
 	for {
-		a, b, more, equal := frame.next(prec)
+		a, b, more, equal := frame.next(eq)
 		if !equal {
 			return false
 		}
 		if more {
-			open, equal := equalShallow(a, b, prec, &child)
+			open, equal := equalShallow(a, b, eq, &child)
 			if !equal {
 				return false
 			}
@@ -343,7 +361,7 @@ type equalFrame struct {
 // next compares the frame's items up to its next pair of arrays or objects,
 // which it returns, or reports that the frame has none left. equal is false
 // once an item differs.
-func (f *equalFrame) next(prec int) (a, b any, more, equal bool) {
+func (f *equalFrame) next(eq equality) (a, b any, more, equal bool) {
 	for {
 		if f.ordered != nil {
 			if f.index == len(f.ordered.keys) {
@@ -365,7 +383,7 @@ func (f *equalFrame) next(prec int) (a, b any, more, equal bool) {
 		if isContainer(a) {
 			return a, b, true, true
 		}
-		if _, equal := equalShallow(a, b, prec, nil); !equal {
+		if _, equal := equalShallow(a, b, eq, nil); !equal {
 			return nil, nil, false, false
 		}
 	}
@@ -384,7 +402,7 @@ func isContainer(v any) bool {
 // iteration cannot be resumed, it compares the values that are not arrays
 // or objects at once and keeps the others to compare pairwise, opening no
 // frame when there are none.
-func openEqualFrame(a, b any, prec int, frame *equalFrame) (open, equal bool) {
+func openEqualFrame(a, b any, eq equality, frame *equalFrame) (open, equal bool) {
 	switch av := a.(type) {
 	case map[string]any:
 		if !IsMap(b) || MapLen(b) != len(av) {
@@ -398,7 +416,7 @@ func openEqualFrame(a, b any, prec int, frame *equalFrame) (open, equal bool) {
 			}
 			if isContainer(va) {
 				nestedA, nestedB = append(nestedA, va), append(nestedB, vb)
-			} else if _, equal := equalShallow(va, vb, prec, nil); !equal {
+			} else if _, equal := equalShallow(va, vb, eq, nil); !equal {
 				return false, false
 			}
 		}
@@ -423,9 +441,9 @@ func openEqualFrame(a, b any, prec int, frame *equalFrame) (open, equal bool) {
 // equalShallow compares a and b, except that for arrays and objects it sets
 // frame to compare their items and reports open. frame may be nil when a is
 // neither.
-func equalShallow(a, b any, prec int, frame *equalFrame) (open, equal bool) {
-	if prec > 0 {
-		if equal, ok := decimalEqual(a, b, prec); ok {
+func equalShallow(a, b any, eq equality, frame *equalFrame) (open, equal bool) {
+	if eq.prec > 0 {
+		if equal, ok := decimalEqual(a, b, eq.prec); ok {
 			return false, equal
 		}
 	}
@@ -444,6 +462,9 @@ func equalShallow(a, b any, prec int, frame *equalFrame) (open, equal bool) {
 
 	a, b = normalizeNumber(a), normalizeNumber(b)
 	if a == nil || b == nil || IsNull(a) || IsNull(b) {
+		if eq.nullAsNil {
+			return false, (a == nil || IsNull(a)) && (b == nil || IsNull(b))
+		}
 		return false, a == nil && b == nil || IsNull(a) && IsNull(b)
 	}
 	switch av := a.(type) {
@@ -457,7 +478,7 @@ func equalShallow(a, b any, prec int, frame *equalFrame) (open, equal bool) {
 		bv, ok := b.(string)
 		return false, ok && av == bv
 	case []any, ConsArray, map[string]any, *OrderedMap:
-		return openEqualFrame(av, b, prec, frame)
+		return openEqualFrame(av, b, eq, frame)
 	}
 	return false, false
 }

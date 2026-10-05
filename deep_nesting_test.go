@@ -105,6 +105,16 @@ func TestDeepNesting(t *testing.T) {
 	}
 }
 
+func TestDeepNestingDeepEqual(t *testing.T) {
+	limitStack(t)
+	if !gnata.DeepEqual(deepArray(), deepArray()) {
+		t.Fatal("deep arrays differ")
+	}
+	if !gnata.DeepEqual(deepObject(), deepObject()) {
+		t.Fatal("deep objects differ")
+	}
+}
+
 // Past the fast decoder's depth limit, decoding falls back to encoding/json's
 // token decoder, which errors on input this deep from Go 1.27 and accepts it
 // before. Either way it must not overflow the stack.
