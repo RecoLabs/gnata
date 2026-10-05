@@ -19,6 +19,17 @@ import (
 )
 
 func main() {
+	lines, err := run()
+	if err != nil {
+		println(err.Error())
+		return
+	}
+	for _, line := range lines {
+		println(line)
+	}
+}
+
+func run() ([]string, error) {
 	se := gnata.NewStreamEvaluator(nil,
 		gnata.WithCustomFunctions(map[string]gnata.CustomFunc{
 			"upper": func(args []any, _ any) (any, error) {
@@ -38,8 +49,7 @@ func main() {
 	for _, e := range exprs {
 		idx, err := se.Compile(e)
 		if err != nil {
-			println("compile error:", err.Error())
-			return
+			return nil, fmt.Errorf("compile error: %w", err)
 		}
 		indices = append(indices, idx)
 	}
@@ -47,19 +57,19 @@ func main() {
 	event := json.RawMessage(`{"user": {"id": "u1", "name": "ada", "plan": "enterprise"}, "orders": [{"amount": 700}, {"amount": 450}]}`)
 	results, err := se.EvalMany(context.Background(), event, "user-order-v1", indices)
 	if err != nil {
-		println("eval error:", err.Error())
-		return
+		return nil, fmt.Errorf("eval error: %w", err)
 	}
+	lines := make([]string, 0, len(results))
 	for i, r := range results {
 		out := fmt.Sprint(r)
 		if obj, ok := r.(*gnata.OrderedMap); ok {
 			b, err := obj.MarshalJSON()
 			if err != nil {
-				println("marshal error:", err.Error())
-				return
+				return nil, fmt.Errorf("marshal error: %w", err)
 			}
 			out = string(b)
 		}
-		println(exprs[i], "->", out)
+		lines = append(lines, exprs[i]+" -> "+out)
 	}
+	return lines, nil
 }
