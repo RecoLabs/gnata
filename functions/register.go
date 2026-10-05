@@ -58,10 +58,7 @@ var builtinFuncs = []struct {
 	{"assert", fnAssert},
 	{"type", fnTypeOf},
 	// ── Date / Time ───────────────────────────────────────────────────────────
-	{"now", fnNow},
-	{"millis", fnMillis},
 	{"fromMillis", fnFromMillis},
-	{"toMillis", fnToMillis},
 }
 
 // decimalFuncs lists numeric builtins with a decimal variant used under WithDecimalPrecision.
@@ -102,6 +99,9 @@ func RegisterAll(env *evaluator.Environment, evalFn EvalFn) {
 		env.Bind(b.name, withDecimal(b.fn, b.dec))
 	}
 	env.Bind("append", evaluator.EnvAwareBuiltin(fnAppend))
+	env.Bind("now", evaluator.EnvAwareBuiltin(fnNow))
+	env.Bind("millis", evaluator.EnvAwareBuiltin(fnMillis))
+	env.Bind("toMillis", evaluator.EnvAwareBuiltin(fnToMillis))
 	env.Bind("uppercase", newSignedBuiltin(fnUppercase, "s-:s"))
 	env.Bind("lowercase", newSignedBuiltin(fnLowercase, "s-:s"))
 	env.Bind("match", makeFnMatch(evalFn))

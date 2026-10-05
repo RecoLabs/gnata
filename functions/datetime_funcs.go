@@ -7,8 +7,8 @@ import (
 	"github.com/recolabs/gnata/internal/evaluator"
 )
 
-func fnNow(args []any, _ any) (any, error) {
-	now := time.Now().UTC()
+func fnNow(args []any, _ any, env *evaluator.Environment) (any, error) {
+	now := env.Now()
 	if len(args) >= 1 && args[0] != nil {
 		picture, ok := args[0].(string)
 		if !ok {
@@ -28,11 +28,11 @@ func fnNow(args []any, _ any) (any, error) {
 		}
 		return s, nil
 	}
-	return now.Format(time.RFC3339Nano), nil
+	return formatDefaultISO(now), nil
 }
 
-func fnMillis(_ []any, _ any) (any, error) {
-	return float64(time.Now().UnixMilli()), nil
+func fnMillis(_ []any, _ any, env *evaluator.Environment) (any, error) {
+	return float64(env.Now().UnixMilli()), nil
 }
 
 func fnFromMillis(args []any, focus any) (any, error) {
@@ -99,7 +99,7 @@ func formatDefaultISO(t time.Time) string {
 	return fmt.Sprintf("%s%s%s%02d:%02d", base, millis, sign, hours, mins)
 }
 
-func fnToMillis(args []any, _ any) (any, error) {
+func fnToMillis(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
@@ -114,15 +114,9 @@ func fnToMillis(args []any, _ any) (any, error) {
 		if !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$toMillis: picture argument must be a string"}
 		}
-		t, ok2, err2 := parseWithPicture(s, picture)
-		if err2 != nil {
-			return nil, err2
-		}
-		if !ok2 {
-			return nil, nil
-		}
-		if t.Year() == 0 {
-			return nil, nil
+		t, matched, err := parseWithPicture(s, picture, env.Now())
+		if err != nil || !matched {
+			return nil, err
 		}
 		return float64(t.UnixMilli()), nil
 	}

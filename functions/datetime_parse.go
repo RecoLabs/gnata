@@ -11,365 +11,275 @@ import (
 	"github.com/recolabs/gnata/internal/evaluator"
 )
 
-var validComponents = map[rune]bool{
-	'Y': true, 'M': true, 'D': true, 'd': true, 'H': true, 'h': true,
-	'm': true, 's': true, 'f': true, 'F': true, 'Z': true, 'z': true,
-	'P': true, 'C': true, 'E': true, 'W': true, 'w': true, 'X': true, 'x': true,
-}
-
-// Extract picture tokens in order.
-type picturePart struct {
-	isToken   bool
-	token     string // if isToken
-	component rune
-	modifier  string
-	literal   string // if !isToken
-}
-
-func parseWithPicture(input, picture string) (time.Time, bool, error) { //nolint:gocyclo,funlen // dispatch
-	var parts []picturePart
-	runes := []rune(picture)
-	i := 0
-	for i < len(runes) {
-		switch {
-		case runes[i] == '[':
-			if i+1 < len(runes) && runes[i+1] == '[' {
-				parts = append(parts, picturePart{literal: "["})
-				i += 2
-				continue
-			}
-			j := i + 1
-			for j < len(runes) && runes[j] != ']' {
-				j++
-			}
-			if j >= len(runes) {
-				return time.Time{}, false, nil // Unclosed - undefined
-			}
-			tok := strings.ReplaceAll(string(runes[i+1:j]), " ", "")
-			if tok == "" {
-				i = j + 1
-				continue
-			}
-			comp := rune(tok[0])
-			if !validComponents[comp] {
-				return time.Time{}, false, &evaluator.JSONataError{
-					Code:    "D3132",
-					Message: fmt.Sprintf("$toMillis: unknown picture component '%c'", comp),
-				}
-			}
-			mod := tok[1:]
-			// Check for [YN] = invalid modifier → D3133
-			if comp == 'Y' && mod == "N" {
-				return time.Time{}, false, &evaluator.JSONataError{
-					Code:    "D3133",
-					Message: "$toMillis: the picture string is not valid: unsupported modifier [YN]",
-				}
-			}
-			parts = append(parts, picturePart{isToken: true, token: tok, component: comp, modifier: mod})
-			i = j + 1
-		case runes[i] == ']' && i+1 < len(runes) && runes[i+1] == ']':
-			parts = append(parts, picturePart{literal: "]"})
-			i += 2
-		default:
-			parts = append(parts, picturePart{literal: string(runes[i])})
-			i++
-		}
+// parseWithPicture parses input against a picture string. It reports false when
+// the input does not match the picture; defaults for unspecified components
+// come from now, the evaluation's timestamp.
+func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, error) {
+	parts, err := parseDatePicture(picture)
+	if err != nil {
+		return time.Time{}, false, err
 	}
-
-	// Track which components appear in the picture for validation.
-	var hasCalY, hasWeekY, hasM, hasD, hasDOY, hasH, hasHour, hasMin, hasSec bool
-	for _, p := range parts {
-		if !p.isToken {
-			continue
-		}
-		switch p.component {
-		case 'Y':
-			hasCalY = true
-		case 'X':
-			hasWeekY = true
-		case 'M':
-			hasM = true
-		case 'D':
-			hasD = true
-		case 'd':
-			hasDOY = true
-		case 'H':
-			hasH = true
-			hasHour = true
-		case 'h':
-			hasHour = true
-		case 'm':
-			hasMin = true
-		case 's':
-			hasSec = true
-		}
-	}
-
-	// Validate underspecified pictures (D3136):
-	// - Year + day but no month → gap
-	// - Min or sec but no hour (H or h) → gap
-	// - Week-based year (X) without calendar year (Y), month (M), day (D) → can't compute calendar date
-	if hasD && !hasM && !hasDOY {
-		return time.Time{}, false, &evaluator.JSONataError{
-			Code:    "D3136",
-			Message: "$toMillis: the date/time picture is underspecified; missing month component",
-		}
-	}
-	if (hasMin || hasSec) && !hasHour && !hasH {
-		return time.Time{}, false, &evaluator.JSONataError{
-			Code:    "D3136",
-			Message: "$toMillis: the date/time picture is underspecified; missing hour component",
-		}
-	}
-	// Week-based components without full calendar date specification.
-	if hasWeekY && !hasCalY {
-		return time.Time{}, false, &evaluator.JSONataError{
-			Code:    "D3136",
-			Message: "$toMillis: the date/time picture is underspecified; week-based year requires full calendar date",
-		}
-	}
-	_ = hasCalY // suppress unused warning
-
-	// Parse the input using the parts.
-	var year, month, day, hour, minute, second, millisec, dayOfYear, tzOffset, pos int
-	var isPM, is12h, hasTZ, hasYear bool
-	inputRunes := []rune(input)
-
 	for _, part := range parts {
-		if !part.isToken {
-			// Consume literal from input.
-			for _, lr := range part.literal {
-				if pos >= len(inputRunes) {
-					return time.Time{}, false, nil
-				}
-				if unicode.ToLower(inputRunes[pos]) != unicode.ToLower(lr) {
-					return time.Time{}, false, nil
-				}
-				pos++
-			}
+		m := part.marker
+		if !part.isMarker {
 			continue
 		}
-
-		component := part.component
-		modifier := part.modifier
-
-		switch component {
-		case 'Y', 'X': // Year or ISO week-based year
-			hasYear = true
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
+		if isNamePresentation(m.presentation) && !strings.ContainsRune("MxFPZzf", rune(m.component)) {
+			return time.Time{}, false, &evaluator.JSONataError{
+				Code:    "D3133",
+				Message: fmt.Sprintf("$toMillis: the 'name' modifier can only be applied to months and days, not %c", m.component),
 			}
-			year = v
-			pos += n
-		case 'M': // Month
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
-			}
-			month = v
-			pos += n
-		case 'D': // Day of month
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
-			}
-			day = v
-			pos += n
-		case 'd': // Day of year
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
-			}
-			dayOfYear = v
-			pos += n
-		case 'H': // 24-hour
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
-			}
-			hour = v
-			pos += n
-		case 'h': // 12-hour
-			is12h = true
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
-			}
-			hour = v
-			pos += n
-		case 'm': // Minutes
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
-			}
-			minute = v
-			pos += n
-		case 's': // Seconds
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
-			}
-			second = v
-			pos += n
-		case 'f': // Fractional seconds
-			v, n := parseTokenValue(inputRunes[pos:], modifier)
-			if n < 0 {
-				return time.Time{}, false, nil
-			}
-			// Normalize to milliseconds.
-			w := n
-			if w < 3 {
-				for k := w; k < 3; k++ {
-					v *= 10
-				}
-			} else if w > 3 {
-				for k := 3; k < w; k++ {
-					v /= 10
-				}
-			}
-			millisec = v
-			pos += n
-		case 'P': // AM/PM
-			if pos >= len(inputRunes) {
-				return time.Time{}, false, nil
-			}
-			if pos+2 <= len(inputRunes) {
-				part2 := strings.ToLower(string(inputRunes[pos : pos+2]))
-				switch part2 {
-				case "am":
-					isPM = false
-					pos += 2
-				case "pm":
-					isPM = true
-					pos += 2
-				default:
-					return time.Time{}, false, nil
-				}
-			} else {
-				return time.Time{}, false, nil
-			}
-		case 'F': // Day of week - consume but ignore (not needed for date construction)
-			n := consumeNameOrNumber(inputRunes[pos:], modifier)
-			if n > 0 {
-				pos += n
-			}
-		case 'Z', 'z': // Timezone - parse and apply
-			offset, n := parseTZFromInput(inputRunes[pos:], modifier, component)
-			if n > 0 {
-				tzOffset = offset
-				hasTZ = true
-				pos += n
-			}
-		case 'W', 'w', 'x': // Week-related - consume but ignore for now
-			n := consumeNameOrNumber(inputRunes[pos:], modifier)
-			if n > 0 {
-				pos += n
+		}
+		if strings.ContainsRune("YMDdFWwXxHhms", rune(m.component)) && lacksIntegerFormat(m) {
+			return time.Time{}, false, &evaluator.JSONataError{
+				Code:    "D3130",
+				Message: fmt.Sprintf("$toMillis: unsupported picture %q", m.presentation),
 			}
 		}
 	}
 
-	// Adjust for 12-hour clock.
-	if is12h {
-		if isPM && hour != 12 {
-			hour += 12
-		} else if !isPM && hour == 12 {
+	components := map[byte]int{}
+	inputRunes := []rune(input)
+	pos := 0
+	for i, part := range parts {
+		if !part.isMarker {
+			if !hasFoldPrefix(inputRunes[pos:], part.literal) {
+				return time.Time{}, false, nil
+			}
+			pos += utf8.RuneCountInString(part.literal)
+			continue
+		}
+		if c := part.marker.component; c == 'C' || c == 'E' {
+			continue
+		}
+		value, n := parseMarkerValue(inputRunes[pos:], part.marker)
+		if n <= 0 {
+			return time.Time{}, false, nil
+		}
+		if isNamePresentation(part.marker.presentation) && i+1 < len(parts) {
+			if yielded := yieldToNext(inputRunes[pos:], n, &parts[i+1]); yielded != n {
+				if value, n = parseMarkerValue(inputRunes[pos:pos+yielded], part.marker); n != yielded {
+					return time.Time{}, false, nil
+				}
+			}
+		}
+		components[part.marker.component] = value
+		pos += n
+	}
+	if pos != len(inputRunes) || len(components) == 0 {
+		return time.Time{}, false, nil
+	}
+	t, err := resolveParsedDate(components, now)
+	return t, err == nil, err
+}
+
+func isNamePresentation(presentation string) bool {
+	return presentation != "" && (presentation[0] == 'n' || presentation[0] == 'N')
+}
+
+// lacksIntegerFormat reports whether an integer marker's picture has no
+// decimal digit and is not an alphabetic, roman, word or name presentation,
+// which jsonata-js rejects with D3130.
+func lacksIntegerFormat(m dateMarker) bool {
+	switch m.presentation {
+	case "a", "A", "i", "I", "w", "W", "Ww":
+		return false
+	}
+	mandatory, _ := decimalPictureDigits(m.presentation)
+	return mandatory == 0 && !isNamePresentation(m.presentation)
+}
+
+// isASCIILetter matches the letters jsonata-js accepts in a name, [a-zA-Z].
+func isASCIILetter(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// maxYieldLetters caps how many letters yieldToNext gives back. It covers any
+// literal, word or numeral that can follow a name while keeping the search
+// linear in the input: each retry re-parses the rest of it.
+const maxYieldLetters = 64
+
+// yieldToNext gives back trailing letters of the n runes consumed for a name
+// when the picture part after it would otherwise not match, as jsonata-js's
+// backtracking regex does: "MayT" against [MNn,3-3]T reads "May".
+func yieldToNext(runes []rune, n int, next *datePicturePart) int {
+	if next.isMarker && (next.marker.component == 'C' || next.marker.component == 'E') {
+		return n
+	}
+	matches := func(k int) bool {
+		if !next.isMarker {
+			return hasFoldPrefix(runes[k:], next.literal)
+		}
+		_, consumed := parseMarkerValue(runes[k:], next.marker)
+		return consumed > 0
+	}
+	if matches(n) {
+		return n
+	}
+	for k := n - 1; k >= max(1, n-maxYieldLetters) && isASCIILetter(runes[k]); k-- {
+		if matches(k) {
+			return k
+		}
+	}
+	return n
+}
+
+func hasFoldPrefix(runes []rune, literal string) bool {
+	i := 0
+	for _, lr := range literal {
+		if i >= len(runes) || unicode.ToLower(runes[i]) != unicode.ToLower(lr) {
+			return false
+		}
+		i++
+	}
+	return true
+}
+
+// parseMarkerValue reads one component's value from the start of runes and
+// returns it with the number of runes consumed, 0 or less when nothing matched.
+func parseMarkerValue(runes []rune, m dateMarker) (value, consumed int) {
+	switch m.component {
+	case 'f':
+		v, n := parseTokenValue(runes, m)
+		for w := n; w < 3 && n > 0; w++ {
+			v *= 10
+		}
+		for w := n; w > 3; w-- {
+			v /= 10
+		}
+		return v, n
+	case 'P':
+		if len(runes) < 2 {
+			return 0, 0
+		}
+		switch strings.ToLower(string(runes[:2])) {
+		case "am":
+			return 0, 2
+		case "pm":
+			return 1, 2
+		}
+		return 0, 0
+	case 'F', 'W', 'w', 'x':
+		return 0, consumeNameOrNumber(runes, m.presentation)
+	case 'Z', 'z':
+		return parseTZFromInput(runes)
+	default:
+		return parseTokenValue(runes, m)
+	}
+}
+
+// specifiedOnly reports whether the specified components among candidates are
+// all in allowed, with at least one of them present (jsonata-js's isType).
+func specifiedOnly(components map[byte]int, candidates, allowed string) bool {
+	found := false
+	for i := range len(candidates) {
+		if _, ok := components[candidates[i]]; !ok {
+			continue
+		}
+		if !strings.Contains(allowed, candidates[i:i+1]) {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// resolveParsedDate fills in the components the picture left out the way
+// jsonata-js does: those more significant than the first specified one come
+// from now, less significant ones are zero (one for month and day), and a
+// specified component after an unspecified one is an error.
+func resolveParsedDate(components map[byte]int, now time.Time) (time.Time, error) {
+	const dateCandidates, timeCandidates = "YXMxWwdD", "PHhmsf"
+	if specifiedOnly(components, dateCandidates, "Xxw") || specifiedOnly(components, dateCandidates, "XW") {
+		return time.Time{}, &evaluator.JSONataError{
+			Code:    "D3136",
+			Message: "$toMillis: parsing an ISO week date is not supported",
+		}
+	}
+	dayOfYear := !specifiedOnly(components, dateCandidates, "YMD") && specifiedOnly(components, dateCandidates, "Yd")
+	twelveHour := !specifiedOnly(components, timeCandidates, "Hmsf") && specifiedOnly(components, timeCandidates, "Phmsf")
+
+	order := "YMD"
+	if dayOfYear {
+		order = "Yd"
+	}
+	if twelveHour {
+		order += "Phmsf"
+	} else {
+		order += "Hmsf"
+	}
+	startSpecified, endSpecified := false, false
+	for i := range len(order) {
+		part := order[i]
+		if _, ok := components[part]; ok {
+			if endSpecified {
+				return time.Time{}, &evaluator.JSONataError{
+					Code:    "D3136",
+					Message: "$toMillis: the date/time picture string is missing specifiers required to parse the timestamp",
+				}
+			}
+			startSpecified = true
+			continue
+		}
+		switch {
+		case startSpecified:
+			components[part] = 0
+			if strings.ContainsRune("MDd", rune(part)) {
+				components[part] = 1
+			}
+			endSpecified = true
+		case part == 'f':
+			components[part] = now.Nanosecond() / int(time.Millisecond)
+		case part == 'P':
+			components[part] = 0
+		default:
+			components[part] = dateComponentValue(now, part)
+		}
+	}
+
+	hour := components['H']
+	if twelveHour {
+		if hour = components['h']; hour == 12 {
 			hour = 0
 		}
-	}
-
-	// If no year seen, use today's date for time-only pictures.
-	if !hasYear && year == 0 {
-		if hasHour || hasMin {
-			now := time.Now().UTC()
-			year = now.Year()
-			month = int(now.Month())
-			day = now.Day()
+		if components['P'] == 1 {
+			hour += 12
 		}
 	}
-
-	if dayOfYear > 0 {
-		t := time.Date(year, 1, 1, hour, minute, second, millisec*1e6, time.UTC).AddDate(0, 0, dayOfYear-1)
-		if hasTZ {
-			// tzOffset is seconds from UTC; subtract to convert local→UTC (same as month/day branch).
-			t = t.Add(-time.Duration(tzOffset) * time.Second)
-		}
-		return t, true, nil
+	month, day := max(components['M'], 1), components['D']
+	if dayOfYear {
+		month, day = 1, components['d']
 	}
-
-	if month == 0 {
-		month = 1
+	t := time.Date(components['Y'], time.Month(month), day, hour, components['m'], components['s'],
+		components['f']*int(time.Millisecond), time.UTC)
+	if offset, ok := components['Z']; ok {
+		t = t.Add(-time.Duration(offset) * time.Second)
+	} else if offset, ok := components['z']; ok {
+		t = t.Add(-time.Duration(offset) * time.Second)
 	}
-	if day == 0 {
-		day = 1
-	}
-
-	t := time.Date(year, time.Month(month), day, hour, minute, second, millisec*1e6, time.UTC)
-	if hasTZ {
-		// tzOffset is seconds from UTC, negative = west (e.g. +02:00 = +7200s from UTC, so we subtract it)
-		t = t.Add(-time.Duration(tzOffset) * time.Second)
-	}
-	return t, true, nil
+	return t, nil
 }
 
-func consumeNameOrNumber(runes []rune, modifier string) int {
-	if len(runes) == 0 {
-		return 0
-	}
-	// Try name match (weekday names).
-	for _, name := range weekdayNames {
-		if modifier == "N" || modifier == "n" || modifier == "Nn" || strings.HasPrefix(modifier, "Nn") || strings.HasPrefix(modifier, "N") {
-			maxLen := 0
-			if strings.Contains(modifier, ",") {
-				parts := strings.SplitN(modifier, ",", 2)
-				if len(parts) == 2 {
-					rangePart := parts[1]
-					rangeParts := strings.Split(rangePart, "-")
-					if v, err := strconv.Atoi(rangeParts[0]); err == nil {
-						maxLen = v
-					}
-					if len(rangeParts) == 2 {
-						if v, err2 := strconv.Atoi(rangeParts[1]); err2 == nil {
-							maxLen = v
-						}
-					}
-				}
-			}
-			nameRunes := []rune(name)
-			if maxLen > 0 && maxLen < len(nameRunes) {
-				// Abbreviated match: compare against the first maxLen runes.
-				abbr := string(nameRunes[:maxLen])
-				if len(runes) >= maxLen && strings.EqualFold(string(runes[:maxLen]), abbr) {
-					return maxLen
-				}
-			} else if len(runes) >= len(nameRunes) && strings.EqualFold(string(runes[:len(nameRunes)]), name) {
-				// Full-name match: covers maxLen==0 and maxLen>=len(nameRunes).
-				return len(nameRunes)
-			}
-		}
-	}
-	// Try numeric.
+// consumeNameOrNumber returns how many runes of a name (any run of letters, as
+// jsonata-js accepts) or number start runes, depending on the presentation.
+func consumeNameOrNumber(runes []rune, presentation string) int {
+	isName := isNamePresentation(presentation)
 	i := 0
-	for i < len(runes) && unicode.IsDigit(runes[i]) {
+	for i < len(runes) && ((isName && isASCIILetter(runes[i])) || (!isName && unicode.IsDigit(runes[i]))) {
 		i++
 	}
 	return i
 }
 
-func parseTZFromInput(runes []rune, _ string, component rune) (offset, consumed int) {
+func parseTZFromInput(runes []rune) (offset, consumed int) {
 	if len(runes) == 0 {
 		return 0, 0
 	}
-	s := string(runes)
 
 	// Handle "GMT±HH:MM" or "GMT±HH" format (z component).
-	if component == 'z' || strings.HasPrefix(s, "GMT") {
-		if strings.HasPrefix(s, "GMT") {
-			rest := s[3:]
-			restRunes := []rune(rest)
-			offset, n := parseTZFromInput(restRunes, "", 'Z')
-			return offset, 3 + n
-		}
+	if hasFoldPrefix(runes, "GMT") {
+		offset, n := parseTZFromInput(runes[3:])
+		return offset, 3 + n
 	}
 
 	// Handle ±HH:MM, ±HHMM, Z.
@@ -417,36 +327,25 @@ func parseTZFromInput(runes []rune, _ string, component rune) (offset, consumed 
 	return sign * (hours*3600 + mins*60), i
 }
 
-func parseTokenValue(runes []rune, modifier string) (value, consumed int) {
+// parseTokenValue reads an integer marker's value. Month names and plain
+// numbers read their width from the full modifier.
+func parseTokenValue(runes []rune, m dateMarker) (value, consumed int) {
 	if len(runes) == 0 {
 		return -1, -1
 	}
-
-	// Determine representation type from modifier.
-	// Roman numeral: modifier ends with 'I' or 'i'
-	if modifier == "I" || modifier == "i" {
+	switch p := m.presentation; {
+	case p == "I" || p == "i":
 		return parseRoman(runes)
-	}
-	// Alphabetic: modifier 'a' or 'A'
-	if modifier == "a" || modifier == "A" {
-		return parseAlphabetic(runes, modifier)
-	}
-	// Month name: modifier starts with 'N' or 'Nn' or 'n'
-	if modifier == "N" || modifier == "n" || modifier == "Nn" || strings.HasPrefix(modifier, "Nn") || strings.HasPrefix(modifier, "N") {
-		return parseMonthName(runes, modifier)
-	}
-	// Word-based: modifier starts with 'w' or 'W' (e.g., "w", "W", "wo", "Wo", "Wwo", "wwo")
-	if modifier == "w" || modifier == "W" ||
-		strings.HasPrefix(modifier, "wo") || strings.HasPrefix(modifier, "Wo") ||
-		strings.HasPrefix(modifier, "Ww") || strings.HasPrefix(modifier, "ww") {
-		return parseWordNumber(runes, modifier)
-	}
-	// Ordinal suffix: modifier ends with 'o'
-	if strings.HasSuffix(modifier, "o") {
+	case p == "a" || p == "A":
+		return parseAlphabetic(runes, p)
+	case isNamePresentation(p):
+		return parseMonthName(runes, m.modifier)
+	case p == "w" || p == "W" || p == "Ww" || p == "ww":
+		return parseWordNumber(runes, p)
+	case m.ordinal:
 		return parseOrdinalNumber(runes)
 	}
-	// Default: numeric
-	return parseNumericValue(runes, modifier)
+	return parseNumericValue(runes, m.modifier)
 }
 
 func modifierFieldWidth(modifier string) int {
@@ -478,28 +377,22 @@ func modifierFieldWidth(modifier string) int {
 }
 
 func parseNumericValue(runes []rune, modifier string) (value, consumed int) {
-	i := 0
-	sign := 1
-	if i < len(runes) && runes[i] == '-' {
-		sign = -1
-		i++
-	}
-	start := i
+	i := 0 // jsonata-js accepts no sign on a parsed integer
 	maxW := modifierFieldWidth(modifier)
 	for i < len(runes) && unicode.IsDigit(runes[i]) {
-		if maxW > 0 && i-start >= maxW {
+		if maxW > 0 && i >= maxW {
 			break
 		}
 		i++
 	}
-	if i == start {
+	if i == 0 {
 		return -1, -1
 	}
-	n, err := strconv.Atoi(string(runes[start:i]))
+	n, err := strconv.Atoi(string(runes[:i]))
 	if err != nil {
 		return -1, -1
 	}
-	return sign * n, i
+	return n, i
 }
 
 func parseOrdinalNumber(runes []rune) (value, consumed int) {
@@ -596,19 +489,20 @@ func parseMonthName(runes []rune, modifier string) (month, consumed int) {
 		}
 	}
 
-	// Try matching full month names first, then abbreviated.
+	// Try matching full month names first, then abbreviated. With a maximum
+	// width the match consumes the rest of the word, so "January" reads as "Jan".
 	for mi, name := range monthNames {
-		if maxLen > 0 && maxLen < len([]rune(name)) {
-			// Abbreviated: use first maxLen chars.
-			abbr := string([]rune(name)[:maxLen])
-			if len(runes) >= maxLen && strings.EqualFold(string(runes[:maxLen]), abbr) {
-				return mi + 1, maxLen
+		if maxLen > 0 {
+			abbr := string([]rune(name)[:min(maxLen, utf8.RuneCountInString(name))])
+			if hasFoldPrefix(runes, abbr) {
+				end := utf8.RuneCountInString(abbr)
+				for end < len(runes) && isASCIILetter(runes[end]) {
+					end++
+				}
+				return mi + 1, end
 			}
-		} else {
-			nameRunes := []rune(name)
-			if len(runes) >= len(nameRunes) && strings.EqualFold(string(runes[:len(nameRunes)]), name) {
-				return mi + 1, len(nameRunes)
-			}
+		} else if hasFoldPrefix(runes, name) {
+			return mi + 1, utf8.RuneCountInString(name)
 		}
 	}
 	return -1, -1
@@ -617,8 +511,10 @@ func parseMonthName(runes []rune, modifier string) (month, consumed int) {
 func parseWordNumber(runes []rune, _ string) (value, consumed int) {
 	// Consume up to the end of a word-number expression.
 	// Word numbers end at a non-word char that's not '-' or space.
-	s := string(runes)
-	n, v := parseWordNumberFromString(s)
+	n, v := parseWordNumberFromString(string(runes))
+	if n == 0 {
+		return -1, -1
+	}
 	return v, n
 }
 

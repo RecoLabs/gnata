@@ -2,9 +2,12 @@ package functions
 
 import (
 	"fmt"
+	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/recolabs/gnata/internal/evaluator"
 )
@@ -61,238 +64,384 @@ var (
 	}
 )
 
-const errTokenSentinel = "\x00ERR\x00"
+// defaultDatePresentations holds the presentation modifier used when a variable
+// marker has none. A component missing from it is not a valid specifier.
+var defaultDatePresentations = map[byte]string{
+	'Y': "1", 'M': "1", 'D': "1", 'd': "1", 'F': "n", 'W': "1", 'w': "1", 'X': "1", 'x': "1", 'H': "1", 'h': "1",
+	'P': "n", 'm': "01", 's': "01", 'f': "1", 'Z': "01:01", 'z': "01:01", 'C': "n", 'E': "n",
+}
 
-const errTokenSentinelD3133 = "\x00D3133\x00"
+// noWidth marks an unspecified or "*" width in a variable marker.
+const noWidth = -1
+
+// dateMarker is a parsed variable marker such as [MNn,*-3] (XPath F&O §9.8.4).
+type dateMarker struct {
+	component    byte
+	modifier     string // everything after the component, for the f/Z/z/P formatters
+	presentation string // first presentation modifier, e.g. "Nn", "01" or "w"
+	ordinal      bool
+	minWidth     int
+	maxWidth     int
+}
+
+// datePicturePart is a literal or, when isMarker is set, a variable marker.
+type datePicturePart struct {
+	literal  string
+	marker   dateMarker
+	isMarker bool
+}
 
 func formatWithPicture(t time.Time, picture string) (string, error) {
-	// Pre-scan: check for unclosed brackets before any other processing.
-	runes0 := []rune(picture)
-	for i := 0; i < len(runes0); i++ {
-		if runes0[i] != '[' {
-			continue
+	parts, err := parseDatePicture(picture)
+	if err != nil {
+		return "", err
+	}
+	padding := 0
+	for _, part := range parts {
+		if part.isMarker {
+			padding += min(paddingWidth(part.marker), maxPictureWidth+1)
 		}
-		if i+1 < len(runes0) && runes0[i+1] == '[' {
-			i++ // skip escaped [[
-			continue
+	}
+	if padding > maxPictureWidth {
+		return "", &evaluator.JSONataError{
+			Code:    "D3010",
+			Message: fmt.Sprintf("date/time picture widths exceed a total of %d", maxPictureWidth),
 		}
-		// Find closing ]
-		j := i + 1
-		for j < len(runes0) && runes0[j] != ']' {
-			j++
-		}
-		if j >= len(runes0) {
-			return "", &evaluator.JSONataError{Code: "D3135", Message: "the picture string has an unclosed variable marker '[...'"}
-		}
-		i = j
 	}
 	var sb strings.Builder
-	runes := []rune(picture)
-	i := 0
-	for i < len(runes) {
-		ch := runes[i]
-		if ch == '[' {
-			if i+1 < len(runes) && runes[i+1] == '[' {
-				sb.WriteRune('[')
-				i += 2
-				continue
-			}
-			// Find closing ]
-			j := i + 1
-			for j < len(runes) && runes[j] != ']' {
-				j++
-			}
-			if j >= len(runes) {
-				// Should not happen - pre-scan caught this above.
-				break
-			}
-			token := strings.ReplaceAll(string(runes[i+1:j]), " ", "")
-			s := formatToken(t, token)
-			if s == errTokenSentinelD3133 {
-				return "", &evaluator.JSONataError{
-					Code:    "D3133",
-					Message: fmt.Sprintf("the picture string is not valid: unsupported modifier in [%s]", token),
-				}
-			}
-			if s == errTokenSentinel {
-				return "", &evaluator.JSONataError{Code: "D3134", Message: fmt.Sprintf("invalid picture component: [%s]", token)}
-			}
-			sb.WriteString(s)
-			i = j + 1
+	for _, part := range parts {
+		if !part.isMarker {
+			sb.WriteString(part.literal)
 			continue
 		}
-		if ch == ']' && i+1 < len(runes) && runes[i+1] == ']' {
-			sb.WriteRune(']')
-			i += 2
-			continue
+		s, err := formatMarker(t, part.marker)
+		if err != nil {
+			return "", err
 		}
-		sb.WriteRune(ch)
-		i++
+		sb.WriteString(s)
 	}
 	return sb.String(), nil
 }
 
-func formatToken(t time.Time, token string) string {
-	if token == "" {
-		return ""
+// parseDatePicture analyses a whole picture string before anything is
+// formatted, so its syntax errors win over formatting errors as in jsonata-js.
+func parseDatePicture(picture string) ([]datePicturePart, error) {
+	var parts []datePicturePart
+	var literal strings.Builder
+	runes := []rune(picture)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		switch {
+		case ch == '[' && i+1 < len(runes) && runes[i+1] == '[', ch == ']' && i+1 < len(runes) && runes[i+1] == ']':
+			literal.WriteRune(ch)
+			i++
+		case ch == '[':
+			end := slices.Index(runes[i+1:], ']')
+			if end < 0 {
+				return nil, &evaluator.JSONataError{Code: "D3135", Message: "the picture string has an unclosed variable marker '[...'"}
+			}
+			marker, err := parseDateMarker(strings.Join(strings.Fields(string(runes[i+1:i+1+end])), ""))
+			if err != nil {
+				return nil, err
+			}
+			if literal.Len() > 0 {
+				parts = append(parts, datePicturePart{literal: literal.String()})
+				literal.Reset()
+			}
+			parts = append(parts, datePicturePart{marker: marker, isMarker: true})
+			i += end + 1
+		default:
+			literal.WriteRune(ch)
+		}
 	}
+	if literal.Len() > 0 {
+		parts = append(parts, datePicturePart{literal: literal.String()})
+	}
+	return parts, nil
+}
 
-	switch component, modifier := token[0], token[1:]; component {
-	case 'Y':
-		return formatYearComponent(t.Year(), modifier)
-	case 'M':
-		return formatMonthToken(t.Month(), modifier)
-	case 'D':
-		return formatDayComponent(t.Day(), modifier)
-	case 'H':
-		return formatInteger(t.Hour(), modifier)
-	case 'h':
-		return formatInteger((t.Hour()+11)%12+1, modifier)
-	case 'm', 's':
-		if modifier == "" {
-			modifier = "01"
+// parseDateMarker splits a variable marker into its component, presentation
+// modifiers and width the way jsonata-js's analyseDateTimePicture does.
+func parseDateMarker(marker string) (dateMarker, error) {
+	if marker == "" {
+		return dateMarker{}, &evaluator.JSONataError{Code: "D3132", Message: "the picture string has an empty variable marker []"}
+	}
+	m := dateMarker{component: marker[0], modifier: marker[1:], minWidth: noWidth, maxWidth: noWidth}
+	defaultPresentation, known := defaultDatePresentations[m.component]
+	if !known {
+		return dateMarker{}, &evaluator.JSONataError{
+			Code:    "D3132",
+			Message: fmt.Sprintf("unknown component specifier %q in date/time picture string", marker[:1]),
 		}
-		if component == 's' {
-			return formatInteger(t.Second(), modifier)
+	}
+	presentation := m.modifier
+	if comma := strings.LastIndexByte(marker, ','); comma > 0 {
+		presentation = marker[1:comma]
+		minSpec, maxSpec, _ := strings.Cut(marker[comma+1:], "-")
+		m.minWidth, m.maxWidth = parseMarkerWidth(minSpec), parseMarkerWidth(maxSpec)
+	}
+	switch last := presentation[max(len(presentation)-1, 0):]; {
+	case presentation == "":
+		presentation = defaultPresentation
+	case len(presentation) == 1 && strings.ContainsAny(presentation, "otc") && !strings.ContainsRune("fPZzCE", rune(m.component)):
+		return dateMarker{}, &evaluator.JSONataError{
+			Code:    "D3130",
+			Message: fmt.Sprintf("the picture modifier %q has no presentation to apply to", presentation),
 		}
-		return formatInteger(t.Minute(), modifier)
+	case len(presentation) > 1 && strings.ContainsAny(last, "atco"):
+		m.ordinal = last == "o"
+		presentation = presentation[:len(presentation)-1]
+	}
+	m.presentation = presentation
+	return m, nil
+}
+
+// maxPictureWidth bounds the padding a picture's width modifiers can request
+// in total, so a short picture cannot force an arbitrarily large output; it
+// matches $pad's limit.
+const maxPictureWidth = 10_000
+
+// paddingWidth is the output width a marker's width modifier can force by
+// padding: zeros for decimal integers and fractional seconds, nothing for
+// names, words, roman numerals, am/pm or timezones.
+func paddingWidth(m dateMarker) int {
+	switch {
+	case m.component == 'f':
+		return max(m.minWidth, 0)
+	case strings.ContainsRune("PZzCE", rune(m.component)), isNamePresentation(m.presentation):
+		return 0
+	}
+	if mandatory, _ := decimalPictureDigits(m.presentation); mandatory == 0 {
+		return 0
+	}
+	if m.component == 'Y' && m.maxWidth != noWidth {
+		return m.maxWidth
+	}
+	return max(m.minWidth, 0)
+}
+
+// parseMarkerWidth reads a width the way JavaScript's parseInt does, taking the
+// leading digits and ignoring the rest; "*" or no digits means no width, and a
+// width too large for an int reads as math.MaxInt.
+func parseMarkerWidth(spec string) int {
+	end := 0
+	for end < len(spec) && spec[end] >= '0' && spec[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return noWidth
+	}
+	width, err := strconv.Atoi(spec[:end])
+	if err != nil {
+		return math.MaxInt
+	}
+	return width
+}
+
+func formatMarker(t time.Time, m dateMarker) (string, error) {
+	switch m.component {
 	case 'f':
-		return formatFracSecond(t.Nanosecond(), modifier)
-	case 'F':
-		return formatWeekdayToken(t.Weekday(), modifier)
+		return formatFracSecond(t.Nanosecond(), m), nil
 	case 'Z', 'z':
-		return formatTimezone(component, modifier, t)
+		return formatTimezone(m.component, m.modifier, t)
 	case 'P':
-		return formatAMPM(t.Hour(), modifier)
-	case 'E', 'C':
-		return "ISO"
+		return formatAMPM(t.Hour(), m.presentation), nil
+	case 'C', 'E':
+		return "ISO", nil
+	}
+	value := dateComponentValue(t, m.component)
+	if isNamePresentation(m.presentation) {
+		return formatDateName(m, value)
+	}
+	return formatDateInteger(value, m)
+}
+
+func dateComponentValue(t time.Time, component byte) int {
+	switch component {
+	case 'Y':
+		return t.Year()
+	case 'M':
+		return int(t.Month())
+	case 'D':
+		return t.Day()
 	case 'd':
-		return formatDayOfYearToken(t.YearDay(), modifier)
+		return t.YearDay()
+	case 'F':
+		return (int(t.Weekday())+6)%7 + 1
 	case 'W':
-		_, w := t.ISOWeek()
-		return formatInteger(w, modifier)
-	case 'X':
-		y, _ := t.ISOWeek()
-		return formatYearToken(y, modifier)
+		_, week := t.ISOWeek()
+		return week
 	case 'w':
-		return formatInteger(weekOfMonth(isoWeekThursday(t)), modifier)
+		return weekOfMonth(isoWeekThursday(t))
+	case 'X':
+		year, _ := t.ISOWeek()
+		return year
 	case 'x':
-		return formatISOWeekMonth(isoWeekThursday(t).Month(), modifier)
+		return int(isoWeekThursday(t).Month())
+	case 'H':
+		return t.Hour()
+	case 'h':
+		return (t.Hour()+11)%12 + 1
+	case 'm':
+		return t.Minute()
+	default: // 's'
+		return t.Second()
 	}
-	return "[" + token + "]"
 }
 
-func formatYearComponent(y int, modifier string) string {
-	switch modifier {
-	case "I", "i":
-		return toRoman(int64(y), modifier == "I")
-	case "w":
-		return intToWords(int64(y))
-	case "W":
-		return strings.ToUpper(intToWords(int64(y)))
-	case "a", "A":
-		return toAlphabetic(int64(y), rune(modifier[0]))
-	case "N":
-		return errTokenSentinelD3133
+// formatDateName renders a month or weekday name in the case the presentation
+// asks for (n, N or Nn), truncated to the maximum width.
+func formatDateName(m dateMarker, value int) (string, error) {
+	var name string
+	switch m.component {
+	case 'M', 'x':
+		name = monthNames[value-1]
+	case 'F':
+		name = weekdayNames[value%7]
 	default:
-		return formatYearToken(y, modifier)
+		return "", &evaluator.JSONataError{
+			Code:    "D3133",
+			Message: fmt.Sprintf("the 'name' modifier can only be applied to months and days, not %c", m.component),
+		}
 	}
+	switch p := m.presentation; {
+	case p[0] == 'n':
+		name = strings.ToLower(name)
+	case len(p) == 1 || p[1] != 'n':
+		name = strings.ToUpper(name)
+	}
+	if m.maxWidth != noWidth && len(name) > m.maxWidth {
+		name = name[:m.maxWidth]
+	}
+	return name, nil
 }
 
-func formatDayComponent(day int, modifier string) string {
-	switch modifier {
-	case "I", "i":
-		return toRoman(int64(day), modifier == "I")
-	case "a", "A":
-		return toAlphabetic(int64(day), rune(modifier[0]))
-	case "wo":
-		return intToWordsOrdinal(int64(day))
-	case "Wo":
-		return strings.ToUpper(intToWordsOrdinal(int64(day)))
-	case "w":
-		return intToWords(int64(day))
-	case "W":
-		return strings.ToUpper(intToWords(int64(day)))
-	default:
-		return formatDayToken(day, modifier)
+// formatDateInteger renders an integer component with $formatInteger, padding
+// decimal output to the minimum width. A year with a maximum width, or a
+// decimal picture of two or more digits, keeps only that many trailing digits.
+func formatDateInteger(value int, m dateMarker) (string, error) {
+	picture := m.presentation
+	mandatory, optional := decimalPictureDigits(picture)
+	yearDigits := m.component == 'Y' && m.maxWidth != noWidth
+	if mandatory > 0 && m.minWidth > mandatory && !yearDigits {
+		picture = padMandatoryDigits(picture, m.minWidth-mandatory)
+		mandatory = m.minWidth
 	}
+	if m.component == 'Y' {
+		digits := m.maxWidth
+		if digits != noWidth {
+			switch {
+			case mandatory == 0 || digits == 0:
+			case digits > mandatory:
+				picture = padMandatoryDigits(picture, digits-mandatory)
+			case digits < mandatory:
+				picture = trimMandatoryDigits(picture, mandatory-digits)
+			}
+		} else if mandatory+optional >= 2 {
+			digits = mandatory + optional
+		}
+		if digits != noWidth {
+			value %= pow10(digits)
+		}
+	}
+	if m.ordinal {
+		picture += ";o"
+	}
+	return formatIntegerWithPicture(int64(value), picture)
 }
 
-func formatFracSecond(nanosecond int, modifier string) string {
+// decimalPictureDigits counts the mandatory digits and optional '#' signs of a
+// decimal-digit picture; both are zero for words, roman and alphabetic pictures.
+func decimalPictureDigits(picture string) (mandatory, optional int) {
+	for _, c := range picture {
+		switch {
+		case c == '#':
+			optional++
+		case isPictureDigit(c):
+			mandatory++
+		}
+	}
+	return mandatory, optional
+}
+
+// pictureZero returns the zero digit of a decimal picture's first digit
+// family. A picture mixing families is rejected with D3131 only where it is
+// formatted as an integer.
+func pictureZero(picture string) rune {
+	zero, _ := digitFamilyZero(picture)
+	return zero
+}
+
+// padMandatoryDigits adds n mandatory zeros to a decimal picture, after any
+// leading optional '#' signs, so "#1" padded by one becomes "#01".
+func padMandatoryDigits(picture string, n int) string {
+	at := strings.IndexFunc(picture, func(c rune) bool { return c != '#' })
+	if at < 0 {
+		at = len(picture)
+	}
+	return picture[:at] + strings.Repeat(string(pictureZero(picture)), n) + picture[at:]
+}
+
+// trimMandatoryDigits removes the n leftmost mandatory digits of a decimal
+// picture with the separators before the next digit, so "0.0.0" trimmed by
+// one becomes "0.0". The remaining separators keep their positions.
+func trimMandatoryDigits(picture string, n int) string {
+	var kept strings.Builder
+	keptDigit := false
+	for _, c := range picture {
+		isDigit := isPictureDigit(c)
+		switch {
+		case c == '#' || (isDigit && n == 0):
+			keptDigit = keptDigit || isDigit
+			kept.WriteRune(c)
+		case isDigit:
+			n--
+		case keptDigit:
+			kept.WriteRune(c)
+		}
+	}
+	return kept.String()
+}
+
+func pow10(n int) int {
+	p := 1
+	for range min(n, 18) {
+		p *= 10
+	}
+	return p
+}
+
+// formatFracSecond renders fractional seconds as XPath does: one digit per
+// picture character (three by default), within the marker's width range.
+func formatFracSecond(nanosecond int, m dateMarker) string {
 	width := 3
-	if modifier != "" {
-		width = len(modifier)
+	if explicit, _, _ := strings.Cut(m.modifier, ","); explicit != "" {
+		width = utf8.RuneCountInString(m.presentation)
+	}
+	if m.minWidth != noWidth {
+		width = max(width, m.minWidth)
+	}
+	if m.maxWidth > 0 {
+		width = min(width, m.maxWidth)
 	}
 	s := fmt.Sprintf("%09d", nanosecond)
 	if width <= 9 {
-		return s[:width]
+		s = s[:width]
+	} else {
+		s += strings.Repeat("0", width-9)
 	}
-	return s + strings.Repeat("0", width-9)
+	return applyDigitFamily(s, pictureZero(m.presentation))
 }
 
-func formatWeekdayToken(wd time.Weekday, modifier string) string {
-	switch {
-	case modifier == "" || modifier == "n":
-		return strings.ToLower(weekdayNames[wd])
-	case strings.HasPrefix(modifier, "Nn"):
-		name := weekdayNames[wd]
-		if _, suffix, ok := strings.Cut(modifier, ","); ok {
-			var width int
-			if before, _, ok := strings.Cut(suffix, "-"); ok {
-				width, _ = strconv.Atoi(before)
-			} else {
-				width, _ = strconv.Atoi(suffix)
-			}
-			if width > 0 && len(name) > width {
-				return name[:width]
-			}
-		}
-		return name
-	case modifier == "N":
-		return strings.ToUpper(weekdayNames[wd])
-	default:
-		return strconv.Itoa(int(wd+6)%7 + 1)
-	}
-}
-
-func formatAMPM(hour int, modifier string) string {
+func formatAMPM(hour int, presentation string) string {
 	s := "pm"
 	if hour < 12 {
 		s = "am"
 	}
-	if modifier == "N" {
+	if presentation == "N" {
 		return strings.ToUpper(s)
 	}
 	return s
-}
-
-func formatDayOfYearToken(dayOfYear int, modifier string) string {
-	switch modifier {
-	case "wo":
-		return intToWordsOrdinal(int64(dayOfYear))
-	case "Wo":
-		return strings.ToUpper(intToWordsOrdinal(int64(dayOfYear)))
-	case "w":
-		return intToWords(int64(dayOfYear))
-	case "W":
-		return strings.ToUpper(intToWords(int64(dayOfYear)))
-	default:
-		if baseM, ok := strings.CutSuffix(modifier, "o"); ok {
-			return formatInteger(dayOfYear, baseM) + ordinalSuffix(int64(dayOfYear))
-		}
-		return formatInteger(dayOfYear, modifier)
-	}
-}
-
-func formatISOWeekMonth(m time.Month, modifier string) string {
-	switch modifier {
-	case "Nn", "n":
-		return monthNames[m-1]
-	case "N":
-		return strings.ToUpper(monthNames[m-1])
-	default:
-		return strconv.Itoa(int(m))
-	}
 }
 
 func isoWeekThursday(t time.Time) time.Time {
@@ -306,246 +455,88 @@ func weekOfMonth(t time.Time) int {
 	return (t.Day() + 6) / 7
 }
 
-func intToWordsOrdinal(n int64) string {
-	return applyOrdinalWord(intToWords(n))
-}
-
-func formatYearToken(y int, modifier string) string {
-	// [Y,n] or [Y,n-n]: modifier starts with "," → truncation to last n digits
-	if strings.HasPrefix(modifier, ",") {
-		return truncateYear(y, modifier[1:])
-	}
-
-	// [Y0001,n], [Y0001,n-n], [Y9,999,*]: modifier has comma inside
-	if prefix, suffix, ok := strings.Cut(modifier, ","); ok {
-		// Check for max-width truncation: "0001,2-2" → max=2
-		if _, maxStr, ok := strings.Cut(suffix, "-"); ok {
-			// min-max width: "n-m" → truncate to last m digits
-			if maxWidth, _ := strconv.Atoi(strings.TrimLeft(maxStr, "#* ")); maxWidth > 0 {
-				s := formatInteger(y, prefix)
-				if len(s) > maxWidth {
-					s = s[len(s)-maxWidth:]
-				}
-				return s
-			}
-		}
-
-		// "9,999,*" style grouping → use commas
-		if strings.Contains(prefix, "9") || strings.Contains(suffix, "9") {
-			return formatIntegerWithGrouping(y)
-		}
-
-		// "0001,2" with no dash → show full year using primary format (no truncation)
-		return formatInteger(y, prefix)
-	}
-	return formatInteger(y, modifier)
-}
-
-func truncateYear(y int, widthSpec string) string {
-	var width int
-	if before, _, ok := strings.Cut(widthSpec, "-"); ok {
-		width, _ = strconv.Atoi(before)
-	} else {
-		width, _ = strconv.Atoi(widthSpec)
-	}
-	if width <= 0 {
-		return strconv.Itoa(y)
-	}
-	s := strconv.Itoa(y)
-	if len(s) > width {
-		s = s[len(s)-width:]
-	}
-	return s
-}
-
-func formatIntegerWithGrouping(v int) string {
-	s := strconv.Itoa(v)
-	if len(s) <= 3 {
-		return s
-	}
-	var result []rune
-	rs := []rune(s)
-	for i, r := range rs {
-		if i > 0 && (len(rs)-i)%3 == 0 {
-			result = append(result, ',')
-		}
-		result = append(result, r)
-	}
-	return string(result)
-}
-
-func formatMonthToken(m time.Month, modifier string) string {
-	// TODO: Support complex width modifiers like [MNn,*-3].
-	// Currently defaults to full name for range or wildcard modifiers.
-	switch {
-	case strings.HasPrefix(modifier, "Nn"):
-		name := monthNames[m-1]
-		if _, suffix, ok := strings.Cut(modifier, ","); ok {
-			var width int
-			if before, _, ok := strings.Cut(suffix, "-"); ok {
-				width, _ = strconv.Atoi(before)
-			} else {
-				width, _ = strconv.Atoi(suffix)
-			}
-			if width > 0 && len(name) > width {
-				return name[:width]
-			}
-		}
-		return name
-	case modifier == "N":
-		return strings.ToUpper(monthNames[m-1])
-	case modifier == "a" || modifier == "A":
-		return toAlphabetic(int64(m), rune(modifier[0]))
-	case modifier == "I" || modifier == "i":
-		return toRoman(int64(m), modifier == "I")
-	default:
-		return formatNumericWithMinWidth(int(m), modifier)
-	}
-}
-
-func formatNumericWithMinWidth(v int, modifier string) string {
-	// Extract primary modifier and width modifier
-	minWidth := 0
-	if primary, suffix, ok := strings.Cut(modifier, ","); ok {
-		modifier = primary
-		if before, _, ok := strings.Cut(suffix, "-"); ok {
-			minWidth, _ = strconv.Atoi(before)
-		} else {
-			minWidth, _ = strconv.Atoi(suffix)
-		}
-	}
-	s := formatInteger(v, modifier)
-	if minWidth > 0 && len(s) < minWidth {
-		s = strings.Repeat("0", minWidth-len(s)) + s
-	}
-	return s
-}
-
-func formatDayToken(d int, modifier string) string {
-	// Check for ordinal suffix 'o'
-	isOrdinal := strings.HasSuffix(modifier, "o")
-	baseModifier := modifier
-	if isOrdinal {
-		baseModifier = strings.TrimSuffix(modifier, "o")
-	}
-	var s string
-	if strings.Contains(baseModifier, ",") {
-		s = formatNumericWithMinWidth(d, baseModifier)
-	} else {
-		s = formatInteger(d, baseModifier)
-	}
-	if isOrdinal {
-		s += ordinalSuffix(int64(d))
-	}
-	return s
-}
-
-func formatTimezone(component byte, modifier string, t time.Time) string {
+func formatTimezone(component byte, modifier string, t time.Time) (string, error) {
 	_, offset := t.Zone()
 
 	useZ := strings.HasSuffix(modifier, "t")
 	mod := strings.TrimSuffix(modifier, "t")
 
 	if offset == 0 && useZ {
-		return "Z"
+		return "Z", nil
 	}
 
-	prefix := ""
-	if component == 'z' {
-		prefix = "GMT"
+	if mod == "" {
+		mod = "01:01"
 	}
 
-	sign := "+"
+	prefix := "+"
 	if offset < 0 {
-		sign = "-"
+		prefix = "-"
 		offset = -offset
 	}
-	hours := offset / 3600
-	mins := (offset % 3600) / 60
-
-	switch mod {
-	case "0":
-		// Minimal: no leading zeros, skip minutes if zero
-		if mins == 0 {
-			return prefix + sign + strconv.Itoa(hours)
-		}
-		return prefix + fmt.Sprintf("%s%d:%02d", sign, hours, mins)
-	case "0101":
-		// No colon, fixed width hours+minutes
-		return prefix + fmt.Sprintf("%s%02d%02d", sign, hours, mins)
-	case "01:01":
-		// With colon
-		return prefix + fmt.Sprintf("%s%02d:%02d", sign, hours, mins)
-	case "", "Z":
-		// Default: with colon
-		return prefix + fmt.Sprintf("%s%02d:%02d", sign, hours, mins)
-	case "010101", "01:01:01":
-		// 6 digits (hours+mins+secs) - not valid for timezone
-		return errTokenSentinel
-	default:
-		// Fallback: with colon
-		return prefix + fmt.Sprintf("%s%02d:%02d", sign, hours, mins)
+	if component == 'z' {
+		prefix = "GMT" + prefix
 	}
+
+	value, err := formatOffset(int64(offset/3600), int64(offset%3600/60), mod)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", &evaluator.JSONataError{Code: "D3134", Message: fmt.Sprintf("invalid picture component: [%c%s]", component, modifier)}
+	}
+	return prefix + value, nil
 }
 
-func formatInteger(v int, modifier string) string {
-	// Remove whitespace from modifier
-	modifier = strings.TrimSpace(modifier)
-
-	if modifier == "" || modifier == "1" {
-		return strconv.Itoa(v)
-	}
-
-	// Check for grouping separator (e.g., "9,999,*" or "9,999")
-	if strings.ContainsAny(modifier, ",") {
-		// Separate the sign from the digits so the comma-insertion loop
-		// only operates on digit characters and cannot insert a comma
-		// immediately after the '-' sign for negative numbers.
-		s := strconv.Itoa(v)
-		neg := s != "" && s[0] == '-'
-		digits := s
-		if neg {
-			digits = s[1:]
-		}
-		if len(digits) > 3 {
-			var result []rune
-			rs := []rune(digits)
-			for i, r := range rs {
-				if i > 0 && (len(rs)-i)%3 == 0 {
-					result = append(result, ',')
-				}
-				result = append(result, r)
-			}
-			formatted := string(result)
-			if neg {
-				return "-" + formatted
-			}
-			return formatted
-		}
-		return s
-	}
-
-	// Check for ordinal (#)
-	if strings.HasPrefix(modifier, "#") {
-		return strconv.Itoa(v)
-	}
-
-	// Count digit characters in the modifier to determine minimum width.
-	// e.g. "0" → width 1 (no padding), "01" → width 2, "001" → width 3.
-	if modifier != "" && modifier[0] == '0' {
-		digitCount := 0
-		for _, r := range modifier {
-			if r >= '0' && r <= '9' {
-				digitCount++
-			} else {
-				break
-			}
-		}
-		if digitCount > 0 {
-			return fmt.Sprintf("%0*d", digitCount, v)
+// formatOffset formats an unsigned timezone offset as XPath §9.8.4.6 does:
+// a picture with regular grouping separators or three or four digits
+// formats hhmm as one integer, while one or two digits format the hours and
+// append ":mm" only when the minutes are nonzero. Any other picture yields
+// "" so the caller can raise D3134.
+func formatOffset(hours, mins int64, picture string) (string, error) {
+	digits := 0
+	for _, c := range picture {
+		if isPictureDigit(c) {
+			digits++
 		}
 	}
+	switch {
+	case regularGrouping(picture) || digits == 3 || digits == 4:
+		return formatIntegerDecimal(hours*100+mins, picture)
+	case digits == 1 || digits == 2:
+		formatted, err := formatIntegerDecimal(hours, picture)
+		if err != nil || mins == 0 {
+			return formatted, err
+		}
+		return fmt.Sprintf("%s:%02d", formatted, mins), nil
+	}
+	return "", nil
+}
 
-	// Default: plain integer
-	return strconv.Itoa(v)
+// regularGrouping reports whether picture's grouping separators are one
+// character placed at equal digit intervals counted from the right.
+func regularGrouping(picture string) bool {
+	var sep rune
+	var positions []int
+	digits := 0
+	for _, c := range slices.Backward([]rune(picture)) {
+		if c == '#' || isPictureDigit(c) {
+			digits++
+			continue
+		}
+		if sep != 0 && c != sep {
+			return false
+		}
+		sep = c
+		positions = append(positions, digits)
+	}
+	if len(positions) == 0 || positions[0] == 0 {
+		return false
+	}
+	for i, pos := range positions {
+		if pos != (i+1)*positions[0] {
+			return false
+		}
+	}
+	return true
 }
