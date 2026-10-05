@@ -210,6 +210,7 @@ func TestWithSequence(t *testing.T) {
 		{desc: "sort", expr: "x.a^(b)", data: data},
 		// jsonata-js returns the long array when it is the only result.
 		{desc: "last block step over several contexts", expr: "m.(b)", data: data},
+		{desc: "binding with nothing after it", expr: "a#$i", data: data},
 		{desc: "array constructor", expr: "[a]", data: data},
 		{desc: "growing array constructor", expr: "$reduce([1..5], function($acc, $x){[$acc,$acc]}, [1])"},
 		{desc: "group-by", expr: `a{"k": b}`, data: data},

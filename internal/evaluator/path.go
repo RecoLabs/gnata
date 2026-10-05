@@ -512,7 +512,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 		grp = node.Group
 	}
 	if grp != nil {
-		return evalTupleGroup(grp, ctxs)
+		return evalTupleGroup(grp, ctxs, env)
 	}
 
 	// Collect final values.
@@ -520,21 +520,11 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 	for _, ctx := range ctxs {
 		appendToSequence(seq, ctx.value)
 	}
-	result := CollapseSequence(seq)
-
-	if node.KeepSingletonArray {
-		switch v := result.(type) {
-		case []any:
-			return v, nil
-		case ConsArray:
-			return []any(v), nil
-		default:
-			if result != nil {
-				return []any{result}, nil
-			}
-		}
+	// [] keeps the stream as an array, so a lone array value stays nested.
+	if node.KeepSingletonArray && len(seq.Values) > 0 {
+		return CollapseToSlice(seq), nil
 	}
-	return result, nil
+	return CollapseSequence(seq), nil
 }
 
 // evalSortWithParentTracking handles a top-level NodeSort expression whose sort
@@ -828,7 +818,7 @@ func expandTupleStep(step *parser.Node, ctxs []pathCtx, keepSingleton bool) ([]p
 // of all group members (or a single value when the group has one member).
 // This allows aggregate functions like $join or $sum to operate on the
 // full group rather than individual records.
-func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
+func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx, pathEnv *Environment) (any, error) {
 	result := NewOrderedMap()
 
 	for _, pair := range group.Pairs {
@@ -877,7 +867,7 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 			} else {
 				groupCtx = groupContext(g.values)
 				var err error
-				if groupEnv, err = mergeGroupEnvs(g.envs); err != nil {
+				if groupEnv, err = mergeGroupEnvs(g.envs, pathEnv); err != nil {
 					return nil, err
 				}
 			}
@@ -895,10 +885,10 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 	return result, nil
 }
 
-// mergeGroupEnvs creates a merged environment for a group of records.
-// Variables that differ across records are collected into arrays so that
-// path navigation in the value expression can operate on all values.
-func mergeGroupEnvs(envs []*Environment) (*Environment, error) {
+// mergeGroupEnvs creates a merged environment for a group of records: each
+// variable the records' tuples bind below pathEnv, the environment the path
+// was evaluated in, holds their values appended as jsonata-js does.
+func mergeGroupEnvs(envs []*Environment, pathEnv *Environment) (*Environment, error) {
 	if len(envs) == 0 {
 		return nil, nil
 	}
@@ -909,14 +899,9 @@ func mergeGroupEnvs(envs []*Environment) (*Environment, error) {
 	merged := NewChildEnvironment(envs[0].Parent())
 	merged.decimalPrecision = envs[0].decimalPrecision
 
-	// Collect variable names from tuple-specific envs only (stop at envs
-	// that lack parentKey — those are shared ancestors with built-in bindings).
 	varNames := map[string]struct{}{}
 	for _, env := range envs {
-		for e := env; e != nil; e = e.Parent() {
-			if _, has := e.LookupDirect(parentKey); !has {
-				break
-			}
+		for e := env; e != nil && e != pathEnv; e = e.Parent() {
 			e.Range(func(name string, _ any) {
 				varNames[name] = struct{}{}
 			})

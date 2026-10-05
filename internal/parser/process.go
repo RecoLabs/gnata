@@ -1,5 +1,7 @@
 package parser
 
+import "slices"
+
 // ProcessAST runs the post-processing pass over the raw Pratt-parsed tree,
 // transforming it into a form suitable for evaluation.
 //
@@ -8,8 +10,52 @@ package parser
 //   - Propagates KeepSingletonArray when any step has KeepArray=true.
 //   - Marks last-step array constructors as ConsArray (jsonata-js consarray).
 //   - Attaches group expressions from path-step binary("{") to the path.
+//   - Makes a #$var or @$var binding outside a path a one-step path.
 //   - Recursively processes all child nodes.
 func ProcessAST(node *Node) (*Node, error) {
+	processed, err := processNode(node)
+	if err != nil || processed == nil {
+		return processed, err
+	}
+	return wrapBoundStep(processed), nil
+}
+
+// wrapBoundStep makes a node outside a path a one-step path when jsonata-js
+// treats it as one, so that its binding builds a tuple stream: g#$i{k: $i}
+// binds $i, and a#$i alone counts against the sequence guardrail.
+func wrapBoundStep(n *Node) *Node {
+	if n.Type == NodePath || !bindsAsPath(n) {
+		return n
+	}
+	keep := stepKeepsArray(n)
+	return &Node{Type: NodePath, Steps: []*Node{n}, Pos: n.Pos, KeepArray: keep, KeepSingletonArray: keep}
+}
+
+// stepKeepsArray reports whether a step has the [] suffix, which for
+// A[][filter] is on the left of the subscript.
+func stepKeepsArray(step *Node) bool {
+	return step.KeepArray || step.Type == NodeBinary && step.Value == "[" && step.Left != nil && step.Left.KeepArray
+}
+
+// bindsAsPath reports whether a step, or any subscript it is predicated on,
+// carries a binding that jsonata-js evaluates as a path: any #$var, which
+// makes its operand a path, or an @$var on a field name, which already is
+// one. Other @$var operands, such as (a)@$v, keep their own value.
+func bindsAsPath(step *Node) bool {
+	for n := step; n != nil; n = n.Left {
+		if n.Index != "" || n.Focus != "" && n.Type == NodeName {
+			return true
+		}
+		if n.Type != NodeBinary || n.Value != "[" {
+			return false
+		}
+	}
+	return false
+}
+
+// processNode is ProcessAST without wrapping a bound node, for nodes that
+// stay a step: path steps and the left side of a subscript.
+func processNode(node *Node) (*Node, error) {
 	if node == nil {
 		return nil, nil
 	}
@@ -87,17 +133,7 @@ func processDotBinary(node *Node) (*Node, error) {
 
 	// Propagate KeepSingletonArray when any step (or a subscript step's left side)
 	// has KeepArray=true. This covers both A[].B and A[][filter].B patterns.
-	for _, s := range steps {
-		if s.KeepArray {
-			path.KeepSingletonArray = true
-			break
-		}
-		// A[][filter] — the KeepArray flag is on the Name/Var left of the subscript.
-		if s.Type == NodeBinary && s.Value == "[" && s.Left != nil && s.Left.KeepArray {
-			path.KeepSingletonArray = true
-			break
-		}
-	}
+	path.KeepSingletonArray = slices.ContainsFunc(steps, stepKeepsArray)
 
 	// Process group-by key/value pairs so nested dot expressions within them are resolved.
 	if path.Group != nil {
@@ -120,7 +156,7 @@ func processDotBinary(node *Node) (*Node, error) {
 func collectPathSteps(node *Node) ([]*Node, error) {
 	if node.Type != NodeBinary || node.Value != "." {
 		// Leaf step — process it.
-		processed, err := ProcessAST(node)
+		processed, err := processNode(node)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +218,11 @@ func promoteQuotedPathNames(n *Node) {
 // processBinaryChildren recursively processes a non-dot binary node.
 func processBinaryChildren(node *Node) (*Node, error) {
 	var err error
-	node.Left, err = ProcessAST(node.Left)
+	if node.Value == "[" {
+		node.Left, err = processNode(node.Left)
+	} else {
+		node.Left, err = ProcessAST(node.Left)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +390,7 @@ func processSortChildren(node *Node) (*Node, error) {
 func processPathChildren(node *Node) (*Node, error) {
 	var err error
 	for i, step := range node.Steps {
-		node.Steps[i], err = ProcessAST(step)
+		node.Steps[i], err = processNode(step)
 		if err != nil {
 			return nil, err
 		}

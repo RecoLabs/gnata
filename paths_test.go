@@ -146,14 +146,25 @@ var bindingOperatorCases = []exprCase{
 	{expr: `library.loans@$l.books@$b[$l.isbn=$b.isbn][[0,2]].$l.customer`, data: libraryJSON, want: `["c1","c3"]`},
 	{expr: `Account.Order.(Product[%.OrderID="o1"])@$p[$p.Price>5].$p.Name`, data: accountJSON, want: `"Hat"`},
 	{expr: `Account.Order.(Product.%)@$o[$o.OrderID="o2"].$o.OrderID`, data: accountJSON, want: `"o2"`},
+	{expr: `g#$i{k:$i}`, data: `{"g":[{"k":"x","v":[1,2]},{"k":"x","v":[3]},{"k":"y","v":1}]}`, want: `{"x":[0,1],"y":2}`},
+	{expr: `g@$e{$e.k:$e.v}`, data: `{"g":[{"k":"x","v":[1,2]},{"k":"x","v":[3]},{"k":"y","v":1}]}`, want: `{"x":[1,2,3],"y":1}`},
+	// @ on anything but a field name keeps its operand's value.
+	{expr: `[1,2]@$v`, want: `[1,2]`},
+	{expr: `$sum([1,2,3]@$i)`, want: `6`},
+	{expr: `(n)@$e`, data: `{"n":[3,1,2]}`, want: `[3,1,2]`},
 	// Group values merge the tuples' variables as $append does.
 	{expr: `Account.Order[0]#$o.Product{"k":$o}`, data: accountJSON, want: `{"k":[0,0]}`},
+	{expr: `b@$e{"x":$e}`, data: `{"b":[[1,2,3],[4,5]]}`, want: `{"x":[1,2,3,4,5]}`},
 	// A constructed array is appended into an enclosing constructor.
 	{expr: `[a.[b,c], 1]`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2,1]`},
 	{expr: `($c := a.[b,c]; [$c, 3])`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2,3]`},
 	{expr: `[[[1,2]][0], 3]`, want: `[[1,2],3]`},
 	// A tuple group skips a record whose key is undefined.
+	{expr: `a#$i{k:$i}`, data: `{"a":[{"x":1,"k":"p"},{"x":2}]}`, want: `{"p":0}`},
 	{expr: `r.a#$i{k:$i}`, data: `{"r":{"a":[{"x":1,"k":"p"},{"x":2}]}}`, want: `{"p":0}`},
+	{expr: `a@$e{$e.k:$e.x}`, data: `{"a":[{"x":1,"k":"p"},{"x":2}]}`, want: `{"p":1}`},
+	{expr: `$#$i{"k":$i}`, data: `[{"a":1},{"c":1}]`, want: `{"k":[0,1]}`},
+	{expr: `a[[0]]#$i[]`, data: `{"a":[[1,2],[3,4]]}`, want: `[[1,2]]`},
 }
 
 var groupAndSortCases = []exprCase{
