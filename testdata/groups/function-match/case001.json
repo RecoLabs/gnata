@@ -3,7 +3,7 @@
     "data": {},
     "bindings": {},
     "result": [
-        {"match": "l", "start": 2, "end": 3, "groups": []},
-        {"match": "l", "start": 3, "end": 4, "groups": []}
+        {"match": "l", "index": 2, "groups": []},
+        {"match": "l", "index": 3, "groups": []}
     ]
 }

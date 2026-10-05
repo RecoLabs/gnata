@@ -2,9 +2,9 @@ package functions
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/recolabs/gnata/internal/evaluator"
 )
@@ -24,14 +24,11 @@ func makeFnMatch(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$match: argument 1 must be a string"}
 		}
 
-		limit := -1
-		if len(args) >= 3 && args[2] != nil {
-			lf, ok := evaluator.ToFloat64(args[2])
-			if !ok {
-				return nil, &evaluator.JSONataError{Code: "T0410", Message: "$match: argument 3 must be a number"}
-			}
-			limit = evaluator.ToIntClamped(lf)
+		limitArg, err := optionalLimit(args, 2, "$match", "D3040")
+		if err != nil {
+			return nil, err
 		}
+		limit := matchCountLimit(limitArg)
 
 		switch args[1].(type) {
 		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
@@ -43,38 +40,107 @@ func makeFnMatch(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			return nil, err
 		}
 
-		result := make([]any, 0)
-		m, matchErr := re.FindStringMatch(s)
-		if matchErr != nil {
-			return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", matchErr)}
-		}
-		for m != nil {
-			if limit >= 0 && len(result) >= limit {
-				break
-			}
-			groups := make([]any, 0)
-			for g := 1; g < m.GroupCount(); g++ {
-				grp := m.GroupByNumber(g)
-				if !grp.Captured {
-					groups = append(groups, "")
-					continue
-				}
-				groups = append(groups, grp.String())
-			}
-			obj := map[string]any{
-				"match":  m.String(),
-				"start":  float64(utf8.RuneCountInString(s[:m.Index])),
-				"end":    float64(utf8.RuneCountInString(s[:m.Index+m.Length])),
-				"groups": groups,
-			}
-			result = append(result, obj)
-			m, matchErr = m.FindNextMatch()
-			if matchErr != nil {
-				return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", matchErr)}
-			}
+		var result []any
+		err = eachRegexMatch(re, s, limit, func(m *evaluator.Match) error {
+			result = append(result, matchResult(evaluator.NewMatchObject(s, m)))
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
 		return matchResultSeq(result), nil
 	}
+}
+
+// optionalLimit reads the optional, non-negative limit argument at args[i],
+// -1 when it is absent; negativeCode is the function's error for a negative one.
+func optionalLimit(args []any, i int, name, negativeCode string) (float64, error) {
+	if len(args) <= i || args[i] == nil {
+		return -1, nil
+	}
+	limit, ok := evaluator.ToFloat64(args[i])
+	if !ok {
+		return 0, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("%s: argument %d must be a number", name, i+1)}
+	}
+	if limit < 0 {
+		return 0, &evaluator.JSONataError{Code: negativeCode, Message: fmt.Sprintf("%s: the limit must not be negative", name)}
+	}
+	return limit, nil
+}
+
+// matchCountLimit converts a limit from optionalLimit into a match count,
+// -1 for none. jsonata-js keeps matching while count < limit, so a
+// fractional limit rounds up.
+func matchCountLimit(limit float64) int {
+	if limit < 0 {
+		return -1
+	}
+	return evaluator.ToIntClamped(math.Ceil(limit))
+}
+
+// eachRegexMatch calls visit on the matches of re in s as jsonata-js's regex
+// matcher yields them, at most limit of them (-1 for no limit). Like
+// jsonata-js it finds the next match before checking the limit, so an empty
+// match after the last one visited still raises D1004.
+func eachRegexMatch(re *evaluator.Regex, s string, limit int, visit func(*evaluator.Match) error) error {
+	if limit == 0 {
+		return nil
+	}
+	m, err := re.FindStringMatch(s)
+	for count := 0; err == nil && m != nil && (limit < 0 || count < limit); count++ {
+		if err = visit(m); err == nil {
+			m, err = evaluator.NextMatch(m)
+		}
+	}
+	return err
+}
+
+// matchResult converts a matcher's {match, start, end, groups} object into the
+// {match, index, groups} object $match returns.
+func matchResult(m any) *evaluator.OrderedMap {
+	matchVal, _ := evaluator.MapGet(m, "match")
+	startVal, _ := evaluator.MapGet(m, "start")
+	groupsVal, _ := evaluator.MapGet(m, "groups")
+	obj := evaluator.NewOrderedMapWithCapacity(3)
+	obj.Set("match", matchVal)
+	obj.Set("index", startVal)
+	obj.Set("groups", groupsVal)
+	return obj
+}
+
+// isMatcherResult reports whether a custom matcher returned a match structure,
+// using jsonata-js's test: a numeric start, an array of groups or a next function.
+func isMatcherResult(m any) bool {
+	if !evaluator.IsMap(m) {
+		return false
+	}
+	start, _ := evaluator.MapGet(m, "start")
+	groups, _ := evaluator.MapGet(m, "groups")
+	if _, isNumber := evaluator.ToFloat64(start); isNumber || evaluator.IsArray(groups) {
+		return true
+	}
+	next, _ := evaluator.MapGet(m, "next")
+	switch next.(type) {
+	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+		return true
+	}
+	return false
+}
+
+// isFalsyJS reports whether jsonata-js would treat a matcher's return value as
+// falsy (JavaScript truthiness, under which empty arrays and objects are true).
+func isFalsyJS(v any) bool {
+	if v == nil || evaluator.IsNull(v) {
+		return true
+	}
+	switch x := v.(type) {
+	case bool:
+		return !x
+	case string:
+		return x == ""
+	}
+	f, isNumber := evaluator.ToFloat64(v)
+	return isNumber && f == 0
 }
 
 func matchResultSeq(result []any) any {
@@ -85,45 +151,37 @@ func matchResultSeq(result []any) any {
 }
 
 func matchWithCustomMatcher(s string, matcherFn any, limit int, evalFn EvalFn, env *evaluator.Environment) (any, error) {
-	var result []any
-
-	res, err := evalFn(matcherFn, []any{s, float64(0)}, nil, env)
-	if err != nil {
-		return nil, err
+	if limit == 0 {
+		return nil, nil
 	}
-
-	for res != nil {
-		if !evaluator.IsMap(res) {
-			break
-		}
-		m := res
-
-		matchVal, _ := evaluator.MapGet(m, "match")
-		startVal, _ := evaluator.MapGet(m, "start")
-		groupsVal, _ := evaluator.MapGet(m, "groups")
-
-		obj := map[string]any{
-			"match":  matchVal,
-			"index":  startVal,
-			"groups": groupsVal,
-		}
-		result = append(result, obj)
-
-		if limit >= 0 && len(result) >= limit {
-			break
-		}
-
-		nextFn, _ := evaluator.MapGet(m, "next")
+	var result []any
+	res, err := callMatcher(matcherFn, []any{s, float64(0)}, evalFn, env)
+	for count := 0; err == nil && res != nil && (limit < 0 || count < limit); count++ {
+		result = append(result, matchResult(res))
+		nextFn, _ := evaluator.MapGet(res, "next")
 		if nextFn == nil {
 			break
 		}
-		res, err = evalFn(nextFn, nil, nil, env)
-		if err != nil {
-			return nil, err
-		}
+		res, err = callMatcher(nextFn, nil, evalFn, env)
 	}
-
+	if err != nil {
+		return nil, err
+	}
 	return matchResultSeq(result), nil
+}
+
+// callMatcher calls a custom matcher, or a match's next function, and checks
+// the result as jsonata-js's evaluateMatcher does: a falsy result means no
+// match, and anything else must be a match structure.
+func callMatcher(fn any, args []any, evalFn EvalFn, env *evaluator.Environment) (any, error) {
+	res, err := evalFn(fn, args, nil, env)
+	if err != nil || isFalsyJS(res) {
+		return nil, err
+	}
+	if !isMatcherResult(res) {
+		return nil, &evaluator.JSONataError{Code: "T1010", Message: "$match: the matcher function did not return a match object"}
+	}
+	return res, nil
 }
 
 // ── $replace ──────────────────────────────────────────────────────────────────
@@ -147,20 +205,11 @@ func makeFnReplace(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$replace: argument 3 (replacement) is required"}
 		}
 
-		limit := -1
-		if len(args) >= 4 {
-			if args[3] == nil {
-				return nil, &evaluator.JSONataError{Code: "T0410", Message: "$replace: argument 4 must be a number"}
-			}
-			lf, ok := evaluator.ToFloat64(args[3])
-			if !ok {
-				return nil, &evaluator.JSONataError{Code: "T0410", Message: "$replace: argument 4 must be a number"}
-			}
-			if lf < 0 {
-				return nil, &evaluator.JSONataError{Code: "D3011", Message: "$replace: fourth argument must not be negative"}
-			}
-			limit = evaluator.ToIntClamped(lf)
+		limitArg, err := optionalLimit(args, 3, "$replace", "D3011")
+		if err != nil {
+			return nil, err
 		}
+		limit := matchCountLimit(limitArg)
 
 		switch pattern := args[1].(type) {
 		case string:
@@ -186,12 +235,10 @@ func makeFnReplace(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			if err != nil {
 				return nil, err
 			}
-			switch repl := args[2].(type) {
-			case string:
+			if repl, ok := args[2].(string); ok {
 				return replaceRegexString(s, re, repl, limit)
-			default:
-				return replaceWithFn(s, re, args[2], limit, evalFn, focus, env)
 			}
+			return replaceWithFn(s, re, args[2], limit, evalFn, focus, env)
 
 		default:
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$replace: argument 2 must be a string or regex"}
@@ -295,97 +342,63 @@ func expandJSONataReplacement(repl, fullMatch string, groups []string) string {
 	return b.String()
 }
 
-// extractSubmatches returns the full match string and capture group strings from a Match.
-func extractSubmatches(m *evaluator.Match) (fullMatch string, groups []string) {
-	fullMatch = m.String()
-	for g := 1; g < m.GroupCount(); g++ {
-		grp := m.GroupByNumber(g)
-		if !grp.Captured {
-			groups = append(groups, "")
-		} else {
-			groups = append(groups, grp.String())
-		}
-	}
-	return fullMatch, groups
-}
-
 // replaceRegexString replaces regex matches with a JSONata template string.
 func replaceRegexString(s string, re *evaluator.Regex, repl string, limit int) (string, error) {
-	var b strings.Builder
-	prev := 0
-	count := 0
-	m, err := re.FindStringMatch(s)
-	if err != nil {
-		return "", &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", err)}
-	}
-	for m != nil {
-		if limit >= 0 && count >= limit {
-			break
-		}
-		if m.Length == 0 {
-			return "", &evaluator.JSONataError{Code: "D1004", Message: "$replace: the regex matched a zero-length string"}
-		}
-		b.WriteString(s[prev:m.Index])
-		fullMatch, groups := extractSubmatches(m)
-		b.WriteString(expandJSONataReplacement(repl, fullMatch, groups))
-		prev = m.Index + m.Length
-		count++
-		m, err = m.FindNextMatch()
-		if err != nil {
-			return "", &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", err)}
-		}
-	}
-	b.WriteString(s[prev:])
-	return b.String(), nil
+	return replaceRegex(s, re, limit, func(m *evaluator.Match) (string, error) {
+		return expandJSONataReplacement(repl, m.String(), m.Groups()), nil
+	})
 }
 
 func replaceWithFn(s string, re *evaluator.Regex, fn any, limit int, evalFn EvalFn, focus any, env *evaluator.Environment) (any, error) {
-	var b strings.Builder
-	prev := 0
-	count := 0
-	m, err := re.FindStringMatch(s)
-	if err != nil {
-		return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", err)}
-	}
-	for m != nil {
-		if limit >= 0 && count >= limit {
-			break
-		}
-		if m.Length == 0 {
-			return nil, &evaluator.JSONataError{Code: "D1004", Message: "$replace: the regex matched a zero-length string"}
-		}
-		matchStart := m.Index
-		matchEnd := m.Index + m.Length
-		b.WriteString(s[prev:matchStart])
-		fullMatch, groups := extractSubmatches(m)
-		groupsAny := make([]any, len(groups))
-		for i, g := range groups {
-			groupsAny[i] = g
-		}
-		matchObj := map[string]any{
-			"match":  fullMatch,
-			"start":  float64(utf8.RuneCountInString(s[:matchStart])),
-			"end":    float64(utf8.RuneCountInString(s[:matchEnd])),
-			"groups": groupsAny,
-		}
-		val, evalErr := evalFn(fn, []any{matchObj}, focus, env)
-		if evalErr != nil {
-			return nil, evalErr
+	return replaceRegex(s, re, limit, func(m *evaluator.Match) (string, error) {
+		val, err := evalFn(fn, []any{replacerMatchObject(s, m)}, focus, env)
+		if err != nil {
+			return "", err
 		}
 		sv, ok := val.(string)
 		if !ok {
-			return nil, &evaluator.JSONataError{Code: "D3012", Message: "$replace: replacement function must return a string"}
+			return "", &evaluator.JSONataError{Code: "D3012", Message: "$replace: replacement function must return a string"}
 		}
-		b.WriteString(sv)
-		prev = matchEnd
-		count++
-		m, err = m.FindNextMatch()
+		return sv, nil
+	})
+}
+
+// replaceRegex replaces the matches of re in s, at most limit of them (-1 for
+// no limit), with what replacement returns for each.
+func replaceRegex(s string, re *evaluator.Regex, limit int, replacement func(*evaluator.Match) (string, error)) (string, error) {
+	var b strings.Builder
+	prev := 0
+	err := eachRegexMatch(re, s, limit, func(m *evaluator.Match) error {
+		sub, err := replacement(m)
 		if err != nil {
-			return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", err)}
+			return err
 		}
+		b.WriteString(s[prev:m.Index])
+		b.WriteString(sub)
+		prev = m.Index + m.Length
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	b.WriteString(s[prev:])
 	return b.String(), nil
+}
+
+// replacerMatchObject is the match object $replace passes to a replacement
+// function: a regex match whose next function returns the following one, as
+// in jsonata-js. Only this object carries next; the match objects an
+// evaluation can return omit it, since a function value has no JSON form.
+func replacerMatchObject(s string, m *evaluator.Match) *evaluator.OrderedMap {
+	obj := evaluator.NewMatchObject(s, m)
+	obj.Set("next", evaluator.BuiltinFunction(func([]any, any) (any, error) {
+		next, err := evaluator.NextMatch(m)
+		if next == nil || err != nil {
+			return nil, err
+		}
+		return replacerMatchObject(s, next), nil
+	}))
+	return obj
 }
 
 // ── regex helpers ─────────────────────────────────────────────────────────────
@@ -414,20 +427,13 @@ func compileRegexArg(v any) (*evaluator.Regex, error) {
 func splitRegex(re *evaluator.Regex, s string, limit int) ([]string, error) {
 	var parts []string
 	lastEnd := 0
-	m, err := re.FindStringMatch(s)
-	if err != nil {
-		return nil, err
-	}
-	for m != nil {
-		if limit >= 0 && len(parts) >= limit {
-			break
-		}
+	err := eachRegexMatch(re, s, limit, func(m *evaluator.Match) error {
 		parts = append(parts, s[lastEnd:m.Index])
 		lastEnd = m.Index + m.Length
-		m, err = m.FindNextMatch()
-		if err != nil {
-			return nil, err
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if limit < 0 || len(parts) < limit {
 		parts = append(parts, s[lastEnd:])

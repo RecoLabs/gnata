@@ -2,5 +2,5 @@
     "expr": "$match('hello', /^h/)[]",
     "data": {},
     "bindings": {},
-    "result": [{"match": "h", "start": 0, "end": 1, "groups": []}]
+    "result": [{"match": "h", "index": 0, "groups": []}]
 }

@@ -454,22 +454,17 @@ func fnSplit(args []any, _ any) (any, error) {
 		return nil, &evaluator.JSONataError{Code: "D3006", Message: "$split: requires at least 2 arguments"}
 	}
 
-	limit := -1
-	if len(args) >= 3 && args[2] != nil {
-		lf, ok := evaluator.ToFloat64(args[2])
-		if !ok {
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$split: argument 3 must be a number"}
-		}
-		limit = evaluator.ToIntClamped(lf)
-		if limit < 0 {
-			return nil, &evaluator.JSONataError{Code: "D3020", Message: "$split: limit must be a non-negative integer"}
-		}
+	limitArg, err := optionalLimit(args, 2, "$split", "D3020")
+	if err != nil {
+		return nil, err
 	}
 
 	var parts []string
 	switch p := args[1].(type) {
 	case string:
-		if limit >= 0 {
+		// jsonata-js splits on a string with String.prototype.split, which
+		// truncates a fractional limit.
+		if limit := evaluator.ToIntClamped(limitArg); limit >= 0 {
 			parts = strings.SplitN(s, p, limit+1)
 			if len(parts) > limit {
 				parts = parts[:limit]
@@ -482,10 +477,8 @@ func fnSplit(args []any, _ any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		var splitErr error
-		parts, splitErr = splitRegex(re, s, limit)
-		if splitErr != nil {
-			return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", splitErr)}
+		if parts, err = splitRegex(re, s, matchCountLimit(limitArg)); err != nil {
+			return nil, err
 		}
 	default:
 		switch args[1].(type) {
