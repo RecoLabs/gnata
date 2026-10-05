@@ -1,31 +1,95 @@
 package evaluator
 
 import (
+	"reflect"
+
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-// maxCloneDepth bounds CloneValue's recursion: a transform can make a value
-// contain itself, and recursing through it would overflow the Go stack.
-const maxCloneDepth = 100_000
+// maxValueDepth bounds CloneValue's and JSONValue's recursion, so a value
+// nested deeper than this is reported instead of overflowing the Go stack.
+const maxValueDepth = 100_000
+
+// cycleCheckDepth is the depth past which valuePath records the objects it
+// walks, so a value that contains itself (which a transform can build) is
+// caught one cycle later instead of copied up to maxValueDepth times;
+// ordinary values never reach it.
+const cycleCheckDepth = 1000
+
+// valuePath tracks the depth of a walk over a value and, past
+// cycleCheckDepth, the objects open on the current path.
+type valuePath struct {
+	what  string // the walk, for errors: "clone" or "stringify"
+	depth int
+	open  map[any]struct{}
+}
+
+// enter descends into container, reporting U1001 when it is nested too
+// deeply or already open on the path.
+func (p *valuePath) enter(container any) error {
+	p.depth++
+	if p.depth > maxValueDepth {
+		return &JSONataError{Code: "U1001", Message: "value is nested too deeply to " + p.what}
+	}
+	if p.depth <= cycleCheckDepth {
+		return nil
+	}
+	key := objectIdentity(container)
+	if key == nil {
+		return nil
+	}
+	if _, open := p.open[key]; open {
+		return &JSONataError{Code: "U1001", Message: "cannot " + p.what + " a value that contains itself"}
+	}
+	if p.open == nil {
+		p.open = make(map[any]struct{})
+	}
+	p.open[key] = struct{}{}
+	return nil
+}
+
+// leave returns from the container enter descended into.
+func (p *valuePath) leave(container any) {
+	if p.depth > cycleCheckDepth {
+		if key := objectIdentity(container); key != nil {
+			delete(p.open, key)
+		}
+	}
+	p.depth--
+}
+
+// objectIdentity returns a comparable identity for an object, or nil for
+// other values. A value can only contain itself through an object, which a
+// transform modifies in place.
+func objectIdentity(v any) any {
+	switch val := v.(type) {
+	case *OrderedMap:
+		return val
+	case map[string]any:
+		return reflect.ValueOf(val).UnsafePointer()
+	}
+	return nil
+}
 
 // CloneValue deep-copies v as jsonata-js's $clone does through JSON, where a
 // function becomes "". Numbers and other Go values, including nil (which
 // is null in Go input), are kept as they are, so no precision is lost.
 func CloneValue(v any) (any, error) {
-	return cloneValue(v, 0)
+	return cloneValue(v, &valuePath{what: "clone"})
 }
 
-func cloneValue(v any, depth int) (any, error) {
-	if depth > maxCloneDepth {
-		return nil, &JSONataError{Code: "U1001", Message: "value is nested too deeply to clone; it may contain itself"}
-	}
+func cloneValue(v any, path *valuePath) (any, error) {
 	switch val := v.(type) {
 	case *OrderedMap:
+		if err := path.enter(val); err != nil {
+			return nil, err
+		}
+		defer path.leave(val)
 		m := NewOrderedMapWithCapacity(val.Len())
 		var err error
 		val.Range(func(k string, vv any) bool {
 			var c any
-			if c, err = cloneValue(vv, depth+1); err != nil {
+			if c, err = cloneValue(vv, path); err != nil {
 				return false
 			}
 			m.Set(k, c)
@@ -33,9 +97,13 @@ func cloneValue(v any, depth int) (any, error) {
 		})
 		return m, err
 	case map[string]any:
+		if err := path.enter(val); err != nil {
+			return nil, err
+		}
+		defer path.leave(val)
 		m := make(map[string]any, len(val))
 		for k, vv := range val {
-			c, err := cloneValue(vv, depth+1)
+			c, err := cloneValue(vv, path)
 			if err != nil {
 				return nil, err
 			}
@@ -43,11 +111,11 @@ func cloneValue(v any, depth int) (any, error) {
 		}
 		return m, nil
 	case []any:
-		return cloneArray(val, depth)
+		return cloneArray(val, path)
 	case ConsArray:
-		return cloneArray(val, depth)
+		return cloneArray(val, path)
 	case *Sequence:
-		return cloneValue(CollapseSequence(val), depth)
+		return cloneValue(CollapseSequence(val), path)
 	default:
 		if isCallable(v) {
 			return "", nil
@@ -56,10 +124,14 @@ func cloneValue(v any, depth int) (any, error) {
 	}
 }
 
-func cloneArray(arr []any, depth int) ([]any, error) {
+func cloneArray(arr []any, path *valuePath) ([]any, error) {
+	if err := path.enter(nil); err != nil {
+		return nil, err
+	}
+	defer path.leave(nil)
 	out := make([]any, len(arr))
 	for i, v := range arr {
-		c, err := cloneValue(v, depth+1)
+		c, err := cloneValue(v, path)
 		if err != nil {
 			return nil, err
 		}

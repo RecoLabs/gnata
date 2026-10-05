@@ -261,3 +261,86 @@ func appendJSONString(b []byte, s string) []byte {
 	b = append(b, s[start:]...)
 	return append(b, '"')
 }
+
+// JSONValue prepares v for JSON as jsonata-js's $string does: function
+// values become "", and numbers are laid out in decimal under precision prec
+// or rounded by roundJS otherwise. Objects become *OrderedMap, keeping the
+// insertion order of an *OrderedMap.
+func JSONValue(v any, prec int) (any, error) {
+	return jsonValue(v, prec, &valuePath{what: "stringify"})
+}
+
+func jsonValue(v any, prec int, path *valuePath) (any, error) {
+	if IsNull(v) {
+		return nil, nil
+	}
+	switch val := v.(type) {
+	case *Sequence:
+		return jsonValue(CollapseSequence(val), prec, path)
+	case *OrderedMap:
+		if err := path.enter(val); err != nil {
+			return nil, err
+		}
+		defer path.leave(val)
+		out := NewOrderedMapWithCapacity(val.Len())
+		var err error
+		val.Range(func(k string, v any) bool {
+			var s any
+			if s, err = jsonValue(v, prec, path); err != nil {
+				return false
+			}
+			out.Set(k, s)
+			return true
+		})
+		return out, err
+	case map[string]any:
+		if err := path.enter(val); err != nil {
+			return nil, err
+		}
+		defer path.leave(val)
+		out := NewOrderedMapWithCapacity(len(val))
+		for _, k := range MapKeys(val) {
+			s, err := jsonValue(val[k], prec, path)
+			if err != nil {
+				return nil, err
+			}
+			out.Set(k, s)
+		}
+		return out, nil
+	case []any:
+		return jsonArray(val, prec, path)
+	case ConsArray:
+		return jsonArray(val, prec, path)
+	case json.Number:
+		if s, ok := FormatDecimal(val, prec); ok {
+			return json.Number(s), nil
+		}
+		return v, nil
+	case float64:
+		if s, ok := FormatDecimal(val, prec); ok {
+			return json.Number(s), nil
+		}
+		return roundJS(val), nil
+	default:
+		if isCallable(v) {
+			return "", nil
+		}
+		return v, nil
+	}
+}
+
+func jsonArray(arr []any, prec int, path *valuePath) ([]any, error) {
+	if err := path.enter(nil); err != nil {
+		return nil, err
+	}
+	defer path.leave(nil)
+	out := make([]any, 0, len(arr))
+	for _, v := range arr {
+		s, err := jsonValue(v, prec, path)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}

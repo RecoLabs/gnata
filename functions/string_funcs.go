@@ -74,7 +74,11 @@ func valueToString(v any, prettify bool, prec int) (string, error) {
 	case *evaluator.Sequence:
 		return valueToString(evaluator.CollapseSequence(val), prettify, prec)
 	default:
-		out, err := evaluator.AppendJSON(nil, sanitizeForJSON(v, prec))
+		prepared, err := evaluator.JSONValue(v, prec)
+		if err != nil {
+			return "", err
+		}
+		out, err := evaluator.AppendJSON(nil, prepared)
 		if err != nil {
 			return "", &evaluator.JSONataError{Code: "D1001", Message: "Number out of range"}
 		}
@@ -86,47 +90,6 @@ func valueToString(v any, prettify bool, prec int) (string, error) {
 			return buf.String(), nil
 		}
 		return string(out), nil
-	}
-}
-
-// sanitizeForJSON replaces function values with "" so they can be JSON-marshaled,
-// and under decimal precision prec lays out numbers as valueToString does.
-// For *OrderedMap, returns a new *OrderedMap preserving insertion order.
-func sanitizeForJSON(v any, prec int) any {
-	if evaluator.IsNull(v) {
-		return nil
-	}
-	switch val := v.(type) {
-	case *evaluator.Sequence:
-		return sanitizeForJSON(evaluator.CollapseSequence(val), prec)
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return ""
-	case *evaluator.OrderedMap:
-		out := evaluator.NewOrderedMapWithCapacity(val.Len())
-		val.Range(func(k string, v any) bool {
-			out.Set(k, sanitizeForJSON(v, prec))
-			return true
-		})
-		return out
-	case map[string]any:
-		out := evaluator.NewOrderedMapWithCapacity(len(val))
-		for _, k := range evaluator.MapKeys(val) {
-			out.Set(k, sanitizeForJSON(val[k], prec))
-		}
-		return out
-	case []any:
-		out := make([]any, 0, len(val))
-		for _, v := range val {
-			out = append(out, sanitizeForJSON(v, prec))
-		}
-		return out
-	case json.Number, float64:
-		if s, ok := evaluator.FormatDecimal(val, prec); ok {
-			return json.Number(s)
-		}
-		return v
-	default:
-		return v
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	"strconv"
 	"strings"
 
@@ -47,7 +48,14 @@ func stringifyValue(v any, prec int) (string, error) {
 		}
 		return "false", nil
 	default:
-		b, err := AppendJSON(nil, v)
+		if isCallable(v) {
+			return "", nil
+		}
+		prepared, err := JSONValue(v, prec)
+		if err != nil {
+			return "", err
+		}
+		b, err := AppendJSON(nil, prepared)
 		if err != nil {
 			return "", fmt.Errorf("cannot stringify value: %w", err)
 		}
@@ -72,39 +80,59 @@ func FormatNumber(n json.Number) string {
 	return FormatFloat(f)
 }
 
-// FormatFloat converts a float64 to its canonical string form matching
-// JavaScript's Number.toString() behavior. Numbers between 1e-7 and 1e21
-// use decimal notation; numbers outside that range use scientific notation.
+// FormatFloat converts a float64 to the string jsonata-js's $string gives:
+// JavaScript's Number.toString() of roundJS(n), which uses decimal notation
+// from 1e-6 up to 1e21 and scientific notation outside it.
 func FormatFloat(n float64) string {
 	if math.IsNaN(n) || math.IsInf(n, 0) {
 		return "null"
 	}
-	s := strconv.FormatFloat(n, 'g', 15, 64)
-	abs := math.Abs(n)
-	if abs != 0 && (abs < 5e-7 || abs >= 1e21) {
-		sci := strconv.FormatFloat(n, 'e', -1, 64)
-		return cleanExponent(sci)
-	}
-	if strings.ContainsRune(s, 'e') || strings.ContainsRune(s, 'E') {
-		return strconv.FormatFloat(n, 'f', -1, 64)
-	}
-	return s
+	b, _ := appendJSONFloat(nil, roundJS(n), 64) // only NaN and Inf fail
+	return string(b)
 }
 
-func cleanExponent(s string) string {
-	mantissa, exp, ok := strings.Cut(s, "e")
-	if !ok {
-		return s
+// roundJS rounds n as jsonata-js does before turning a number into JSON: a
+// non-integer to 15 significant digits (Number(n.toPrecision(15))), and -0
+// to 0, which JSON.stringify writes as 0.
+func roundJS(n float64) float64 {
+	if n == 0 {
+		return 0
 	}
-	sign := ""
-	if exp != "" && (exp[0] == '+' || exp[0] == '-') {
-		sign = string(exp[0])
-		exp = exp[1:]
+	if n == math.Trunc(n) || math.IsInf(n, 0) || math.IsNaN(n) {
+		return n
 	}
-	if exp = strings.TrimLeft(exp, "0"); exp == "" {
-		exp = "0"
+	abs := math.Abs(n)
+	if isPrecision15Tie(abs) {
+		// toPrecision rounds an exact tie away from zero, where strconv
+		// rounds it to even; one ulp up breaks the tie that way.
+		abs = math.Nextafter(abs, math.Inf(1))
 	}
-	return mantissa + "e" + sign + exp
+	// A finite non-integer's 15-digit form always parses.
+	rounded, _ := strconv.ParseFloat(strconv.FormatFloat(abs, 'g', 15, 64), 64)
+	return math.Copysign(rounded, n)
+}
+
+// fractionBits returns how many binary digits f has after the point.
+func fractionBits(f float64) int {
+	frac, exp := math.Frexp(f) // f = frac × 2^exp, 0.5 ≤ frac < 1
+	mantissa := uint64(frac * (1 << 53))
+	return 53 - exp - bits.TrailingZeros64(mantissa)
+}
+
+// isPrecision15Tie reports whether abs is exactly halfway between two
+// 15-significant-digit decimals: its 16th digit is 5 and every later one 0.
+// A float64 that is not an exact tie differs from one by the 18th digit, so
+// 25 digits are enough to tell.
+func isPrecision15Tie(abs float64) bool {
+	// A tie has 16 significant digits. A non-integer with k binary digits
+	// after the point has at least as many decimal digits as 5^k, so k ≤ 22;
+	// this skips the slow 25-digit format for almost every float.
+	if fractionBits(abs) > 22 {
+		return false
+	}
+	s := strconv.FormatFloat(abs, 'e', 24, 64)
+	digits := s[:1] + s[2:26]
+	return digits[15] == '5' && strings.Trim(digits[16:], "0") == ""
 }
 
 // applyCmpOp applies an ordering operator to the result c of a three-way
