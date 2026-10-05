@@ -86,7 +86,8 @@ func (pm *pictureMatch) enter(i, pos int) matchFrame {
 	case !pm.parts[i].isMarker:
 		f.next = utf8.RuneCountInString(pm.parts[i].literal)
 	default:
-		f.next = longestMatch(pm.input[pos:], pm.parts[i].marker)
+		_, n := parseMarkerValue(pm.input[pos:], pm.parts[i].marker)
+		f.next = max(n, 0)
 	}
 	return f
 }

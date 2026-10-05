@@ -198,6 +198,8 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("AX` + strings.Repeat("M", 66) + `", "[MA]X[YI]")`, want: `2020591612800000`},
 	// A picture far longer than any real one matches without deep recursion.
 	{expr: `$toMillis("` + strings.Repeat("1-", 50_000) + `", "` + strings.Repeat("[D]-", 50_000) + `")`, want: `1790812800000`},
+	// Word numbers read a bounded window, so this stays linear.
+	{expr: `$toMillis("` + strings.Repeat("one ", 4000) + `x", "` + strings.Repeat("[Fw] ", 2000) + `y")`, want: undefined},
 	// Exhausts the step budget (README known difference #16).
 	{expr: `$toMillis("` + strings.Repeat("I", 1600) + `x", "` + strings.Repeat("[MI]I", 800) + `y")`, want: undefined},
 	{expr: `$toMillis("A` + strings.Repeat("M", 20) + ` 2018", "[MA] [Y]")`, want: `null`},
@@ -231,6 +233,11 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("2018 Apr", "[Y] [MNn,3-3]")`, want: `1522540800000`},
 	{expr: `$toMillis("2018 April", "[Y] [MNn,3-3]")`, want: `1522540800000`},
 	{expr: `$toMillis("2018 Mayday", "[Y] [MNn,3-3]")`, want: `1525132800000`},
+	{expr: `$toMillis("2018 Apr", "[Y] [MNn,*-3x]")`, want: `1522540800000`},
+	{expr: `$toMillis("2018 Apr", "[Y] [MNn,*-+3]")`, want: `1522540800000`},
+	{expr: `$toMillis("2018 April", "[Y] [MNn,3]")`, want: `1522540800000`},
+	{expr: `$toMillis("2018-04-01 10am", "[Y]-[M]-[D] [h][P1]")`, want: `1522576800000`},
+	{expr: `$toMillis("2018-04-01 10pm", "[Y]-[M]-[D] [h][P01]")`, want: `1522620000000`},
 	{expr: `$toMillis("1AprT2018", "[D][MNn,3-3]T[Y]")`, want: `1522540800000`},
 	{expr: `$toMillis("1 Apra 2018", "[D] [MNn,3-3]a [Y]")`, want: `1522540800000`},
 	{expr: `$toMillis("2018-04-01 SundayT", "[Y]-[M]-[D] [FNn]T")`, want: `1522540800000`},
@@ -312,11 +319,10 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("2018-04-01T10:00+123:05", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: `1522133700000`},
 	{expr: `$toMillis("2018-04-01T10:00+1:005", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: `1522572900000`},
 	{expr: `$toMillis("2018-04-01T10:00+596523:00", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: `-624906000000`},
-	// The rest differ from jsonata-js (README known differences #4 and #14).
+	// The next four differ from jsonata-js (README known differences #4 and #14).
 	{expr: `$toMillis("2018-04-01T10:00+596524:00", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: undefined},
 	{expr: `$toMillis("2018-04-01T10:00+99999999999999999999:00", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: undefined},
 	{expr: `$toMillis("2018-04-01 10+05:10000000005", "[Y]-[M]-[D] [H][Z][m]")`, want: undefined},
-	{expr: `$toMillis("` + strings.Repeat("one ", 4000) + `x", "` + strings.Repeat("[Fw] ", 2000) + `y")`, want: undefined},
 	{expr: `$toMillis("2018-04-01T10:00-02:30", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: `1522585800000`},
 	{expr: `$toMillis("13:45", "[H]:[m]") % 86400000`, want: `49500000`},
 	{expr: `$toMillis("2018", "[Y")`, code: "D3135"},

@@ -65,22 +65,6 @@ func parseWithPicture(input, picture string, now time.Time, stop func() error) (
 	return millis, err == nil, err
 }
 
-// longestMatch returns the most runes a marker can read at the start of
-// runes, before its value is range-checked, so that an offset or number
-// too large as a whole can still give back digits and match.
-func longestMatch(runes []rune, m dateMarker) int {
-	switch mandatory, _ := decimalPictureDigits(m.presentation); {
-	case m.component == 'Z' || m.component == 'z':
-		_, _, _, n := scanTZ(runes, m)
-		return n
-	case m.component == 'f',
-		mandatory > 0 && !m.ordinal && m.parseWidth <= 0 && !isNamePresentation(m.presentation):
-		return leadingDigits(runes, 0)
-	}
-	_, n := parseMarkerValue(runes, m)
-	return n
-}
-
 // setParseWidths fixes the digit count of an integer marker directly followed
 // by another one, as jsonata-js does: its mandatory digits raised to the
 // minimum width, or a year's maximum width. Other integers read every digit,
@@ -443,7 +427,7 @@ func offsetUnits(digits []rune, seconds int64) (int64, bool) {
 }
 
 // parseTokenValue reads an integer marker's value. Month names read their
-// width from the full modifier, decimal numbers use parseWidth.
+// maximum width, decimal numbers parseWidth.
 func parseTokenValue(runes []rune, m dateMarker) (value, consumed int) {
 	if len(runes) == 0 {
 		return -1, -1
@@ -454,7 +438,7 @@ func parseTokenValue(runes []rune, m dateMarker) (value, consumed int) {
 	case p == "a" || p == "A":
 		return parseAlphabetic(runes, p)
 	case isNamePresentation(p):
-		return parseMonthName(runes, m.modifier)
+		return parseMonthName(runes, m.maxWidth)
 	case p == "w" || p == "W" || p == "Ww" || p == "ww":
 		return parseWordNumber(runes, p)
 	case m.ordinal:
@@ -551,24 +535,10 @@ func parseAlphabetic(runes []rune, modifier string) (value, consumed int) {
 	return result, i
 }
 
-func parseMonthName(runes []rune, modifier string) (month, consumed int) {
-	// Determine max length to match.
-	maxLen := 0
-	if strings.Contains(modifier, ",") {
-		parts := strings.SplitN(modifier, ",", 2)
-		if len(parts) == 2 {
-			rangePart := parts[1]
-			rangeParts := strings.Split(rangePart, "-")
-			if v, err := strconv.Atoi(rangeParts[0]); err == nil {
-				maxLen = v
-			}
-			if len(rangeParts) == 2 {
-				if v, err := strconv.Atoi(rangeParts[1]); err == nil {
-					maxLen = v
-				}
-			}
-		}
-	}
+// parseMonthName reads a month name, or its first maxWidth letters when
+// maxWidth is positive.
+func parseMonthName(runes []rune, maxWidth int) (month, consumed int) {
+	maxLen := max(maxWidth, 0)
 
 	// Try matching full month names first, then abbreviated. With a maximum
 	// width the match consumes the rest of the word, so "January" reads as "Jan".
