@@ -26,7 +26,13 @@ type exprCase struct {
 
 func (c exprCase) run(t *testing.T) {
 	t.Helper()
-	got, err := evalDecoded(c.expr, c.data)
+	c.runDecoded(t, decodeOrdered)
+}
+
+// runDecoded runs the case with data decoded by decode.
+func (c exprCase) runDecoded(t *testing.T, decode func(data string) (any, error)) {
+	t.Helper()
+	got, err := evalWith(c.expr, c.data, decode)
 	if c.code != "" {
 		if err == nil || !strings.Contains(err.Error(), c.code) {
 			t.Fatalf("%s: want error %s, got %v (err %v)", c.expr, c.code, render(t, got), err)
@@ -48,18 +54,30 @@ func runExprCases(t *testing.T, cases []exprCase) {
 	}
 }
 
-func evalDecoded(expr, data string) (any, error) {
+func evalWith(expr, data string, decode func(data string) (any, error)) (any, error) {
 	e, err := gnata.Compile(expr)
 	if err != nil {
 		return nil, err
 	}
 	var input any
 	if data != "" {
-		if input, err = gnata.DecodeJSON(json.RawMessage(data)); err != nil {
+		if input, err = decode(data); err != nil {
 			return nil, err
 		}
 	}
 	return e.Eval(context.Background(), input)
+}
+
+// decodeOrdered decodes objects as *OrderedMap, as gnata.DecodeJSON does.
+func decodeOrdered(data string) (any, error) {
+	return gnata.DecodeJSON(json.RawMessage(data))
+}
+
+// decodeGoMaps decodes objects as map[string]any, as encoding/json does.
+func decodeGoMaps(data string) (any, error) {
+	var v any
+	err := json.Unmarshal([]byte(data), &v)
+	return v, err
 }
 
 // render serializes an evaluation result as compact JSON with sorted object

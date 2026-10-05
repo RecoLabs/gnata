@@ -6,7 +6,11 @@ const (
 	accountJSON = `{"Account":{"Name":"Firefly","Order":[` +
 		`{"OrderID":"o1","Product":[{"Name":"Hat","Price":10,"Qty":2},{"Name":"Cap","Price":5,"Qty":1}]},` +
 		`{"OrderID":"o2","Product":[{"Name":"Bag","Price":20,"Qty":1}]}]}}`
-	libraryJSON = `{"library":{"books":[{"title":"A","isbn":"1"},{"title":"B","isbn":"2"}],` +
+	// A root array is one context, so it is the parent of the items it
+	// yields.
+	rootArrayJSON  = `[{"k":[1,2],"m":[3]},{"k":[4],"m":[]}]`
+	nestedJoinJSON = `{"a":{"b":[{"c":[{"d":1},{"d":2}],"k":"x"},{"c":[{"d":3}],"k":"y"}]}}`
+	libraryJSON    = `{"library":{"books":[{"title":"A","isbn":"1"},{"title":"B","isbn":"2"}],` +
 		`"loans":[{"isbn":"1","customer":"c1"},{"isbn":"2","customer":"c2"},{"isbn":"1","customer":"c3"}]}}`
 )
 
@@ -33,6 +37,7 @@ var parentOperatorCases = []exprCase{
 	},
 	{expr: `Account.Order.Product.%[1]#$i.{"i":$i,"o":OrderID}`, data: accountJSON, want: `{"i":0,"o":"o1"}`},
 	{expr: `Account.Order.Product.%#$i.$i`, data: accountJSON, want: `[0,0,0]`},
+	{expr: `k@$a.m@$b.%.m`, data: rootArrayJSON, want: `[3,3,3]`},
 	{expr: `a.%`, data: `{"a":{"b":1}}`, want: `{"a":{"b":1}}`},
 	{expr: `%`, code: "S0217"},
 	{expr: `%.a`, code: "S0217"},
@@ -300,4 +305,22 @@ func TestPathAndOperatorSemantics(t *testing.T) {
 	t.Run("path steps", func(t *testing.T) { runExprCases(t, pathStepCases) })
 	t.Run("subscripts", func(t *testing.T) { runExprCases(t, subscriptCases) })
 	t.Run("operators", func(t *testing.T) { runExprCases(t, operatorCases) })
+}
+
+// TestParentAfterJoinOnGoMaps evaluates % after joins over data decoded by
+// encoding/json: Go maps and slices are not comparable, so join parents are
+// compared by identity.
+func TestParentAfterJoinOnGoMaps(t *testing.T) {
+	testCases := []exprCase{
+		{expr: `library.loans@$l.books@$b[$l.isbn=$b.isbn].%.loans[0].customer`, data: libraryJSON, want: `"c1"`},
+		{expr: `library.loans@$l.books@$b.%.books[1].title`, data: libraryJSON, want: `"B"`},
+		{expr: `$count(library.loans@$l.books@$b.%.%)`, data: libraryJSON, want: `6`},
+		{expr: `library.books@$b.loans@$l[$l.isbn=$b.isbn].%.title`, data: libraryJSON, want: undefined},
+		{expr: `k@$a.m@$b.%.m`, data: rootArrayJSON, want: `[3,3,3]`},
+		// The nested join's parents differ from the outer join's.
+		{expr: `a.b@$x[$count(c@$y.%.%.%)>=0].$x.k`, data: nestedJoinJSON, want: `["x","y"]`},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) { tC.runDecoded(t, decodeGoMaps) })
+	}
 }

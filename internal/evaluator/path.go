@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"reflect"
 	"slices"
 
 	"github.com/recolabs/gnata/internal/parser"
@@ -1251,7 +1252,7 @@ func parentTuples(step *parser.Node, ctxs []pathCtx) ([]pathCtx, error) {
 					break
 				}
 				pv, pe, has := parentEnv.LookupWithEnv(parentKey)
-				if !has || pv != parentVal {
+				if !has || !sameValue(pv, parentVal) {
 					break
 				}
 				parentEnv = pe.Parent()
@@ -1276,6 +1277,33 @@ func parentTuples(step *parser.Node, ctxs []pathCtx) ([]pathCtx, error) {
 		next = append(next, tuple)
 	}
 	return next, nil
+}
+
+// sameValue reports whether a and b are the same value: maps and non-empty
+// slices by identity, so a nested join's parents differ from the outer
+// join's even when equal, JSONNull with JSONNull, and scalars with ==.
+// Other kinds, such as structs whose fields could hold maps, are never the
+// same, since == on them can panic.
+func sameValue(a, b any) bool {
+	if _, isNull := a.(JSONNull); isNull {
+		_, bothNull := b.(JSONNull)
+		return bothNull
+	}
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	if !va.IsValid() || !vb.IsValid() || va.Type() != vb.Type() {
+		return !va.IsValid() && !vb.IsValid()
+	}
+	kind := va.Kind()
+	if kind == reflect.Map {
+		return va.Pointer() == vb.Pointer()
+	}
+	if kind == reflect.Slice {
+		return va.Len() > 0 && va.Pointer() == vb.Pointer() && va.Len() == vb.Len()
+	}
+	if kind == reflect.Struct || kind == reflect.Array || kind == reflect.Interface || kind == reflect.Func {
+		return false
+	}
+	return a == b
 }
 
 // filterTupleStream keeps the tuples whose predicate is truthy, or whose
