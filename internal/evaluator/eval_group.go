@@ -28,6 +28,11 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	if err != nil || base == nil {
 		return nil, err
 	}
+	// jsonata-js's trampoline applies a tail-position call without its
+	// group, so the group is ignored.
+	if _, tailCall := base.(*TailCall); tailCall {
+		return base, nil
+	}
 
 	var items []any
 	if seq, ok := base.(*Sequence); ok {

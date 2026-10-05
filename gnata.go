@@ -225,7 +225,7 @@ func normalizeValue(v any, shared bool) any {
 			return evaluator.NormalizedView(val, normalizeOrderedMapShared)
 		}
 		return normalizeOrderedMap(val, false)
-	case []any, evaluator.ConsArray, evaluator.KeptArray:
+	case []any, evaluator.ConsArray, evaluator.KeptArray, evaluator.RawSequence:
 		arr, _ := evaluator.AsArray(val)
 		return normalizeSlice(arr, shared)
 	}
@@ -268,7 +268,7 @@ func needsNormalize(v any) bool {
 		return true
 	case *evaluator.Sequence:
 		return true
-	case []any, evaluator.ConsArray, evaluator.KeptArray:
+	case []any, evaluator.ConsArray, evaluator.KeptArray, evaluator.RawSequence:
 		return true
 	}
 	return evaluator.IsNull(v)

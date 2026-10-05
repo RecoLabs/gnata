@@ -9,6 +9,17 @@ import (
 )
 
 func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
+	result, err := evalFunctionSequence(node, input, env)
+	if err != nil {
+		return nil, err
+	}
+	return CollapseAndKeep(result, node.KeepArray), nil
+}
+
+// evalFunctionSequence calls the function node without collapsing a
+// *Sequence result, so a predicate on the call ($filter(...)[0]) sees the
+// sequence's items, matching jsonata-js.
+func evalFunctionSequence(node *parser.Node, input any, env *Environment) (any, error) {
 	var fn any
 	if node.Procedure != nil {
 		var err error
@@ -63,19 +74,13 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 	}
 
 	// Tail-call optimization: if this call is in tail position within a
-	// lambda body, return a TailCall sentinel instead of recursing.
-	// The trampoline loop in callFunction will catch it.
+	// lambda body, return a TailCall sentinel instead of recursing, which
+	// callFunction applies (see TailCall).
 	if node.Thunk {
-		if _, isLambda := fn.(*Lambda); isLambda {
-			return &TailCall{Fn: fn, Args: args}, nil
-		}
+		return &TailCall{Fn: fn, Args: args}, nil
 	}
 
-	result, err := callFunction(fn, args, input, env)
-	if err != nil {
-		return nil, err
-	}
-	return CollapseAndKeep(result, node.KeepArray), nil
+	return callFunction(fn, args, input, env)
 }
 
 func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
@@ -163,6 +168,38 @@ func stackOverflowError(counter *callCounter) error {
 	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 }
 
+// evalLambdaBody evaluates f's body for one call, counting its depth. The
+// result is a lambda's TailCall for the trampoline, or the body's value: a
+// built-in tail call runs here while the depth is counted, so one calling
+// back into a lambda stays within the stack limit.
+func evalLambdaBody(f *Lambda, args []any, focus any, env *Environment, counter *callCounter) (any, error) {
+	counter.depth++
+	defer func() { counter.depth-- }()
+	if counter.depth > counter.max {
+		return nil, stackOverflowError(counter)
+	}
+	childEnv := NewChildEnvironment(f.Closure)
+	childEnv.calls = counter
+	for i, param := range f.Params {
+		if i < len(args) {
+			childEnv.Bind(param, args[i])
+		} else {
+			childEnv.Bind(param, nil)
+		}
+	}
+	bodyFocus := focus
+	if len(f.Params) == 0 && len(args) == 0 {
+		bodyFocus = f.CapturedFocus
+	}
+	result, err := Eval(f.Body, bodyFocus, childEnv)
+	if tc, isTail := result.(*TailCall); isTail && err == nil {
+		if _, isLambda := tc.Fn.(*Lambda); !isLambda {
+			return callFunction(tc.Fn, tc.Args, focus, env)
+		}
+	}
+	return result, err
+}
+
 // callBuiltin calls a builtin with each typed array argument (see
 // typedArray) as a plain array. jsonata-js passes the array object
 // itself, so a builtin that returns an argument unchanged returns it as is.
@@ -229,36 +266,16 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 				}
 				args = coerced
 			}
-			counter.depth++
-			if counter.depth > counter.max {
-				counter.depth--
-				return nil, stackOverflowError(counter)
-			}
-			childEnv := NewChildEnvironment(f.Closure)
-			childEnv.calls = counter
-			for i, param := range f.Params {
-				if i < len(args) {
-					childEnv.Bind(param, args[i])
-				} else {
-					childEnv.Bind(param, nil)
-				}
-			}
-			bodyFocus := focus
-			if len(f.Params) == 0 && len(args) == 0 {
-				bodyFocus = f.CapturedFocus
-			}
-			result, err := Eval(f.Body, bodyFocus, childEnv)
-			counter.depth--
+			result, err := evalLambdaBody(f, args, focus, env, counter)
 			if err != nil {
 				return nil, err
 			}
-			if tc, ok := result.(*TailCall); ok {
+			if tc, isTail := result.(*TailCall); isTail {
 				iter++
 				if iter > maxIter {
 					return nil, &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 				}
-				fn = tc.Fn
-				args = tc.Args
+				fn, args = tc.Fn, tc.Args
 				continue
 			}
 			return result, nil

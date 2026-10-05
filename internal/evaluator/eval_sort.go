@@ -22,9 +22,9 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 	switch v := items.(type) {
 	case []any:
 		arr = v
-	case KeptArray:
-		// A sort step flattens a kept array like any sequence.
-		arr = v
+	case KeptArray, RawSequence:
+		// A sort step flattens a kept array or raw sequence like any sequence.
+		arr, _ = AsArray(v)
 		wasArray = false
 	case *Sequence:
 		collapsed := CollapseSequence(v)

@@ -84,6 +84,30 @@ func TestWithStack(t *testing.T) {
 	}
 }
 
+// TestWithStack_BuiltinTailCalls checks that a lambda recursing through a
+// higher-order built-in in tail position is held to the stack limit.
+func TestWithStack_BuiltinTailCalls(t *testing.T) {
+	for _, expr := range []string{
+		`($f := function($n){ $map([$n+1], $f) }; $f(0))`,
+		`($f := function($n){ $filter([$n+1], $f) }; $f(0))`,
+		`($f := function($n){ $reduce([$n, $n+1], function($a, $b){ $f($b) }) }; $f(0))`,
+		`($f := function($n){ $sort([$n, $n+1], function($a, $b){ $f($b) }) }; $f(0))`,
+		`($f := function($n){ $each({"k": $n+1}, $f) }; $f(0))`,
+		`($f := function($n){ $single([$n+1], $f) }; $f(0))`,
+		`($f := function($n){ ($map([$n+1], $f)) }; $f(0))`,
+	} {
+		t.Run(expr, func(t *testing.T) {
+			e, err := gnata.Compile(expr, gnata.WithStack(50))
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			if _, err := e.Eval(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "D1011") {
+				t.Fatalf("expected D1011, got %v", err)
+			}
+		})
+	}
+}
+
 func TestWithTimeout(t *testing.T) {
 	e, err := gnata.Compile("1..10000000#$i[$i % 2 = 0]", gnata.WithTimeout(1*time.Nanosecond))
 	if err != nil {

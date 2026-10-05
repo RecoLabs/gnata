@@ -99,7 +99,7 @@ func evalBlock(node *parser.Node, input any, env *Environment) (any, error) {
 		}
 		last = val
 	}
-	return last, nil
+	return settleRaw(last, node.KeepArray), nil
 }
 
 func evalCondition(node *parser.Node, input any, env *Environment) (any, error) {
@@ -107,13 +107,11 @@ func evalCondition(node *parser.Node, input any, env *Environment) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	if ToBoolean(cond) {
-		return Eval(node.Then, input, env)
+	branch := node.Then
+	if !ToBoolean(cond) {
+		branch = node.Else
 	}
-	if node.Else != nil {
-		return Eval(node.Else, input, env)
-	}
-	return nil, nil
+	return evalSettled(branch, input, env, node.KeepArray)
 }
 
 func evalBind(node *parser.Node, input any, env *Environment) (any, error) {
@@ -122,5 +120,5 @@ func evalBind(node *parser.Node, input any, env *Environment) (any, error) {
 		return nil, err
 	}
 	env.Bind(node.Left.Value, val)
-	return val, nil
+	return settleRaw(val, false), nil
 }

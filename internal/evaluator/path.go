@@ -161,11 +161,14 @@ func unnestCons(v any) any {
 	return v
 }
 
-// flattenKept returns the item of a KeptArray, which a path step flattens
-// like any sequence: o.(b[]) is 5.
+// flattenKept returns the item of a KeptArray or RawSequence, which a path
+// step flattens like any sequence: o.(b[]) is 5.
 func flattenKept(v any) any {
-	if kept, ok := v.(KeptArray); ok {
-		return kept[0]
+	switch a := v.(type) {
+	case KeptArray:
+		return a[0]
+	case RawSequence:
+		return a[0]
 	}
 	return v
 }
@@ -1208,7 +1211,7 @@ func evalPathStep(
 // evaluateStep does.
 func appendFlattened(seq *Sequence, val any) {
 	switch v := val.(type) {
-	case []any, KeptArray:
+	case []any, KeptArray, RawSequence:
 		arr, _ := AsArray(v)
 		seq.Values = append(seq.Values, arr...)
 	default:
@@ -1651,5 +1654,9 @@ func evalPathFunctionStep(step *parser.Node, item any, env *Environment) (any, e
 	if lam, isLambda := fn.(*Lambda); isLambda && len(args) < len(lam.Params) {
 		args = append([]any{item}, args...)
 	}
-	return callFunction(fn, args, item, env)
+	result, err := callFunction(fn, args, item, env)
+	if err != nil {
+		return nil, err
+	}
+	return CollapseAndKeep(result, step.KeepArray), nil
 }

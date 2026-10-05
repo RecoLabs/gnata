@@ -59,7 +59,7 @@ func deepEqNorm(a, b any) bool {
 			}
 		}
 		return true
-	case evaluator.ConsArray, evaluator.KeptArray:
+	case evaluator.ConsArray, evaluator.KeptArray, evaluator.RawSequence:
 		arr, _ := evaluator.AsArray(av)
 		return deepEqNorm(arr, b)
 	case map[string]any:

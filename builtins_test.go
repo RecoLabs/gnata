@@ -137,13 +137,41 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$keys()`, want: undefined},
 	{expr: `$spread([{"a":1,"b":2}, 3])`, want: `[{"a":1},{"b":2},3]`},
 	{expr: `$spread([])`, want: undefined},
+	{expr: `$map([[1,2]], function($v){$v})[0]`, want: `[1,2]`},
+	{expr: `$map([[1,2]], function($v){$v})[]`, want: `[[1,2]]`},
+	{expr: `$map([{"a":1}], $keys)`, want: `["a"]`},
 	{expr: `$map(a, $keys)[]`, data: pairsJSON, want: `[["b","c"],["b","c"]]`},
 	{expr: `$map(a, function($v){$v.b[]})`, data: pairsJSON, want: `[[1],[3]]`},
 	{expr: `$keys({"a":1})[]`, want: `["a"]`},
 	{expr: `$lookup([{"b":1}], "b")[]`, want: `[1]`},
+	{expr: `$lookup({"a":1}, "a")[]`, want: `1`},
+	{expr: `$sum([5])[]`, want: `5`},
+	{expr: `$string(1)[]`, want: `"1"`},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})`, want: `[1,2]`},
 	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[[0]]`, want: `[1,2]`},
 	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[true][]`, want: `[[1,2]]`},
 	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[0][]`, want: `[1,2]`},
+	{expr: `$map([{"a":1},{"b":2}], $keys)[0]`, want: `"a"`},
+	{expr: `$map([{"a":1}], $keys)[0]`, want: `"a"`},
+	{expr: `$map([{"a":1}], $keys)[]`, want: `[["a"]]`},
+	{expr: `$map([{"a":1},{"b":2}], $keys)[$ = "a"]`, want: `["a"]`},
+	{expr: `($m := $map([{"a":1}], $keys); $m)`, want: `"a"`},
+	{expr: `($m := $map([{"a":1}], $keys); $m[])`, want: `["a"]`},
+	{expr: `($map([{"a":1}], $keys))`, want: `"a"`},
+	{expr: `{"k": $map([{"a":1}], $keys)}`, want: `{"k":["a"]}`},
+	{expr: `{"k": $map([{"a":1}], $keys)}.k`, want: `"a"`},
+	{expr: `$each({"a":{"x":1},"b":{"y":1}}, $keys)[0]`, want: `"x"`},
+	{expr: `$map([{"a":1},{"b":2}], function($o){$keys($o)})`, want: `[["a"],["b"]]`},
+	{expr: `($x := 1; $map([1], function($v){$keys({"a":1})}))`, want: `"a"`},
+	{expr: `$map([1], function($v){$x := $keys({"a":1})})`, want: `"a"`},
+	{expr: `($f := function(){$keys({"a":1})[]}; $f())`, want: `"a"`},
+	{expr: `($f := function(){$keys({"a":1})}; $f()[])`, want: `["a"]`},
+	{expr: `a.$map($, $keys)`, data: pairsJSON, want: `["b","c","b","c"]`},
+	{expr: `$lookup([{"b":[1,2]},{"b":3}], "b")`, want: `[1,2,3]`},
+	{expr: `$lookup([{"b":[1,2]}], "b")[0]`, want: `1`},
+	{expr: `$lookup([[{"b":1}],{"b":2}], "b")`, want: `[1,2]`},
+	{expr: `$lookup({"a":null}, "a")`, want: `null`},
+	{expr: `q.$lookup(x, "k")`, data: `{"q":[{"x":[{"k":[1,2]}]},{"x":[{"k":[3]}]}]}`, want: `[1,2,3]`},
 }
 
 var numericBuiltinCases = []exprCase{
@@ -276,8 +304,35 @@ var stringBuiltinCases = []exprCase{
 	{expr: `$formatNumber(9.95, "0.0e0")`, want: `"1.0e1"`},
 }
 
+// tailAndCollapseCases cover where jsonata-js collapses a built-in's result
+// sequence: once, when an expression returns it, which a call in a lambda's
+// tail position skips.
+var tailAndCollapseCases = []exprCase{
+	{expr: `$map([{"a":1}], $keys) ?: 1`, want: `"a"`},
+	{expr: `$map([{"a":1}], $keys) ?? 1`, want: `"a"`},
+	{expr: `false ?: $map([{"a":1}], $keys)`, want: `"a"`},
+	{expr: `(o.b[] ?: 1)`, data: pairsJSON, want: `[5]`},
+	{expr: `a.$map([$], $keys)[0]`, data: pairsJSON, want: `["b","b"]`},
+	{expr: `a.($map([$], $keys)[0])`, data: pairsJSON, want: `["b","c","b","c"]`},
+	{expr: `($f := function(){$string()}; o.$f())`, data: pairsJSON, want: `"{\"b\":5,\"c\":6}"`},
+	{expr: `($y := 1; $f := function(){($y := 2; $eval("$y"))}; $f())`, want: `1`},
+	{expr: `($f := function(){$keys({"a":1,"b":2}){$: 1}}; $f())`, want: `["a","b"]`},
+	{expr: `($f := function($n){ $n > 3 ? $n : $map([$n+1], $f) }; $f(0))`, want: `[[4]]`},
+	{expr: `($f := function($n){($r := $n = 0 ? "done" : $f($n-1))}; $f(50))`, want: `"done"`},
+	{expr: `($ ~> |o|{"z": b[]}|).o.z`, data: pairsJSON, want: `5`},
+	{expr: `$filter(n, function($v){$v[0]=1})[0].$`, data: `{"n":[[1,2],[3]]}`, want: `[1,2]`},
+	{expr: `$map([{"a":1,"b":2}], $keys)[1].$`, want: undefined},
+	{expr: `o.$filter($$.n, function($v){$v[0]=1})[0]`, data: `{"n":[[1,2],[3]],"o":{}}`, want: `1`},
+	{expr: `o.$filter($$.n, function($v){$v[0]=1})[0][]`, data: `{"n":[[1,2],[3]],"o":{}}`, want: `[1,2]`},
+	{expr: `$map([1,2], function($v){$keys({"a":1}) ?: 0})`, want: `[["a"],["a"]]`},
+	{expr: `($f := function(){$keys({"a":1})[] ?: 0}; $f())`, want: `"a"`},
+	{expr: `$map([1], function($v){$zz ?? $keys({"a":1})})`, want: `["a"]`},
+	{expr: `($f := function($n){$n > 0 ? ($zz ?? $f($n-1)) : "d"}; $f(300))`, want: `"d"`},
+}
+
 func TestBuiltinResults(t *testing.T) {
 	t.Run("array and object", func(t *testing.T) { runExprCases(t, arrayAndObjectBuiltinCases) })
+	t.Run("tail calls and collapse", func(t *testing.T) { runExprCases(t, tailAndCollapseCases) })
 	t.Run("numeric", func(t *testing.T) { runExprCases(t, numericBuiltinCases) })
 	t.Run("string", func(t *testing.T) { runExprCases(t, stringBuiltinCases) })
 }

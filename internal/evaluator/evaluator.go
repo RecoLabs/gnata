@@ -115,7 +115,12 @@ func evalDescendant(input any, env *Environment) (any, error) {
 }
 
 // ApplyFunction is the public API used by the standard library to call
-// any function value (BuiltinFunction or *Lambda) with the given args.
+// any function value (BuiltinFunction or *Lambda) with the given args. The
+// result is an item the calling function holds (see holdResult).
 func ApplyFunction(fn any, args []any, focus any, env *Environment) (any, error) {
-	return callFunction(fn, args, focus, env)
+	result, err := callFunction(fn, args, focus, env)
+	if err != nil {
+		return nil, err
+	}
+	return holdResult(result), nil
 }

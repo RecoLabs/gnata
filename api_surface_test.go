@@ -246,6 +246,8 @@ func TestEvalResultHasNoInternalArrays(t *testing.T) {
 		`{"k": o.b[]}`,
 		`{"k": o.[b, c]}`,
 		`{"k": [{"j": o.b[]}]}`,
+		`$map([{"a":1}], $keys)`,
+		`{"k": $map([{"a":1}], $keys)}`,
 		`$ ~> |o|{"z": b[]}|`,
 	} {
 		t.Run(expr, func(t *testing.T) {

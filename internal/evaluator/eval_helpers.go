@@ -214,7 +214,7 @@ func containsValue(arr, elem any, prec int) bool {
 		return false
 	}
 	switch v := arr.(type) {
-	case []any, ConsArray, KeptArray:
+	case []any, ConsArray, KeptArray, RawSequence:
 		items, _ := AsArray(v)
 		for _, item := range items {
 			if DeepEqualPrec(item, elem, prec) {
@@ -248,13 +248,13 @@ func evalValue(node *parser.Node) (any, error) {
 
 func evalVariable(node *parser.Node, input any, env *Environment) (any, error) {
 	if node.Value == "" {
-		return input, nil
+		return settleRaw(input, node.KeepArray), nil
 	}
 	val, found := env.Lookup(node.Value)
 	if !found {
 		return nil, nil
 	}
-	return val, nil
+	return settleRaw(val, node.KeepArray), nil
 }
 
 // evalName's array-mapping semantics (flatten one level per step, track
@@ -296,7 +296,7 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 			// Flatten array results from navigating through arrays, except a
 			// constructed array, as jsonata-js evaluateStep does.
 			switch val.(type) {
-			case []any, KeptArray:
+			case []any, KeptArray, RawSequence:
 				inner, _ := AsArray(val)
 				for _, sv := range inner {
 					if sv == nil {
@@ -321,7 +321,7 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 			return seq.Values[0], nil
 		}
 		return CollapseSequence(seq), nil
-	case ConsArray, KeptArray:
+	case ConsArray, KeptArray, RawSequence:
 		arr, _ := AsArray(v)
 		return evalName(node, arr, nil)
 	case *Sequence:
@@ -332,8 +332,8 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 }
 
 // lookupItem looks a name up in one item of an array: an object's field
-// value as stored, so the caller can flatten a kept array it holds, or the
-// name's result for any other item.
+// value as stored, so the caller can flatten a kept array or raw sequence
+// it holds, or the name's result for any other item.
 func lookupItem(node *parser.Node, item any) (any, error) {
 	if !IsMap(item) {
 		return evalName(node, item, nil)
@@ -346,8 +346,8 @@ func lookupItem(node *parser.Node, item any) (any, error) {
 }
 
 // fieldValue returns a field's value as a name step yields it. jsonata-js
-// evaluates a name as a one-step path, which flattens a kept array the
-// field holds: {"k": o.b[]}.k is 5.
+// evaluates a name as a one-step path, which flattens a kept array or raw
+// sequence the field holds: {"k": o.b[]}.k is 5.
 func fieldValue(val any) any {
 	if val == nil {
 		return Null

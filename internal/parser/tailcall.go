@@ -24,8 +24,13 @@ func markTailPosition(node *Node) {
 		if len(node.Expressions) > 0 {
 			markTailPosition(node.Expressions[len(node.Expressions)-1])
 		}
-	case NodeBind:
-		markTailPosition(node.Right)
+	case NodeBinary:
+		// jsonata-js parses ?: and ?? as conditions whose branches are the
+		// operands, so both are in tail position.
+		if node.Value == "?:" || node.Value == "??" {
+			node.Thunk = true
+			markTailPosition(node.Right)
+		}
 	case NodeLambda:
 		// Nested lambdas get their own tail-call analysis at compile time.
 	}

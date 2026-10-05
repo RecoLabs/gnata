@@ -96,6 +96,7 @@ func processDotBinary(node *Node) (*Node, error) {
 		Group: node.Group, // propagate group-by expression (A.B{key:val})
 	}
 	markUnaryArraySteps(steps)
+	markSubscriptStages(steps)
 
 	// Propagate KeepSingletonArray when any step (or a subscript step's left side)
 	// has KeepArray=true. This covers both A[].B and A[][filter].B patterns.
@@ -249,6 +250,19 @@ func markUnaryArraySteps(steps []*Node) {
 	for i, step := range steps {
 		if (i > 0 || len(steps) == 1) && isUnaryArrayCtor(step) {
 			step.ConsArray = true
+		}
+	}
+}
+
+// markSubscriptStages flags the subscripts of each path step after the
+// first. jsonata-js applies them to the step's collapsed result, unlike a
+// predicate on the first step or a call outside a path, which sees the
+// call's whole sequence: a.$map([$], $keys)[0] picks the first key of each
+// item.
+func markSubscriptStages(steps []*Node) {
+	for _, step := range steps[min(1, len(steps)):] {
+		for n := step; n != nil && n.Type == NodeBinary && n.Value == "["; n = n.Left {
+			n.PathStage = true
 		}
 	}
 }

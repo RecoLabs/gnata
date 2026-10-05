@@ -34,6 +34,14 @@ type ConsArray []any
 // o.(b[]) is 5.
 type KeptArray []any
 
+// RawSequence is a one-item result sequence of a built-in that a
+// higher-order function holds as an item, as in $map([{"a":1}], $keys).
+// jsonata-js collapses a result sequence once, when an expression returns
+// it, so such an item reads as an array (that result is ["a"]) and a path
+// step flattens it, but an expression returning the item itself, such as a
+// variable, block or numeric subscript, collapses it to its value.
+type RawSequence []any
+
 // AsArray returns the slice behind a []any or a typed array (see typedArray).
 func AsArray(v any) ([]any, bool) {
 	if a, ok := v.([]any); ok {
@@ -42,16 +50,44 @@ func AsArray(v any) ([]any, bool) {
 	return typedArray(v)
 }
 
-// typedArray returns the slice behind a ConsArray or KeptArray, the
-// evaluator's internal array types.
+// typedArray returns the slice behind a ConsArray, KeptArray or RawSequence,
+// the evaluator's internal array types.
 func typedArray(v any) ([]any, bool) {
 	switch a := v.(type) {
 	case ConsArray:
 		return []any(a), true
 	case KeptArray:
 		return []any(a), true
+	case RawSequence:
+		return []any(a), true
 	}
 	return nil, false
+}
+
+// settleRaw returns the result of an expression that evaluated to v: a
+// RawSequence collapses to its item, or with keepArray (the [] suffix)
+// becomes a KeptArray, as jsonata-js collapses a returned sequence. Every
+// evaluator that can return a child's value unchanged (variable, block,
+// condition, bind, ?:, ??, a number-literal subscript) applies it; a
+// function call applies it through CollapseAndKeep.
+func settleRaw(v any, keepArray bool) any {
+	raw, ok := v.(RawSequence)
+	switch {
+	case !ok:
+		return v
+	case keepArray:
+		return KeptArray(raw)
+	}
+	return raw[0]
+}
+
+// evalSettled evaluates node and settles its result (see settleRaw).
+func evalSettled(node *parser.Node, input any, env *Environment, keepArray bool) (any, error) {
+	result, err := Eval(node, input, env)
+	if err != nil {
+		return nil, err
+	}
+	return settleRaw(result, keepArray), nil
 }
 
 // StripTypedArrays converts the evaluator's internal array types to []any,
@@ -150,24 +186,34 @@ func CollapseSequence(s *Sequence) any {
 	}
 }
 
-// CollapseAndKeep normalizes a function call result. A *Sequence collapses
-// to a single value, an array or undefined; with keepArray (the [] suffix) a
-// one-item result is kept as a KeptArray instead.
+// CollapseAndKeep normalizes a function call result, as jsonata-js
+// collapses the sequence an expression returns: a *Sequence collapses to a
+// single value, an array or undefined, and with keepArray (the [] suffix) a
+// one-item sequence becomes a KeptArray instead. [] leaves a result that is
+// not a sequence unchanged: $sum([5])[] is 5.
 func CollapseAndKeep(result any, keepArray bool) any {
-	if seq, ok := result.(*Sequence); ok {
-		if keepArray && len(seq.Values) == 1 {
-			return KeptArray{seq.Values[0]}
-		}
-		result = CollapseSequence(seq)
+	seq, ok := result.(*Sequence)
+	if !ok {
+		return settleRaw(result, keepArray)
 	}
-	if !keepArray {
+	if keepArray && len(seq.Values) == 1 {
+		return KeptArray{seq.Values[0]}
+	}
+	return CollapseSequence(seq)
+}
+
+// holdResult normalizes a function result a higher-order function holds as
+// an item: unlike CollapseAndKeep, it keeps a one-item sequence as a
+// RawSequence.
+func holdResult(result any) any {
+	seq, ok := result.(*Sequence)
+	switch {
+	case !ok:
 		return result
+	case len(seq.Values) == 1:
+		return RawSequence{seq.Values[0]}
 	}
-	switch result.(type) {
-	case nil, []any, ConsArray, KeptArray:
-		return result
-	}
-	return KeptArray{result}
+	return CollapseSequence(seq)
 }
 
 // IsArray reports whether AsArray accepts v (a *Sequence is not an array).
@@ -225,7 +271,7 @@ func ToBoolean(v any) bool {
 		return val.Len() > 0
 	case map[string]any:
 		return len(val) > 0
-	case []any, ConsArray, KeptArray:
+	case []any, ConsArray, KeptArray, RawSequence:
 		arr, _ := AsArray(val)
 		return arrayToBoolean(arr)
 	case *Sequence:
@@ -296,7 +342,7 @@ func DeepEqualPrec(a, b any, prec int) bool { //nolint:gocyclo // type-switch fa
 	case string:
 		bv, ok := b.(string)
 		return ok && av == bv
-	case []any, ConsArray, KeptArray:
+	case []any, ConsArray, KeptArray, RawSequence:
 		bv, ok := AsArray(b)
 		avSlice, _ := AsArray(av)
 		if !ok || len(avSlice) != len(bv) {

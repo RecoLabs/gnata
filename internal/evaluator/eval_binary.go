@@ -42,25 +42,25 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 
 	case "?:":
 		// Elvis / default: return left if ToBoolean(left) is true, else right.
-		left, err := Eval(node.Left, input, env)
+		left, result, err := evalDefaultLeft(node, input, env)
 		if err != nil {
 			return nil, err
 		}
-		if ToBoolean(left) {
-			return left, nil
+		if !ToBoolean(left) {
+			return evalSettled(node.Right, input, env, false)
 		}
-		return Eval(node.Right, input, env)
+		return result, nil
 
 	case "??":
 		// Null-coalescing: return left if not null/undefined, else right.
-		left, err := Eval(node.Left, input, env)
+		left, result, err := evalDefaultLeft(node, input, env)
 		if err != nil {
 			return nil, err
 		}
-		if left != nil {
-			return left, nil
+		if left == nil {
+			return evalSettled(node.Right, input, env, false)
 		}
-		return Eval(node.Right, input, env)
+		return result, nil
 
 	case "~>":
 		// Chain/pipe: pass left as the first argument to the right-hand function.
@@ -159,6 +159,19 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 	}
 }
 
+// evalDefaultLeft evaluates the left operand of ?: or ??, returning its
+// value and the operator's result when it picks that operand. In a lambda's
+// tail position jsonata-js returns a call there uncollapsed, as it does a
+// tail call (see markTailPosition).
+func evalDefaultLeft(node *parser.Node, input any, env *Environment) (left, result any, err error) {
+	if node.Thunk && node.Left.Type == parser.NodeFunction {
+		result, err = evalFunctionSequence(node.Left, input, env)
+		return CollapseAndKeep(result, false), result, err
+	}
+	left, err = Eval(node.Left, input, env)
+	return left, settleRaw(left, false), err
+}
+
 func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) {
 	// When Left is a Block containing a single path expression and the
 	// predicate references % (parent), evaluate the inner path in tuple mode
@@ -196,7 +209,7 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 }
 
 // pickItem applies a number-literal subscript. As in jsonata-js, an array
-// item it picks is the whole result.
+// item it picks is the whole result, collapsed like a returned sequence.
 func pickItem(index *parser.Node, items []any, keepArray bool, env *Environment) (any, error) {
 	i, _, err := subscriptIndex(evalNumber(index, env), len(items))
 	if err != nil || i < 0 || i >= len(items) {
@@ -204,7 +217,7 @@ func pickItem(index *parser.Node, items []any, keepArray bool, env *Environment)
 	}
 	item := items[i]
 	if _, isArr := AsArray(item); isArr {
-		return item, nil
+		return settleRaw(item, keepArray), nil
 	}
 	if item == nil {
 		item = Null
@@ -313,7 +326,17 @@ func contextFree(predicate *parser.Node, indexVar string) bool {
 // evalSubscriptLeft evaluates the left side of a subscript and normalizes
 // the result to a slice. Returns (left, items, err); left==nil means no match.
 func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any, items []any, err error) {
-	left, err = Eval(node.Left, input, env)
+	switch {
+	case node.Left.Type == parser.NodeFunction && node.PathStage:
+		// A [] keeps the call's one-item sequence before its stages run.
+		if left, err = evalFunctionSequence(node.Left, input, env); err == nil {
+			left = CollapseAndKeep(left, parser.ChainKeepsArray(node))
+		}
+	case node.Left.Type == parser.NodeFunction:
+		left, err = evalFunctionSequence(node.Left, input, env)
+	default:
+		left, err = Eval(node.Left, input, env)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

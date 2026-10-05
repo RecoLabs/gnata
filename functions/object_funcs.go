@@ -292,29 +292,39 @@ func fnLookup(args []any, _ any) (any, error) {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("$lookup: key must be a string, got %T", args[1])}
 	}
 
-	if evaluator.IsMap(args[0]) {
-		val, exists := evaluator.MapGet(args[0], key)
-		if !exists {
-			return nil, nil
-		}
-		return val, nil
-	}
-	if arr, ok := args[0].([]any); ok {
-		var result []any
+	return lookupKey(args[0], key), nil
+}
+
+// lookupKey returns the value of key in an object, or, as jsonata-js lookup
+// does, a sequence of the values in each item of an array, recursively,
+// flattening array values.
+func lookupKey(input any, key string) any {
+	if arr, ok := evaluator.AsArray(input); ok {
+		seq := evaluator.CreateSequence()
 		for _, item := range arr {
-			if evaluator.IsMap(item) {
-				if val, exists := evaluator.MapGet(item, key); exists {
-					result = append(result, val)
+			switch res := lookupKey(item, key).(type) {
+			case nil:
+			case *evaluator.Sequence:
+				seq.Values = append(seq.Values, res.Values...)
+			default:
+				values, isArr := evaluator.AsArray(res)
+				if !isArr {
+					seq.Values = append(seq.Values, res)
+					continue
+				}
+				for _, v := range values {
+					if v == nil {
+						v = evaluator.Null
+					}
+					seq.Values = append(seq.Values, v)
 				}
 			}
 		}
-		if len(result) == 0 {
-			return nil, nil
-		}
-		if len(result) == 1 {
-			return result[0], nil
-		}
-		return result, nil
+		return seq
 	}
-	return nil, nil
+	val, ok := evaluator.MapGet(input, key)
+	if ok && val == nil {
+		return evaluator.Null
+	}
+	return val
 }
