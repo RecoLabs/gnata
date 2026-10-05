@@ -334,6 +334,27 @@ expr, err := gnata.Compile(userExpr,
 
 All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds every major sequence-growth path: the range operator, `$append`, `$map`, `$filter`, `$each`, wildcard (`*`), and descendant (`**`). Use guardrails when evaluating expressions from an untrusted source.
 
+### Decimal Precision
+
+By default gnata computes and compares numbers in float64, so values beyond 2^53 and decimals such as `0.1 + 0.2` are rounded. `WithDecimalPrecision` opts in to decimal floating point, rounded half to even to a given number of significant digits:
+
+```go
+expr, err := gnata.Compile(`$sum(items.amount) = total`,
+    gnata.WithDecimalPrecision(78), // 17–100 digits; 78 covers uint256
+)
+```
+
+`0` (the default) leaves it off. Number literals, arithmetic (including fractional powers), comparisons, equality of arrays and objects, `in`, sorting, `$distinct`, `$string` and the numeric builtins (`$number`, `$sum`, `$round`, `$sqrt`, `$power`, ...) then work in decimal. Results computed in decimal are `json.Number` values with up to that many digits; other numbers keep their type, so results and custom-function arguments may be `float64` or `json.Number`. A `float64` counts as its shortest decimal form, so `0.1` is exactly `0.1`. `$formatNumber` is exact too, so `$formatNumber(1.015, '0.00')` gives `"1.02"` rather than float64's `"1.01"`. So is `$formatBase`, e.g. a uint256 in hex with `$formatBase(value, 16)`.
+
+Input numbers keep more digits than float64 holds only if gnata sees their text: pass raw JSON to `EvalBytes`, `EvalMap` or a `StreamEvaluator`, or decode with `json.Decoder.UseNumber()` before calling `Eval`. Magnitudes stay within the float64 range, with the same out-of-range errors.
+
+The arithmetic comes from a copy of [cockroachdb/apd](https://github.com/cockroachdb/apd) in `internal/third_party/apd`, an implementation of the General Decimal Arithmetic specification. A fractional power is the costliest operation, about a millisecond at 100 digits. The decimal support adds about 140 KB (11%) to a TinyGo WebAssembly build, whether or not it is enabled.
+
+These still use float64:
+
+- `$formatInteger` and `$parseInteger`, which are exact only up to 2^53.
+- The date/time functions. Millisecond timestamps fit in float64 exactly.
+
 ## Known Behavioral Differences from jsonata-js
 
 gnata targets exact parity with the JSONata reference implementation ([jsonata-js](https://github.com/jsonata-js/jsonata)). The differences below stem from platform differences between Go and JavaScript, not implementation bugs. In every case gnata's behavior is spec-correct or more correct than jsonata-js.
@@ -369,6 +390,7 @@ gnata/
 ├── bounded_cache.go             # Lock-free FIFO ring-buffer plan cache
 ├── deep_equal.go                # JSONata-compatible deep equality
 ├── internal/
+│   ├── decimal/                 # Decimal floating point for WithDecimalPrecision
 │   ├── lexer/                   # Tokenizer (all JSONata 2.x token types)
 │   ├── parser/                  # Pratt parser, AST, processAST, fast-path analysis
 │   └── evaluator/               # Core eval dispatch, environment, OrderedMap, signatures
@@ -388,6 +410,7 @@ gnata/
 │   ├── string_format_number.go  # $formatNumber (XSLT 3.0 picture strings)
 │   ├── string_format_integer.go # $formatInteger, $formatBase, $parseInteger
 │   ├── numeric_funcs.go         # $sum, $round, $power, etc.
+│   ├── numeric_decimal.go       # Decimal variants used under WithDecimalPrecision
 │   ├── array_funcs.go           # $sort, $distinct, $flatten, etc.
 │   ├── object_funcs.go          # $keys, $values, $merge, $sift, $each
 │   ├── hof_funcs.go             # $map, $filter, $reduce, $single
