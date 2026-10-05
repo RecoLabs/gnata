@@ -102,42 +102,102 @@ func valueToString(v any, prettify bool, prec int) (string, error) {
 // sanitizeForJSON replaces function values with "" so they can be JSON-marshaled,
 // and under decimal precision prec lays out numbers as valueToString does.
 // For *OrderedMap, returns a new *OrderedMap preserving insertion order.
+//
+// It copies nested objects and arrays from an explicit stack of slots to fill
+// rather than by recursion, so a deeply nested value cannot overflow the
+// goroutine stack.
 func sanitizeForJSON(v any, prec int) any {
-	if evaluator.IsNull(v) {
-		return nil
+	var buf [8]sanitizeSlot
+	out, pending := sanitizeValue(v, prec, buf[:0])
+	for len(pending) > 0 {
+		slot := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		var val any
+		val, pending = sanitizeValue(slot.src, prec, pending)
+		slot.fill(val)
+	}
+	return out
+}
+
+// sanitizeSlot is a place in a copied object or array still to be filled
+// with the sanitized copy of src, itself an object or an array.
+type sanitizeSlot struct {
+	src   any
+	array []any
+	index int
+	obj   *evaluator.OrderedMap
+	key   string
+}
+
+func (s sanitizeSlot) fill(v any) {
+	if s.obj != nil {
+		s.obj.Set(s.key, v)
+		return
+	}
+	s.array[s.index] = v
+}
+
+// sanitizeValue sanitizes v. Of a copied object or array it fills in the
+// values that are neither, and appends slots for the rest to pending.
+func sanitizeValue(v any, prec int, pending []sanitizeSlot) (any, []sanitizeSlot) {
+	if out, ok := sanitizeLeaf(v, prec); ok {
+		return out, pending
 	}
 	switch val := v.(type) {
 	case *evaluator.Sequence:
-		return sanitizeForJSON(evaluator.CollapseSequence(val), prec)
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return ""
+		return sanitizeValue(evaluator.CollapseSequence(val), prec, pending)
 	case *evaluator.OrderedMap:
 		out := evaluator.NewOrderedMapWithCapacity(val.Len())
-		val.Range(func(k string, v any) bool {
-			out.Set(k, sanitizeForJSON(v, prec))
-			return true
-		})
-		return out
+		for _, k := range val.Keys() {
+			item, _ := val.Get(k)
+			sanitized, ok := sanitizeLeaf(item, prec)
+			if !ok {
+				pending = append(pending, sanitizeSlot{src: item, obj: out, key: k})
+			}
+			out.Set(k, sanitized)
+		}
+		return out, pending
 	case map[string]any:
 		out := evaluator.NewOrderedMapWithCapacity(len(val))
 		for _, k := range evaluator.MapKeys(val) {
-			out.Set(k, sanitizeForJSON(val[k], prec))
+			item := val[k]
+			sanitized, ok := sanitizeLeaf(item, prec)
+			if !ok {
+				pending = append(pending, sanitizeSlot{src: item, obj: out, key: k})
+			}
+			out.Set(k, sanitized)
 		}
-		return out
+		return out, pending
 	case []any:
-		out := make([]any, 0, len(val))
-		for _, v := range val {
-			out = append(out, sanitizeForJSON(v, prec))
+		out := make([]any, len(val))
+		for i, item := range val {
+			var ok bool
+			if out[i], ok = sanitizeLeaf(item, prec); !ok {
+				pending = append(pending, sanitizeSlot{src: item, array: out, index: i})
+			}
 		}
-		return out
+		return out, pending
+	}
+	return v, pending
+}
+
+// sanitizeLeaf sanitizes v unless it is an object, an array or a sequence,
+// which it reports with ok false and a nil value.
+func sanitizeLeaf(v any, prec int) (any, bool) {
+	if evaluator.IsNull(v) {
+		return nil, true
+	}
+	switch val := v.(type) {
+	case *evaluator.Sequence, *evaluator.OrderedMap, map[string]any, []any:
+		return nil, false
+	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+		return "", true
 	case json.Number, float64:
 		if s, ok := evaluator.FormatDecimal(val, prec); ok {
-			return json.Number(s)
+			return json.Number(s), true
 		}
-		return v
-	default:
-		return v
 	}
+	return v, true
 }
 
 // ── $length ───────────────────────────────────────────────────────────────────

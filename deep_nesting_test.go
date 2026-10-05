@@ -40,3 +40,50 @@ func TestDeepNestingMarshal(t *testing.T) {
 		t.Fatal("marshaled JSON differs from the built object")
 	}
 }
+
+func deepArray() any {
+	var v any = 1.0
+	for range deepNesting {
+		v = []any{v}
+	}
+	return v
+}
+
+func deepObject() any {
+	var v any = 1.0
+	for range deepNesting {
+		v = map[string]any{"a": v}
+	}
+	return v
+}
+
+func TestDeepNesting(t *testing.T) {
+	limitStack(t)
+	arrayJSON := strings.Repeat("[", deepNesting) + "1" + strings.Repeat("]", deepNesting)
+	objectJSON := strings.Repeat(`{"a":`, deepNesting) + "1" + strings.Repeat("}", deepNesting)
+	testCases := []struct {
+		desc string
+		expr string
+		data any
+		want any
+	}{
+		{desc: "encode an array", expr: "$length($string($))", data: deepArray(), want: float64(len(arrayJSON))},
+		{desc: "encode an object", expr: "$length($string($))", data: deepObject(), want: float64(len(objectJSON))},
+		{desc: "encode built objects", expr: "$length($string(" + deepBuilt + "))", want: float64(len(objectJSON))},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := e.Eval(context.Background(), tC.data)
+			if err != nil {
+				t.Fatalf("eval: %v", err)
+			}
+			if got != tC.want {
+				t.Fatalf("got %v, want %v", got, tC.want)
+			}
+		})
+	}
+}
