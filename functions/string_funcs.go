@@ -300,6 +300,9 @@ func fnPad(args []any, _ any) (any, error) {
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$pad: argument 1 must be a string"}
 	}
+	if args[1] == nil {
+		return s, nil
+	}
 	widthF, widthOk := evaluator.ToFloat64(args[1])
 	if !widthOk {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$pad: argument 2 must be a number"}

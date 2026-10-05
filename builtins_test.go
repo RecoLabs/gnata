@@ -478,6 +478,9 @@ var builtinContextCases = []exprCase{
 	{expr: `x.$number(nothing)`, data: `{"x":"5"}`, want: undefined},
 	{expr: `x.$fromMillis(nothing)`, data: `{"x":0}`, want: undefined},
 	{expr: `x.$string(nothing)`, data: `{"x":"a"}`, want: undefined},
+	{expr: `$pad(nothing)`, data: `"ab"`, want: `"ab"`},
+	{expr: `$pad(nothing, "x")`, data: `"ab"`, want: `"ab"`},
+	{expr: `$pad("ab", nothing)`, want: `"ab"`},
 	// A context value of the wrong type raises T0411.
 	{expr: `n.$length()`, data: `{"n":1}`, code: "T0411"},
 	{expr: `s.$abs()`, data: `{"s":"x"}`, code: "T0411"},
