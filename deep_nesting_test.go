@@ -42,7 +42,12 @@ func TestDeepNestingMarshal(t *testing.T) {
 }
 
 func deepArray() any {
-	var v any = 1.0
+	return deepArrayOf(1.0)
+}
+
+// deepArrayOf nests leaf in deepNesting arrays.
+func deepArrayOf(leaf any) any {
+	v := leaf
 	for range deepNesting {
 		v = []any{v}
 	}
@@ -75,6 +80,7 @@ func TestDeepNesting(t *testing.T) {
 		{desc: "descendants of an object", expr: "$count([**])", data: deepObject(), want: float64(deepNesting)},
 		{desc: "encode built objects", expr: "$length($string(" + deepBuilt + "))", want: float64(len(objectJSON))},
 		{desc: "compare built objects", expr: "($f := function(){" + deepBuilt + "}; $f() = $f())", want: true},
+		{desc: "field over nested arrays", expr: "a", data: deepArrayOf(map[string]any{"a": 1.0}), want: 1.0},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {

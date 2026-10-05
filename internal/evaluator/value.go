@@ -113,6 +113,18 @@ func CollapseSequence(s *Sequence) any {
 	}
 }
 
+// CollapseSequences collapses v while it is a sequence, a lone item of which
+// can be a sequence itself.
+func CollapseSequences(v any) any {
+	for {
+		seq, ok := v.(*Sequence)
+		if !ok {
+			return v
+		}
+		v = CollapseSequence(seq)
+	}
+}
+
 // CollapseAndKeep normalizes a function call result for callers that need
 // KeepArray (the [] suffix) support. Builtins returning *Sequence rely on
 // CollapseSequence; when keepArray is true, singletons are preserved as

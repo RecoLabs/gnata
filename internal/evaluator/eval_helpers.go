@@ -262,9 +262,19 @@ func evalVariable(node *parser.Node, input any, env *Environment) (any, error) {
 // path_bytes.go's walkPureSteps/stepArray for the gjson-based fast path.
 // Keep the two in sync: a change here needs the matching change there.
 func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
-	switch v := input.(type) {
+	val, items := nameLookup(node.Value, input)
+	if items == nil {
+		return val, nil
+	}
+	return nameOverArray(node.Value, items), nil
+}
+
+// nameLookup returns the value of field key in input, or input's items when
+// it is an array, which nameOverArray maps the lookup over.
+func nameLookup(key string, input any) (val any, items []any) {
+	switch v := CollapseSequences(input).(type) {
 	case *OrderedMap:
-		val, ok := v.Get(node.Value)
+		val, ok := v.Get(key)
 		if !ok {
 			return nil, nil
 		}
@@ -273,7 +283,7 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 		}
 		return val, nil
 	case map[string]any:
-		val, ok := v[node.Value]
+		val, ok := v[key]
 		if !ok {
 			return nil, nil
 		}
@@ -282,54 +292,115 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 		}
 		return val, nil
 	case []any:
-		// JSONata maps field lookups across arrays.
-		// Per the JSONata spec, array results from each field lookup are
-		// flattened into the result sequence (not nested).
-		seq := CreateSequence()
-		fieldFound := false
-		for _, item := range v {
-			val, err := evalName(node, item, nil)
-			if err != nil {
-				return nil, err
-			}
-			if val == nil {
-				continue
-			}
-			fieldFound = true
-			// Flatten plain []any results from navigating through arrays.
-			// This matches JSONata's automatic flattening semantics.
-			switch inner := val.(type) {
-			case []any:
-				for _, sv := range inner {
-					if sv == nil {
-						sv = Null
-					}
-					seq.Values = append(seq.Values, sv)
-				}
-			default:
-				appendToSequence(seq, val)
-			}
+		if v == nil {
+			return nil, []any{}
 		}
-		if len(seq.Values) == 0 {
-			if fieldFound {
-				// At least one element had this field defined (e.g. as an
-				// empty array []). Return empty array rather than nil so
-				// downstream $exists sees the field as present.
-				return []any{}, nil
-			}
-			return nil, nil
-		}
-		if len(seq.Values) == 1 {
-			return seq.Values[0], nil
-		}
-		return CollapseSequence(seq), nil
+		return nil, v
 	case ConsArray:
-		return evalName(node, []any(v), nil)
-	case *Sequence:
-		return evalName(node, CollapseSequence(v), nil)
-	default:
-		return nil, nil
+		if v == nil {
+			return nil, []any{}
+		}
+		return nil, v
 	}
+	return nil, nil
+}
+
+// nameFrame is an array nameOverArray is mapping a field lookup over: its
+// items, the index of the next one, and the values found so far.
+type nameFrame struct {
+	items []any
+	index int
+	seq   Sequence
+	found bool
+}
+
+// nameOverArray maps the lookup of field key over items. JSONata maps field
+// lookups across arrays; per the JSONata spec, array results from each
+// field lookup are flattened into the result sequence (not nested). Nested
+// arrays are mapped from an explicit stack of frames rather than by
+// recursion, so deep nesting cannot overflow the goroutine stack.
+func nameOverArray(key string, items []any) any {
+	frame := newNameFrame(items)
+	for frame.index < len(frame.items) {
+		item := frame.items[frame.index]
+		frame.index++
+		val, nested := nameLookup(key, item)
+		if nested != nil {
+			return nameOverNested(key, &frame, nested)
+		}
+		frame.add(val)
+	}
+	return frame.result()
+}
+
+// nameOverNested continues nameOverArray from frame once an item of it is
+// the array nested, keeping the frames of enclosing arrays on a stack.
+func nameOverNested(key string, frame *nameFrame, nested []any) any {
+	var buf [4]nameFrame
+	stack := append(buf[:0], *frame, newNameFrame(nested))
+	for {
+		top := &stack[len(stack)-1]
+		if top.index == len(top.items) {
+			val := top.result()
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return val
+			}
+			stack[len(stack)-1].add(val)
+			continue
+		}
+		item := top.items[top.index]
+		top.index++
+		val, nested := nameLookup(key, item)
+		if nested != nil {
+			stack = append(stack, newNameFrame(nested))
+			continue
+		}
+		top.add(val)
+	}
+}
+
+// newNameFrame starts mapping over items with a sequence like
+// CreateSequence's, held in the frame so it need not be allocated.
+func newNameFrame(items []any) nameFrame {
+	return nameFrame{items: items, seq: Sequence{Values: make([]any, 0, 4)}}
+}
+
+// add adds the lookup's value for one item to the frame.
+func (f *nameFrame) add(val any) {
+	if val == nil {
+		return
+	}
+	f.found = true
+	// Flatten plain []any results from navigating through arrays.
+	// This matches JSONata's automatic flattening semantics.
+	if inner, ok := val.([]any); ok {
+		for _, sv := range inner {
+			if sv == nil {
+				sv = Null
+			}
+			f.seq.Values = append(f.seq.Values, sv)
+		}
+		return
+	}
+	appendToSequence(&f.seq, val)
+}
+
+// result is the lookup's value over the frame's array.
+func (f *nameFrame) result() any {
+	switch len(f.seq.Values) {
+	case 0:
+		if f.found {
+			// At least one element had this field defined (e.g. as an
+			// empty array []). Return empty array rather than nil so
+			// downstream $exists sees the field as present.
+			return []any{}
+		}
+		return nil
+	case 1:
+		return f.seq.Values[0]
+	}
+	return CollapseSequence(&f.seq)
 }
 
 func evalWildcard(_ *parser.Node, input any, env *Environment) (any, error) {
