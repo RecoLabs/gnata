@@ -56,7 +56,6 @@ func parseError(code, tok, msg string) error {
 type Parser struct {
 	lex     *lexer.Lexer
 	token   lexer.Token
-	infix   bool
 	src     string
 	initErr error // error from initial lexer prime
 }
@@ -64,9 +63,8 @@ type Parser struct {
 // NewParser creates a new Parser for the given source string.
 func NewParser(src string) *Parser {
 	p := &Parser{
-		lex:   lexer.NewLexer(src),
-		src:   src,
-		infix: false,
+		lex: lexer.NewLexer(src),
+		src: src,
 	}
 	// Prime the lookahead.
 	tok, err := p.lex.Next(false)
@@ -77,45 +75,61 @@ func NewParser(src string) *Parser {
 	return p
 }
 
-// advance reads the next token from the lexer.
+// The lexer reads '/' as division in infix position and as a regex in prefix
+// position, and jsonata-js picks the position per token rather than from the
+// grammar. The token after the first token of an expression is read in infix
+// position, whether that first token is an operand or an opener ([, {, (, -
+// or |), so [/a/] raises S0211. The token after an operator, a separator, the
+// [ or ( of a subscript, call, lambda or sort, or the { of a group is read in
+// prefix position. Among closers, the ] of an array or predicate, the } of an
+// object or group and the ) of a block, call or lambda parameter list are
+// followed by infix position; an empty [], a sort's ), a lambda body's } and
+// a transform's closing | by prefix position.
+
+// advance reads the next token in prefix position.
 func (p *Parser) advance() error {
-	tok, err := p.lex.Next(p.infix)
+	return p.next(false)
+}
+
+// advanceInfix reads the next token in infix position.
+func (p *Parser) advanceInfix() error {
+	return p.next(true)
+}
+
+func (p *Parser) next(infix bool) error {
+	tok, err := p.lex.Next(infix)
 	if err != nil {
 		return err
 	}
 	p.token = tok
-	p.infix = false
 	return nil
 }
 
-// advancePrefix reads the next token forcing prefix position (infix=false).
-// Use after consuming separators/delimiters (comma, semicolon, opening bracket)
-// where the next token starts a new expression and must be treated as prefix
-// (e.g., / should be lexed as regex, not division).
-func (p *Parser) advancePrefix() error {
-	p.infix = false
-	return p.advance()
+func (p *Parser) expect(tt lexer.TokenType) error {
+	if p.token.Type != tt {
+		return parseError("S0202",
+			p.token.Value,
+			fmt.Sprintf("expected token %d, got %d (%q)", tt, p.token.Type, p.token.Value))
+	}
+	return nil
 }
 
-// consume advances past a token that must have the given type.
+// consume advances past a token that must have the given type, reading the
+// next token in prefix position.
 func (p *Parser) consume(tt lexer.TokenType) error {
-	if p.token.Type != tt {
-		return parseError("S0202",
-			p.token.Value,
-			fmt.Sprintf("expected token %d, got %d (%q)", tt, p.token.Type, p.token.Value))
+	if err := p.expect(tt); err != nil {
+		return err
 	}
 	return p.advance()
 }
 
-// consumePrefix advances past a token that must have the given type, then
-// forces the next token read to use prefix position.
-func (p *Parser) consumePrefix(tt lexer.TokenType) error {
-	if p.token.Type != tt {
-		return parseError("S0202",
-			p.token.Value,
-			fmt.Sprintf("expected token %d, got %d (%q)", tt, p.token.Type, p.token.Value))
+// consumeInfix advances past a token that must have the given type, reading
+// the next token in infix position.
+func (p *Parser) consumeInfix(tt lexer.TokenType) error {
+	if err := p.expect(tt); err != nil {
+		return err
 	}
-	return p.advancePrefix()
+	return p.advanceInfix()
 }
 
 // Parse parses the full expression and returns the root AST node.
@@ -173,8 +187,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		return nil, parseError("S0201", "EOF", "unexpected end of expression")
 
 	case lexer.TokenName:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		// Special case: lambda keyword — only when followed by '('.
@@ -185,43 +198,37 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 
 	case lexer.TokenAnd, lexer.TokenOr, lexer.TokenIn:
 		// "and" / "or" / "in" can appear as field names in prefix position.
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeName, Value: tok.Value, Pos: tok.Pos}, nil
 
 	case lexer.TokenVariable:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeVariable, Value: tok.Value, Pos: tok.Pos}, nil
 
 	case lexer.TokenString:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeString, Value: tok.Value, Pos: tok.Pos}, nil
 
 	case lexer.TokenNumber:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeNumber, Value: tok.Value, NumVal: tok.NumVal, Pos: tok.Pos}, nil
 
 	case lexer.TokenValue:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeValue, Value: tok.Value, Pos: tok.Pos}, nil
 
 	case lexer.TokenRegex:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		// Store pattern/flags in Value field.
@@ -232,7 +239,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		return &Node{Type: NodeRegex, Value: val, Pos: tok.Pos}, nil
 
 	case lexer.TokenMinus:
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		sub, err := p.expression(70)
@@ -252,22 +259,19 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		return &Node{Type: NodeUnary, Value: "-", Expression: sub, Pos: tok.Pos}, nil
 
 	case lexer.TokenStar:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeWildcard, Value: "*", Pos: tok.Pos}, nil
 
 	case lexer.TokenStarStar:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeDescendant, Value: "**", Pos: tok.Pos}, nil
 
 	case lexer.TokenPercent:
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeParent, Value: "%", Pos: tok.Pos}, nil
@@ -275,7 +279,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 	case lexer.TokenLBracket:
 		// Array constructor.
 		pos := tok.Pos
-		if err := p.advancePrefix(); err != nil { // after [, next token is prefix
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		var exprs []*Node
@@ -289,7 +293,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 			}
 			exprs = append(exprs, expr)
 			if p.token.Type == lexer.TokenComma {
-				if err := p.advancePrefix(); err != nil { // after comma, next token is prefix
+				if err := p.advance(); err != nil {
 					return nil, err
 				}
 			} else if p.token.Type != lexer.TokenRBracket {
@@ -302,8 +306,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 				}
 			}
 		}
-		p.infix = true
-		if err := p.advance(); err != nil { // consume ]
+		if err := p.advanceInfix(); err != nil { // consume ]
 			return nil, err
 		}
 		return &Node{Type: NodeUnary, Value: "[", Expressions: exprs, Pos: pos}, nil
@@ -311,15 +314,14 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 	case lexer.TokenLBrace:
 		// Object constructor.
 		pos := tok.Pos
-		if err := p.advancePrefix(); err != nil { // after {, next token is prefix
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		pairs, err := p.parseObjectPairs()
 		if err != nil {
 			return nil, err
 		}
-		p.infix = true
-		if err := p.advance(); err != nil { // consume }
+		if err := p.advanceInfix(); err != nil { // consume }
 			return nil, err
 		}
 		return &Node{Type: NodeUnary, Value: "{", LHS: pairs, Pos: pos}, nil
@@ -355,19 +357,20 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 	if err := p.consume(lexer.TokenLParen); err != nil {
 		return nil, err
 	}
+	// Like jsonata-js, parse each parameter as an expression and require a
+	// $variable only once the list has parsed, so function($x/2) is S0208
+	// but function($x/) reports the parse error. #, @ and a group make the
+	// parameter an expression in jsonata-js; a trailing [] does not.
 	var params []*Node
 	for p.token.Type != lexer.TokenRParen {
 		if p.token.Type == lexer.TokenEOF {
 			return nil, parseError("S0202", "EOF", "expected ) in lambda parameter list")
 		}
-		if p.token.Type != lexer.TokenVariable {
-			return nil, parseError("S0208", p.token.Value, "expected $parameter name in lambda")
-		}
-		param := &Node{Type: NodeVariable, Value: p.token.Value, Pos: p.token.Pos}
-		params = append(params, param)
-		if err := p.advance(); err != nil {
+		param, err := p.expression(0)
+		if err != nil {
 			return nil, err
 		}
+		params = append(params, param)
 		if p.token.Type == lexer.TokenComma {
 			if err := p.advance(); err != nil {
 				return nil, err
@@ -376,8 +379,13 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 			return nil, parseError("S0202", p.token.Value, "expected , or ) in parameter list")
 		}
 	}
-	if err := p.advance(); err != nil { // consume )
+	if err := p.advanceInfix(); err != nil { // consume )
 		return nil, err
+	}
+	for _, param := range params {
+		if param.Type != NodeVariable || param.Index != "" || param.Focus != "" || param.Group != nil {
+			return nil, parseError("S0208", param.Value, "expected $parameter name in lambda")
+		}
 	}
 
 	// Optional signature: <sig>
@@ -403,7 +411,6 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 	if err := p.consume(lexer.TokenRBrace); err != nil {
 		return nil, err
 	}
-	p.infix = true
 	return &Node{Type: NodeLambda, Arguments: params, Body: body, Signature: sig, Pos: pos}, nil
 }
 
@@ -439,13 +446,12 @@ func (p *Parser) parseSignatureString() (string, error) {
 
 // parseParenOrBlock parses ( expr ) or ( expr; ... ).
 func (p *Parser) parseParenOrBlock(pos int) (*Node, error) {
-	if err := p.advancePrefix(); err != nil { // consume (, next token is prefix
+	if err := p.advanceInfix(); err != nil {
 		return nil, err
 	}
 	if p.token.Type == lexer.TokenRParen {
 		// Empty parens () — treat as empty block.
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeBlock, Expressions: nil, Pos: pos}, nil
@@ -457,8 +463,7 @@ func (p *Parser) parseParenOrBlock(pos int) (*Node, error) {
 	if p.token.Type == lexer.TokenRParen {
 		// Single expression in parens — still create a NodeBlock for proper lexical scoping.
 		// Each (...) creates its own scope so that bindings inside do not escape.
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		return &Node{Type: NodeBlock, Expressions: []*Node{first}, Pos: pos}, nil
@@ -466,7 +471,7 @@ func (p *Parser) parseParenOrBlock(pos int) (*Node, error) {
 	// Block: multiple semicolon-separated expressions.
 	exprs := []*Node{first}
 	for p.token.Type == lexer.TokenSemicolon {
-		if err := p.advancePrefix(); err != nil { // after ;, next token is prefix
+		if err := p.advance(); err != nil {
 			return nil, err
 		}
 		if p.token.Type == lexer.TokenRParen {
@@ -478,10 +483,9 @@ func (p *Parser) parseParenOrBlock(pos int) (*Node, error) {
 		}
 		exprs = append(exprs, expr)
 	}
-	if err := p.consume(lexer.TokenRParen); err != nil {
+	if err := p.consumeInfix(lexer.TokenRParen); err != nil {
 		return nil, err
 	}
-	p.infix = true
 	return &Node{Type: NodeBlock, Expressions: exprs, Pos: pos}, nil
 }
 
@@ -497,7 +501,7 @@ func (p *Parser) parseObjectPairs() ([]*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := p.consumePrefix(lexer.TokenColon); err != nil { // after :, next token is prefix
+		if err := p.consume(lexer.TokenColon); err != nil {
 			return nil, err
 		}
 		val, err := p.expression(0)
@@ -506,7 +510,7 @@ func (p *Parser) parseObjectPairs() ([]*Node, error) {
 		}
 		pairs = append(pairs, key, val)
 		if p.token.Type == lexer.TokenComma {
-			if err := p.advancePrefix(); err != nil { // after comma, next token is prefix
+			if err := p.advance(); err != nil {
 				return nil, err
 			}
 		} else if p.token.Type != lexer.TokenRBrace {
@@ -520,7 +524,7 @@ func (p *Parser) parseObjectPairs() ([]*Node, error) {
 // The | token acts as a delimiter so pattern and update must be parsed with a
 // binding power of 20 to prevent | from being consumed as a binary infix operator.
 func (p *Parser) parseTransform(pos int) (*Node, error) {
-	if err := p.advancePrefix(); err != nil { // consume |, next token is prefix
+	if err := p.advanceInfix(); err != nil {
 		return nil, err
 	}
 	// bp=20 stops before the next | (bindingPower(|)=20, loop runs while bp(token) > bp).
@@ -528,7 +532,7 @@ func (p *Parser) parseTransform(pos int) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := p.consumePrefix(lexer.TokenPipe); err != nil { // after |, next is prefix
+	if err := p.consume(lexer.TokenPipe); err != nil {
 		return nil, err
 	}
 	update, err := p.expression(20)
@@ -537,7 +541,7 @@ func (p *Parser) parseTransform(pos int) (*Node, error) {
 	}
 	var del *Node
 	if p.token.Type == lexer.TokenComma {
-		if err := p.advancePrefix(); err != nil { // after comma, next is prefix
+		if err := p.advance(); err != nil {
 			return nil, err
 		}
 		del, err = p.expression(20)
@@ -548,7 +552,6 @@ func (p *Parser) parseTransform(pos int) (*Node, error) {
 	if err := p.consume(lexer.TokenPipe); err != nil {
 		return nil, err
 	}
-	p.infix = true
 	return &Node{Type: NodeTransform, Pattern: pattern, Update: update, Delete: del, Pos: pos}, nil
 }
 
@@ -596,8 +599,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 			return nil, parseError("S0202", p.token.Value, "expected $name after @")
 		}
 		name := p.token.Value
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		left.Focus = name
@@ -615,8 +617,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 			return nil, parseError("S0202", p.token.Value, "expected $name after #")
 		}
 		name := p.token.Value
-		p.infix = true
-		if err := p.advance(); err != nil {
+		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
 		left.Index = name
@@ -624,7 +625,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 
 	case lexer.TokenQuestion:
 		// Conditional (ternary) operator.
-		if err := p.advancePrefix(); err != nil { // after ?, then-branch is prefix
+		if err := p.advance(); err != nil {
 			return nil, err
 		}
 		then, err := p.expression(0)
@@ -633,7 +634,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 		}
 		node := &Node{Type: NodeCondition, Condition: left, Then: then, Pos: tok.Pos}
 		if p.token.Type == lexer.TokenColon {
-			if err := p.advancePrefix(); err != nil { // after :, else-branch is prefix
+			if err := p.advance(); err != nil {
 				return nil, err
 			}
 			elseBranch, err := p.expression(0)
@@ -649,7 +650,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 		if left.Type != NodeVariable {
 			return nil, parseError("S0212", tok.Value, "the left side of := must be a $variable name")
 		}
-		if err := p.advancePrefix(); err != nil { // after :=, RHS is prefix
+		if err := p.advance(); err != nil {
 			return nil, err
 		}
 		right, err := p.expression(bp - 1)
@@ -882,8 +883,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 		if err != nil {
 			return nil, err
 		}
-		p.infix = true
-		if err := p.advance(); err != nil { // consume }
+		if err := p.advanceInfix(); err != nil { // consume }
 			return nil, err
 		}
 		group := &GroupExpr{Pairs: pairsToGroupPairs(pairs), Pos: pos}
@@ -902,7 +902,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 // parseFunctionCall parses a function call: callee(arg, arg, ...).
 // Called after consuming the opening (.
 func (p *Parser) parseFunctionCall(callee *Node, pos int) (*Node, error) {
-	if err := p.advancePrefix(); err != nil { // consume (, next token is prefix
+	if err := p.advance(); err != nil { // consume (
 		return nil, err
 	}
 	var args []*Node
@@ -920,7 +920,7 @@ func (p *Parser) parseFunctionCall(callee *Node, pos int) (*Node, error) {
 		}
 		args = append(args, arg)
 		if p.token.Type == lexer.TokenComma {
-			if err := p.advancePrefix(); err != nil { // after comma, next token is prefix
+			if err := p.advance(); err != nil {
 				return nil, err
 			}
 		} else if p.token.Type != lexer.TokenRParen {
@@ -930,8 +930,7 @@ func (p *Parser) parseFunctionCall(callee *Node, pos int) (*Node, error) {
 			return nil, parseError("S0202", p.token.Value, "expected , or ) in argument list")
 		}
 	}
-	p.infix = true
-	if err := p.advance(); err != nil { // consume )
+	if err := p.advanceInfix(); err != nil { // consume )
 		return nil, err
 	}
 
@@ -954,12 +953,11 @@ func (p *Parser) parseSubscript(left *Node, pos int) (*Node, error) {
 	if left.Group != nil {
 		return nil, parseError("S0209", "[", "a predicate cannot follow a grouping expression in a step")
 	}
-	if err := p.advancePrefix(); err != nil { // consume [, subscript content is prefix
+	if err := p.advance(); err != nil { // consume [
 		return nil, err
 	}
 	if p.token.Type == lexer.TokenRBracket {
 		// Empty [] → keep array flag.
-		p.infix = true
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
@@ -970,10 +968,9 @@ func (p *Parser) parseSubscript(left *Node, pos int) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := p.consume(lexer.TokenRBracket); err != nil {
+	if err := p.consumeInfix(lexer.TokenRBracket); err != nil {
 		return nil, err
 	}
-	p.infix = true
 	return &Node{Type: NodeBinary, Value: "[", Left: left, Right: expr, Pos: pos}, nil
 }
 
@@ -982,7 +979,7 @@ func (p *Parser) parseSortExpr(left *Node, pos int) (*Node, error) {
 	if err := p.advance(); err != nil { // consume ^
 		return nil, err
 	}
-	if err := p.consumePrefix(lexer.TokenLParen); err != nil { // after (, next is prefix
+	if err := p.consume(lexer.TokenLParen); err != nil {
 		return nil, err
 	}
 	var terms []SortTerm
@@ -992,7 +989,7 @@ func (p *Parser) parseSortExpr(left *Node, pos int) (*Node, error) {
 		}
 		descending := p.token.Type == lexer.TokenGT
 		if descending || p.token.Type == lexer.TokenLT {
-			if err := p.advancePrefix(); err != nil {
+			if err := p.advance(); err != nil {
 				return nil, err
 			}
 		}
@@ -1002,14 +999,13 @@ func (p *Parser) parseSortExpr(left *Node, pos int) (*Node, error) {
 		}
 		terms = append(terms, SortTerm{Descending: descending, Expression: expr})
 		if p.token.Type == lexer.TokenComma {
-			if err := p.advancePrefix(); err != nil { // after comma, next is prefix
+			if err := p.advance(); err != nil {
 				return nil, err
 			}
 		} else if p.token.Type != lexer.TokenRParen {
 			return nil, parseError("S0202", p.token.Value, "expected , or ) in sort expression")
 		}
 	}
-	p.infix = true
 	if err := p.advance(); err != nil { // consume )
 		return nil, err
 	}

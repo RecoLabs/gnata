@@ -292,6 +292,61 @@ var operatorCases = []exprCase{
 	{expr: `nothing + 1`, want: undefined},
 }
 
+// regexPositionCases pin where jsonata-js lexes '/' as division rather than a
+// regex. It is division right after an opening [ or (, an object
+// constructor's {, a unary - or a transform's opening |, and after the ] of a
+// predicate or the ) of a block or lambda parameter list. It is a regex right
+// after an empty [], a sort's ), a lambda body or a transform's closing |.
+var regexPositionCases = []exprCase{
+	{expr: `[/a/]`, code: "S0211"},
+	{expr: `(/a/)`, code: "S0211"},
+	{expr: `{/a/: 1}`, code: "S0211"},
+	{expr: `-/a/`, code: "S0211"},
+	{expr: `|/a/|{}|`, code: "S0211"},
+	{expr: `[/* c */ /a/]`, code: "S0211"},
+	{expr: `x.(/a/)`, code: "S0211"},
+	{expr: `(/a/; 1)`, code: "S0211"},
+	{expr: `$match("abc", /b/).index`, want: `1`},
+	{expr: `("abc" ~> /b/).start`, want: `1`},
+	{expr: `["abc", "x"][$contains($, /b/)]`, want: `"abc"`},
+	{expr: `$count([1, /a/])`, want: `2`},
+	{expr: `(1; $contains("abc", /b/))`, want: `true`},
+	{expr: `{"k": $contains("abc", /b/)}`, want: `{"k":true}`},
+	{expr: `"abc"{"k": $contains($, /b/)}`, want: `{"k":true}`},
+	{expr: `(1)/2`, want: `0.5`},
+	{expr: `-4/2`, want: `-2`},
+	{expr: `[4, 6][0]/2`, want: `2`},
+	{expr: `(1; 4)/2`, want: `2`},
+	{expr: `("x"; "abc") ~> /b/`, want: `{"end":2,"groups":[],"match":"b","start":1}`},
+	{expr: `["abc"][0] ~> /b/`, want: `{"end":2,"groups":[],"match":"b","start":1}`},
+	{expr: `[4, 6][]/2`, code: "S0302"},
+	{expr: `|a|{}|/2`, code: "S0302"},
+	{expr: `[2,1]^($)/2`, code: "S0302"},
+	{expr: `function($x){$x}/2`, code: "S0302"},
+	{expr: `function($x)/2`, code: "S0202"},
+	{expr: `function($x/){1}`, code: "S0211"},
+}
+
+// lambdaParameterCases pin that jsonata-js parses each lambda parameter as an
+// expression and only then requires a $variable (S0208), so a malformed
+// parameter reports its parse error instead.
+var lambdaParameterCases = []exprCase{
+	{expr: `function($x/2){1}`, code: "S0208"},
+	{expr: `function($x.y){1}`, code: "S0208"},
+	{expr: `function($x, $y/2){1}`, code: "S0208"},
+	{expr: `function(1){1}`, code: "S0208"},
+	{expr: `function($x#$i){1}`, code: "S0208"},
+	{expr: `function($x@$y){1}`, code: "S0208"},
+	{expr: `function($x{"a":1}){1}`, code: "S0208"},
+	{expr: `function($x 1){1}`, code: "S0202"},
+	{expr: `function($x/2 1){1}`, code: "S0202"},
+	{expr: `function("a" 1){1}`, code: "S0202"},
+	{expr: `function($x + ){1}`, code: "S0211"},
+	{expr: `function($x[]){$x}([1])`, want: `[1]`},
+	{expr: `function($x, $y){$x+$y}(1,2)`, want: `3`},
+	{expr: `function($x)<n:n>{$x}(2)`, want: `2`},
+}
+
 func TestPathAndOperatorSemantics(t *testing.T) {
 	t.Run("parent operator", func(t *testing.T) { runExprCases(t, parentOperatorCases) })
 	t.Run("binding operators", func(t *testing.T) { runExprCases(t, bindingOperatorCases) })
@@ -300,4 +355,6 @@ func TestPathAndOperatorSemantics(t *testing.T) {
 	t.Run("path steps", func(t *testing.T) { runExprCases(t, pathStepCases) })
 	t.Run("subscripts", func(t *testing.T) { runExprCases(t, subscriptCases) })
 	t.Run("operators", func(t *testing.T) { runExprCases(t, operatorCases) })
+	t.Run("regex position", func(t *testing.T) { runExprCases(t, regexPositionCases) })
+	t.Run("lambda parameters", func(t *testing.T) { runExprCases(t, lambdaParameterCases) })
 }
