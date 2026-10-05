@@ -329,12 +329,6 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 	case lexer.TokenLParen:
 		return p.parseParenOrBlock(tok.Pos)
 
-	case lexer.TokenQuestion:
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		return &Node{Type: NodePlaceholder, Value: "?", Pos: tok.Pos}, nil
-
 	case lexer.TokenPipe:
 		// Transform expression: |pattern| update delete? |
 		return p.parseTransform(tok.Pos)
@@ -366,7 +360,7 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 		if p.token.Type == lexer.TokenEOF {
 			return nil, parseError("S0202", "EOF", "expected ) in lambda parameter list")
 		}
-		param, err := p.expression(0)
+		param, err := p.parseArgument()
 		if err != nil {
 			return nil, err
 		}
@@ -911,7 +905,7 @@ func (p *Parser) parseFunctionCall(callee *Node, pos int) (*Node, error) {
 		if p.token.Type == lexer.TokenEOF {
 			return nil, parseError("S0203", "EOF", "expected ) before end of expression")
 		}
-		arg, err := p.expression(0)
+		arg, err := p.parseArgument()
 		if err != nil {
 			return nil, err
 		}
@@ -945,6 +939,20 @@ func (p *Parser) parseFunctionCall(callee *Node, pos int) (*Node, error) {
 		Arguments: args,
 		Pos:       pos,
 	}, nil
+}
+
+// parseArgument parses one call argument or lambda parameter. As in
+// jsonata-js, a ? placeholder is only recognized as a whole argument, so
+// $f(? + 1) is S0202 and a ? anywhere else is S0211.
+func (p *Parser) parseArgument() (*Node, error) {
+	if p.token.Type != lexer.TokenQuestion {
+		return p.expression(0)
+	}
+	pos := p.token.Pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	return &Node{Type: NodePlaceholder, Value: "?", Pos: pos}, nil
 }
 
 // parseSubscript parses [ expr ] in infix position.
