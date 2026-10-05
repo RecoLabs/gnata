@@ -90,12 +90,12 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 		params = append(params, arg.Value)
 	}
 	sig := ""
-	var parsedSig []parser.ParamSpec
-	var contextSig *ContextSig
+	var signature *Signature
 	if node.Signature != nil {
 		sig = node.Signature.Raw
-		parsedSig, _ = parser.ParseSig(sig)
-		contextSig = newContextSig(parsedSig)
+		if specs, err := parser.ParseSig(sig); err == nil {
+			signature = compileSignature(specs)
+		}
 	}
 	return &Lambda{
 		Params:        params,
@@ -103,8 +103,7 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 		Closure:       env,
 		Thunk:         node.Thunk,
 		Sig:           sig,
-		ParsedSig:     parsedSig,
-		Context:       contextSig,
+		Signature:     signature,
 		CapturedFocus: input,
 	}, nil
 }
@@ -275,9 +274,8 @@ func invokeFunction(fn any, args []any, focus any, env *Environment, checked boo
 			return nil, &JSONataError{Code: "T1006", Message: "attempted to invoke undefined function"}
 		}
 		if checked {
-			var returnUndefined bool
 			var err error
-			if args, returnUndefined, err = checkCallArgs(fn, args, focus); err != nil || returnUndefined {
+			if args, err = checkCallArgs(fn, args, focus); err != nil {
 				return nil, err
 			}
 		}

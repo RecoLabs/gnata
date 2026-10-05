@@ -62,11 +62,11 @@ func TestJSSpecsAreRegistered(t *testing.T) {
 		if !ok {
 			t.Fatalf("$%s is not registered: %T", name, fn)
 		}
-		if (spec.sig != "") != (sb.Context != nil) {
-			t.Fatalf("$%s: context signature %q, bound context %v", name, spec.sig, sb.Context)
+		if (spec.sig != "") != (sb.Signature != nil) {
+			t.Fatalf("$%s: signature %q, bound signature %v", name, spec.sig, sb.Signature)
 		}
-		if spec.validate != (sb.ParsedSig != nil) {
-			t.Fatalf("$%s: validated is %v, want %v", name, sb.ParsedSig != nil, spec.validate)
+		if spec.validate != sb.Validate {
+			t.Fatalf("$%s: validated is %v, want %v", name, sb.Validate, spec.validate)
 		}
 	}
 }

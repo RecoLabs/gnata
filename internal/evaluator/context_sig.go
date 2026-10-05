@@ -9,47 +9,50 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-// ContextSig finds the arguments a call leaves to the context value, the '-'
-// marker in a jsonata-js signature such as "s-nn?:s". It follows the argument
-// matching of jsonata-js's signature.validate: each argument maps to a type
-// symbol, the symbols are matched against the parameters the way its greedy
-// backtracking regex does, and a context parameter that matches nothing takes
-// the focus. Optional parameters that match nothing are left out rather than
-// padded with undefined.
+// Signature is a compiled jsonata-js function signature, such as
+// "s-nn?:s". It follows jsonata-js's signature.validate: each argument maps
+// to a type symbol, and the symbols are matched against the parameters the
+// way its greedy backtracking regex does. Inject only fills arguments left to
+// the context value (the '-' marker); Validate also checks and coerces the
+// arguments.
 //
 // https://github.com/jsonata-js/jsonata/blob/v2.2.2/src/signature.js
-type ContextSig struct {
-	params   []contextParam
-	variadic bool // some parameter is '+'
+type Signature struct {
+	params     []sigParam
+	variadic   bool // some parameter is '+'
+	hasContext bool // some parameter is '-'
 }
 
-type contextParam struct {
+type sigParam struct {
 	symbols  uint8 // accepted type symbols (see symbolBit), including 'm' for undefined where allowed
-	optional bool  // '?', or '-' when the argument is left to the context
+	optional bool  // '?', or '-', which jsonata-js turns into '?'
 	variadic bool  // '+'
-	lazy     bool  // '+' with '-', which jsonata-js's regex makes "+?"
+	lazy     bool  // '+' with '?' or '-', which jsonata-js's regex makes "+?"
 	context  bool  // '-'
+	array    bool  // type 'a', whose non-array arguments are wrapped in an array
+	subtype  byte  // the content type of an array, or 0
 }
 
-// newContextSig compiles the parameters of a jsonata-js signature. It
-// returns nil when no parameter defaults to the context.
-func newContextSig(specs []parser.ParamSpec) *ContextSig {
-	if !slices.ContainsFunc(specs, func(spec parser.ParamSpec) bool { return spec.Context }) {
-		return nil
-	}
-	params := make([]contextParam, len(specs))
+// compileSignature compiles the parameters of a jsonata-js signature.
+func compileSignature(specs []parser.ParamSpec) *Signature {
+	params := make([]sigParam, len(specs))
 	for i, spec := range specs {
-		params[i] = contextParam{
-			symbols: paramSymbols(spec.Types),
-			// jsonata-js appends '?' for '-', which makes a '+' parameter lazy
-			// rather than optional.
-			optional: spec.Optional || (spec.Context && !spec.Variadic),
+		lazy := spec.Optional || spec.Context
+		params[i] = sigParam{
+			symbols:  paramSymbols(spec.Types),
+			optional: lazy && !spec.Variadic,
 			variadic: spec.Variadic,
-			lazy:     spec.Variadic && spec.Context,
+			lazy:     lazy && spec.Variadic,
 			context:  spec.Context,
+			array:    len(spec.Types) == 1 && spec.Types[0] == 'a',
+			subtype:  spec.ContentType,
 		}
 	}
-	return &ContextSig{params: params, variadic: slices.ContainsFunc(params, func(p contextParam) bool { return p.variadic })}
+	return &Signature{
+		params:     params,
+		variadic:   slices.ContainsFunc(params, func(p sigParam) bool { return p.variadic }),
+		hasContext: slices.ContainsFunc(params, func(p sigParam) bool { return p.context }),
+	}
 }
 
 // sigSymbols are jsonata-js's type symbols, in the order of their bits;
@@ -108,70 +111,226 @@ func scratch[T any](buf []T, n int) []T {
 }
 
 // Inject returns args with the focus inserted where the signature takes the
-// context value, and which of the returned arguments are the focus (nil when
-// none). It returns args unchanged when no context argument is missing or
-// when args do not match the signature, leaving the function to report the
-// mismatch. It raises T0411 when the focus has the wrong type.
-func (s *ContextSig) Inject(args []any, focus any) (injected []any, isContext []bool, err error) {
-	var countsBuf [smallMatch]int
-	counts := scratch(countsBuf[:], len(s.params))
-	counts, ok := s.match(args, counts)
-	if !ok {
-		return args, nil, nil
+// context value. It returns args unchanged when no context argument is
+// missing or when args do not match the signature, leaving the function to
+// report the mismatch. It raises T0411 when the focus has the wrong type.
+func (s *Signature) Inject(args []any, focus any) ([]any, error) {
+	if !s.hasContext {
+		return args, nil
 	}
+	var countsBuf [smallMatch]int
+	counts, ok := s.match(args, scratch(countsBuf[:], len(s.params)))
+	if !ok {
+		return args, nil
+	}
+	var injected []any
 	argIndex := 0
 	for i, param := range s.params {
 		if counts[i] == 0 && param.context {
-			if param.symbols&symbolBit(focusSymbol(focus)) == 0 {
-				return nil, nil, &JSONataError{
-					Code:    "T0411",
-					Message: fmt.Sprintf("context value is not a compatible type with argument %d", argIndex+1),
-				}
+			if err := checkFocus(param, focus, argIndex); err != nil {
+				return nil, err
 			}
 			if injected == nil {
 				injected = append(make([]any, 0, len(args)+1), args[:argIndex]...)
-				isContext = make([]bool, argIndex, len(args)+1)
 			}
 			injected = append(injected, focus)
-			isContext = append(isContext, true)
 			continue
 		}
 		if injected != nil {
 			injected = append(injected, args[argIndex:argIndex+counts[i]]...)
-			isContext = append(isContext, make([]bool, counts[i])...)
 		}
 		argIndex += counts[i]
 	}
 	if injected == nil {
-		return args, nil, nil
+		return args, nil
 	}
-	return injected, isContext, nil
+	return injected, nil
 }
 
-// match appends to counts how many arguments each parameter takes, choosing
-// as the jsonata-js regex does: each parameter takes as many arguments as it
-// can (as few, for a lazy one) while the rest still match. A table of which
-// suffixes of args match which suffixes of the parameters replaces
-// backtracking.
-func (s *ContextSig) match(args []any, counts []int) ([]int, bool) {
-	var symbolsBuf [smallMatch]uint8
-	symbols := scratch(symbolsBuf[:], len(args))
+// Validate returns the arguments jsonata-js's signature.validate passes to
+// the function: the focus where a '-' parameter matches nothing, a non-array
+// argument of an 'a' parameter wrapped in an array, and otherwise args by
+// position, so a parameter that matches nothing still takes the next
+// argument. It raises T0410 when args do not match the signature, T0411 when
+// the focus has the wrong type, and T0412 when an array has the wrong
+// content type.
+func (s *Signature) Validate(args []any, focus any) ([]any, error) {
+	var countsBuf [smallMatch]int
+	counts, ok := s.match(args, scratch(countsBuf[:], len(s.params)))
+	if !ok {
+		return nil, s.mismatchError(args)
+	}
+	// The symbols the regex matched are at symbolIndex, but jsonata-js
+	// takes the arguments by position, at argIndex, which runs ahead once a
+	// parameter that matched nothing has taken one. out stays nil while the
+	// arguments passed are args[:argIndex].
+	var out []any
+	symbolIndex, argIndex := 0, 0
+	pass := func(v any, unchanged bool) {
+		if out == nil {
+			if unchanged {
+				argIndex++
+				return
+			}
+			out = append(make([]any, 0, len(args)+1), args[:argIndex]...)
+		}
+		out = append(out, v)
+		argIndex++
+	}
+	for i, param := range s.params {
+		if counts[i] == 0 && param.context {
+			if err := checkFocus(param, focus, argIndex); err != nil {
+				return nil, err
+			}
+			if out == nil {
+				out = append(make([]any, 0, len(args)+1), args[:argIndex]...)
+			}
+			out = append(out, focus)
+			continue
+		}
+		if counts[i] == 0 {
+			if argIndex < len(args) {
+				pass(args[argIndex], true)
+			} else {
+				pass(nil, false)
+			}
+			continue
+		}
+		for _, matched := range args[symbolIndex : symbolIndex+counts[i]] {
+			symbol := sigSymbol(matched)
+			var arg any
+			inRange := argIndex < len(args)
+			if inRange {
+				arg = args[argIndex]
+			}
+			if !param.array {
+				pass(arg, inRange)
+				continue
+			}
+			value, err := param.arrayArg(arg, symbol, counts[i] == 1, argIndex)
+			if err != nil {
+				return nil, err
+			}
+			pass(value, inRange && (symbol == 'a' || symbol == 'm' && arg == nil))
+		}
+		symbolIndex += counts[i]
+	}
+	if out == nil {
+		return args[:argIndex], nil
+	}
+	return out, nil
+}
+
+// arrayArg returns the argument an 'a' parameter passes for arg, whose
+// matched symbol is symbol: undefined stays undefined, an array is checked
+// against the content type as jsonata-js does (every item has the type of
+// the first), and anything else becomes a one-item array. single reports
+// whether the parameter matched just this argument.
+func (param sigParam) arrayArg(arg any, symbol byte, single bool, argIndex int) (any, error) {
+	switch symbol {
+	case 'm':
+		return nil, nil
+	case 'a':
+		if items, isArray := AsArray(arg); isArray && param.subtype != 0 && len(items) > 0 {
+			first := sigSymbol(items[0])
+			if first != param.subtype || slices.ContainsFunc(items, func(item any) bool { return sigSymbol(item) != first }) {
+				return nil, contentTypeError(param, argIndex)
+			}
+		}
+		return arg, nil
+	}
+	if param.subtype != 0 && (!single || symbol != param.subtype) {
+		return nil, contentTypeError(param, argIndex)
+	}
+	return []any{arg}, nil
+}
+
+// checkFocus raises T0411 when focus cannot fill the context parameter at
+// argument index argIndex.
+func checkFocus(param sigParam, focus any, argIndex int) error {
+	if param.symbols&symbolBit(focusSymbol(focus)) != 0 {
+		return nil
+	}
+	return &JSONataError{
+		Code:    "T0411",
+		Message: fmt.Sprintf("context value is not a compatible type with argument %d", argIndex+1),
+	}
+}
+
+func contentTypeError(param sigParam, argIndex int) error {
+	return &JSONataError{
+		Code:    "T0412",
+		Message: fmt.Sprintf("argument %d must be an array of %c", argIndex+1, param.subtype),
+	}
+}
+
+// mismatchError reports the argument jsonata-js blames when args do not
+// match: it matches ever longer prefixes of the parameters against the start
+// of the arguments, and blames the one after the last prefix's match.
+func (s *Signature) mismatchError(args []any) error {
+	symbols := argSymbols(args, nil)
+	goodTo := 0
+	for n := 1; n <= len(s.params); n++ {
+		taken, ok := s.solve(symbols, n, false, nil)
+		if !ok {
+			break
+		}
+		goodTo = sum(taken)
+	}
+	return &JSONataError{
+		Code:    "T0410",
+		Message: fmt.Sprintf("argument %d does not match function signature", goodTo+1),
+	}
+}
+
+func sum(counts []int) int {
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	return total
+}
+
+// argSymbols returns the type symbol of each argument, in buf when it is
+// large enough.
+func argSymbols(args []any, buf []uint8) []uint8 {
+	symbols := scratch(buf, len(args))
 	for i, arg := range args {
 		symbols[i] = symbolBit(sigSymbol(arg))
 	}
+	return symbols
+}
+
+// match returns how many arguments each parameter takes, choosing as the
+// jsonata-js regex does: each parameter takes as many arguments as it can
+// (as few, for a lazy one) while the rest still match.
+func (s *Signature) match(args []any, counts []int) ([]int, bool) {
+	var symbolsBuf [smallMatch]uint8
+	symbols := argSymbols(args, symbolsBuf[:])
 	if !s.variadic {
 		return s.matchFixed(symbols, counts)
 	}
-	nArgs, nParams := len(symbols), len(s.params)
+	return s.solve(symbols, len(s.params), true, counts)
+}
+
+// solve matches the arguments with the given symbols against the first
+// nParams parameters, as the regex of those parameters does: anchored, it
+// must take every argument; unanchored, as many from the start as it takes.
+// A table of which suffixes of the arguments match which suffixes of the
+// parameters replaces backtracking.
+func (s *Signature) solve(symbols []uint8, nParams int, anchored bool, counts []int) ([]int, bool) {
+	nArgs := len(symbols)
 	width := nArgs + 1
 	if (nParams+1)*width > maxMatchCells {
 		return nil, false
 	}
-	// reach[p*width+a] reports whether args[a:] match params[p:]; filling it
-	// is linear in params × args.
+	// reach[p*width+a] reports whether args[a:] match params[p:nParams];
+	// filling it is linear in params × args.
 	var reachBuf [(smallMatch + 1) * (smallMatch + 1)]bool
 	reach := scratch(reachBuf[:], (nParams+1)*width)
-	reach[nParams*width+nArgs] = true
+	for a := range width {
+		reach[nParams*width+a] = !anchored || a == nArgs
+	}
 	for p := nParams - 1; p >= 0; p-- {
 		param := s.params[p]
 		for a := nArgs; a >= 0; a-- {
@@ -188,7 +347,8 @@ func (s *ContextSig) match(args []any, counts []int) ([]int, bool) {
 	}
 	counts = counts[:0]
 	a := 0
-	for p, param := range s.params {
+	for p := range nParams {
+		param := s.params[p]
 		most := 0
 		for a+most < nArgs && (most == 0 || param.variadic) && param.symbols&symbols[a+most] != 0 {
 			most++
@@ -213,7 +373,7 @@ func (s *ContextSig) match(args []any, counts []int) ([]int, bool) {
 // takes at most one argument. Its table is indexed by how many parameters
 // were skipped, at most len(params) - len(args), so a wide signature called
 // with most of its arguments stays linear.
-func (s *ContextSig) matchFixed(symbols []uint8, counts []int) ([]int, bool) {
+func (s *Signature) matchFixed(symbols []uint8, counts []int) ([]int, bool) {
 	nArgs, nParams := len(symbols), len(s.params)
 	skips := nParams - nArgs
 	if skips < 0 {

@@ -636,3 +636,55 @@ var functionContextCases = []exprCase{
 func TestFunctionContext(t *testing.T) {
 	runExprCases(t, functionContextCases)
 }
+
+// signatureCases cover jsonata-js's signature validation: the arguments
+// match the signature as its backtracking regex does, are passed by
+// position, and an error blames the argument jsonata-js does.
+var signatureCases = []exprCase{
+	{expr: `(function($a,$b,$c)<s-s?s>{[$a,$b,$c]})("x","y")`, data: `"ctx"`, want: `["x","y"]`},
+	{expr: `(function($a,$b,$c)<s?s?s>{{"a":$a,"b":$b,"c":$c}})("x","y")`, want: `{"a":"x","b":"y"}`},
+	{expr: `(function($a,$b)<s?s>{{"a":$a,"b":$b}})("x")`, want: `{"a":"x"}`},
+	{expr: `(function($a,$b)<n?s>{{"a":$a,"b":$b}})("x")`, want: `{"a":"x"}`},
+	{expr: `(function($a,$b)<a?n>{{"a":$a,"b":$b}})(5)`, want: `{"a":5}`},
+	{expr: `(function($a,$b,$c)<n?s?n>{{"a":$a,"b":$b,"c":$c}})(1,2)`, want: `{"a":1,"b":2}`},
+	{expr: `(function($a)<n:n>{1})(nothing)`, want: `1`},
+	{expr: `(function($a,$b)<nn>{[$a,$b]})(nothing, 1)`, want: `[1]`},
+	{expr: `(function($a,$b)<a<n>s>{{"a":$a,"b":$b}})(nothing,"x")`, want: `{"b":"x"}`},
+	{expr: `(function($a)<f>{1})(nothing)`, code: "T0410: argument 1"},
+	{expr: `(function($a)<s>{1})()`, code: "T0410: argument 1"},
+	{expr: `(function($a,$b)<ns>{[$a,$b]})("x",1)`, code: "T0410: argument 1"},
+	{expr: `(function($a,$b)<ns>{[$a,$b]})(1,1)`, code: "T0410: argument 2"},
+	{expr: `(function($a,$b)<ns>{[$a,$b]})(1,"x",3)`, code: "T0410: argument 3"},
+	{expr: `(function($a,$b)<ns?>{[$a,$b]})(1,2)`, code: "T0410: argument 2"},
+	{expr: `(function($a,$b)<(sn)n>{[$a,$b]})("a")`, code: "T0410: argument 2"},
+	{expr: `(function($a,$b)<s?a>{[$a,$b]})(nothing)`, want: `[]`},
+	{expr: `(function($a,$b)<s?a>{{"a":$a,"b":$b}})("x")`, want: `{"a":"x","b":[null]}`},
+	{expr: `(function($a,$b,$c)<s?a?n>{{"a":$a,"b":$b,"c":$c}})(nothing,1)`, want: `{"b":1}`},
+	{expr: `(function($a,$b)<n+?>{[$a,$b]})(1,2)`, want: `[1,2]`},
+	{expr: `(function($a)<n+?>{$a})()`, code: "T0410: argument 1"},
+	{expr: `(function($a)<a<n>>{$a})(5)`, want: `[5]`},
+	{expr: `(function($a)<a<n>>{$a})("x")`, code: "T0412: argument 1"},
+	{expr: `(function($a)<a<n>>{$a})([1,"x"])`, code: "T0412: argument 1"},
+	{expr: `(function($a)<a<n>>{$a})([[1]])`, code: "T0412: argument 1"},
+	{expr: `(function($a)<a<a>>{$a})([[1],2])`, code: "T0412: argument 1"},
+	{expr: `(function($a)<a<a<n>>>{$a})([["x"]])`, want: `[["x"]]`},
+	{expr: `(function($a)<a<o>>{$a})([{"a":1},null])`, code: "T0412: argument 1"},
+	{expr: `(function($a)<a<l>>{$a})([null])`, want: `[null]`},
+	{expr: `(function($a,$b)<a<n>+>{[$a,$b]})(1,2)`, code: "T0412: argument 1"},
+	{expr: `(function($a,$b)<a+>{[$a,$b]})(1,[2])`, want: `[1,2]`},
+	{expr: `(function($a)<(as)>{$a})(5)`, code: "T0410: argument 1"},
+	{expr: `(function($a,$b)<s-n>{[$a,$b]})("x","y")`, data: `"c"`, code: "T0410: argument 2"},
+	{expr: `(function($a,$b)<s-n>{[$a,$b]})(1)`, data: `5`, code: "T0411"},
+	{expr: `(function($a,$b,$c)<s?n-s>{[$a,$b,$c]})("x")`, data: `4`, want: `["x",4]`},
+	{expr: `(function($a,$b)<j-n>{[$a,$b]})(5)`, want: `[5]`},
+	{expr: `$uppercase(5)`, code: "T0410: argument 1"},
+	{expr: `$uppercase()`, data: `5`, code: "T0411"},
+	{expr: `$uppercase("a","b")`, code: "T0410: argument 2"},
+	{expr: `$lowercase(nothing)`, want: undefined},
+	{expr: `$map(["x"], function($v)<n:n>{$v})`, code: "T0410: argument 1"},
+	{expr: `($f := function($a,$b)<ns>{$a&$b}; $f(?,"x"))("y")`, want: `"yx"`},
+}
+
+func TestFunctionSignatures(t *testing.T) {
+	runExprCases(t, signatureCases)
+}

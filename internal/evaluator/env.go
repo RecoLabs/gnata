@@ -406,26 +406,25 @@ type EnvAwareBuiltin func(args []any, focus any, env *Environment) (any, error)
 // application or composition with its arity, or a wrapper that applies a
 // function argument (Argument, never itself a wrapper) with a null context.
 // Every call except a partial application fills a missing context argument
-// from the call's context and, when ParsedSig is set, validates arity and
-// types, as jsonata-js's apply does.
+// from the call's context and, when Validate is set, validates its
+// arguments, as jsonata-js's apply does.
 type SignedBuiltin struct {
 	Name      string // the builtin's name; "" for a partial application, composition or argument wrapper
 	Fn        EnvAwareBuiltin
 	Sig       string
-	ParsedSig []parser.ParamSpec // nil: arguments are not validated
-	Context   *ContextSig        // nil: no parameter defaults to the context
-	Arity     int                // parameters of the jsonata-js implementation, for HOF callbacks; -1 if unknown
-	Argument  any                // a function argument this applies with a null context, or nil
+	Signature *Signature // nil: no signature
+	Validate  bool       // validate the arguments against Signature, not just fill the context
+	Arity     int        // parameters of the jsonata-js implementation, for HOF callbacks; -1 if unknown
+	Argument  any        // a function argument this applies with a null context, or nil
 }
 
 // Lambda represents a user-defined function (lambda expression).
 type Lambda struct {
-	Params        []string           // parameter names
-	Body          *parser.Node       // function body AST node
-	Closure       *Environment       // lexical scope at definition site
-	Thunk         bool               // for tail-call optimization
-	Sig           string             // type signature (Wave 5)
-	ParsedSig     []parser.ParamSpec // pre-parsed signature; avoids re-parsing per call
-	Context       *ContextSig        // nil: no parameter defaults to the context
-	CapturedFocus any                // focus ($) at definition time, which the body evaluates against
+	Params        []string     // parameter names
+	Body          *parser.Node // function body AST node
+	Closure       *Environment // lexical scope at definition site
+	Thunk         bool         // for tail-call optimization
+	Sig           string       // type signature (Wave 5)
+	Signature     *Signature   // compiled Sig, which validates every call; nil without one
+	CapturedFocus any          // focus ($) at definition time, which the body evaluates against
 }

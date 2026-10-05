@@ -9,15 +9,15 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-func compileContextSig(sig string) (*ContextSig, error) {
+func compileSig(sig string) (*Signature, error) {
 	specs, err := parser.ParseSig(sig)
 	if err != nil {
 		return nil, err
 	}
-	return newContextSig(specs), nil
+	return compileSignature(specs), nil
 }
 
-func TestNewContextSig(t *testing.T) {
+func TestCompileSignature(t *testing.T) {
 	testCases := []struct {
 		desc        string
 		sig         string
@@ -35,7 +35,7 @@ func TestNewContextSig(t *testing.T) {
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
-			got, err := compileContextSig(tC.sig)
+			got, err := compileSig(tC.sig)
 			if err != nil {
 				if tC.expectError {
 					return
@@ -45,14 +45,14 @@ func TestNewContextSig(t *testing.T) {
 			if tC.expectError {
 				t.Fatal("expected error but got none")
 			}
-			if (got != nil) != tC.wantContext {
-				t.Fatalf("compileContextSig(%q) = %v, want context %v", tC.sig, got, tC.wantContext)
+			if got.hasContext != tC.wantContext {
+				t.Fatalf("compileSig(%q) has context %v, want %v", tC.sig, got.hasContext, tC.wantContext)
 			}
 		})
 	}
 }
 
-func TestContextSigInject(t *testing.T) {
+func TestSignatureInject(t *testing.T) {
 	regex := map[string]any{"pattern": "a", "flags": ""}
 	patternObject := map[string]any{"pattern": "a", "b": 1.0}
 	testCases := []struct {
@@ -91,11 +91,11 @@ func TestContextSigInject(t *testing.T) {
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
-			sig, err := compileContextSig(tC.sig)
+			sig, err := compileSig(tC.sig)
 			if err != nil {
-				t.Fatalf("compileContextSig(%q): %v", tC.sig, err)
+				t.Fatalf("compileSig(%q): %v", tC.sig, err)
 			}
-			got, _, err := sig.Inject(tC.args, tC.focus)
+			got, err := sig.Inject(tC.args, tC.focus)
 			if tC.code != "" {
 				var je *JSONataError
 				if !errors.As(err, &je) || je.Code != tC.code {
