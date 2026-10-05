@@ -2,7 +2,6 @@ package functions
 
 import (
 	"fmt"
-	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -232,19 +231,12 @@ func paddingWidth(m dateMarker) int {
 // optional "+" and the leading digits and ignoring the rest; "*" or no digits
 // means no width, and a width too large for an int reads as math.MaxInt.
 func parseMarkerWidth(spec string) int {
-	spec = strings.TrimPrefix(spec, "+")
-	end := 0
-	for end < len(spec) && spec[end] >= '0' && spec[end] <= '9' {
-		end++
-	}
+	digits := []rune(strings.TrimPrefix(spec, "+"))
+	end := leadingDigits(digits, 0)
 	if end == 0 {
 		return noWidth
 	}
-	width, err := strconv.Atoi(spec[:end])
-	if err != nil {
-		return math.MaxInt
-	}
-	return width
+	return atoiSaturating(digits[:end])
 }
 
 func formatMarker(t time.Time, m dateMarker) (string, error) {

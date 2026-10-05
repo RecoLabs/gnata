@@ -49,7 +49,7 @@ func parseWithPicture(input, picture string, now time.Time, stop func() error) (
 	setParseWidths(parts)
 
 	match := newPictureMatch(parts, input, stop)
-	if !match.from(0, 0) {
+	if !match.run() {
 		return 0, false, match.err
 	}
 	components := map[byte]int{}
@@ -92,8 +92,8 @@ func newPictureMatch(parts []datePicturePart, input string, stop func() error) *
 	}
 }
 
-// spend charges n parsed runes to the match, reporting false once its steps
-// run out or stop reports an error.
+// spend charges n parsed runes, plus one for the attempt, to the match,
+// reporting false once its steps run out or stop reports an error.
 func (pm *pictureMatch) spend(n int) bool {
 	if pm.steps -= n + 1; pm.steps < 0 {
 		return false
@@ -104,34 +104,77 @@ func (pm *pictureMatch) spend(n int) bool {
 	return pm.err == nil
 }
 
-// from reports whether parts[i:] match input[pos:] exactly, recording each
-// marker's value in values.
-func (pm *pictureMatch) from(i, pos int) bool {
-	if i == len(pm.parts) {
-		return pos == len(pm.input)
-	}
-	key := [2]int{i, pos}
-	if pm.failed[key] {
-		return false
-	}
-	part, rest := &pm.parts[i], pm.input[pos:]
-	switch {
-	case !part.isMarker:
-		if pm.spend(len(part.literal)) && hasFoldPrefix(rest, part.literal) &&
-			pm.from(i+1, pos+utf8.RuneCountInString(part.literal)) {
-			return true
-		}
-	default:
-		longest := longestMatch(rest, part.marker)
-		for k := longest; k >= 1 && pm.spend(k); k-- {
-			if value, n := parseMarkerValue(rest[:k], part.marker); n == k && pm.from(i+1, pos+k) {
-				pm.values[i] = value
+// matchFrame is part i being matched at input position pos; next is the
+// next length to try for it, 0 when none is left.
+type matchFrame struct{ i, pos, next int }
+
+// run reports whether the parts match the whole input, recording each
+// marker's value in values. It searches depth first on an explicit stack, so
+// a long picture cannot exhaust the goroutine's.
+func (pm *pictureMatch) run() bool {
+	stack := []matchFrame{pm.enter(0, 0)}
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		if top.i == len(pm.parts) {
+			if top.pos == len(pm.input) {
 				return true
 			}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		k, value, ok := pm.nextLength(top)
+		if !ok {
+			if pm.steps < 0 || pm.err != nil {
+				return false
+			}
+			pm.failed[[2]int{top.i, top.pos}] = true
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		pm.values[top.i] = value
+		stack = append(stack, pm.enter(top.i+1, top.pos+k))
+	}
+	return false
+}
+
+// enter starts matching part i at pos: a literal has one length to try, a
+// marker every length from the longest it can read down to one.
+func (pm *pictureMatch) enter(i, pos int) matchFrame {
+	f := matchFrame{i: i, pos: pos}
+	switch {
+	case i == len(pm.parts), pm.failed[[2]int{i, pos}]:
+	case !pm.parts[i].isMarker:
+		f.next = utf8.RuneCountInString(pm.parts[i].literal)
+	default:
+		f.next = longestMatch(pm.input[pos:], pm.parts[i].marker)
+	}
+	return f
+}
+
+// nextLength returns the next length at which the frame's part matches, with
+// the marker's value, reporting false when none is left or the match stops.
+func (pm *pictureMatch) nextLength(f *matchFrame) (length, value int, ok bool) {
+	part, rest := &pm.parts[f.i], pm.input[f.pos:]
+	for f.next > 0 {
+		k := f.next
+		f.next--
+		if !part.isMarker {
+			f.next = 0
+		}
+		if !pm.spend(k) {
+			return 0, 0, false
+		}
+		if !part.isMarker {
+			if hasFoldPrefix(rest, part.literal) {
+				return k, 0, true
+			}
+			continue
+		}
+		if value, n := parseMarkerValue(rest[:k], part.marker); n == k {
+			return k, value, true
 		}
 	}
-	pm.failed[key] = true
-	return false
+	return 0, 0, false
 }
 
 // longestMatch returns the most runes a marker can read at the start of

@@ -196,6 +196,8 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("2018-04-01T+0151500034", "[Y]-[M]-[D]T[Z0101][H01][d]")`, want: `1519458000000`},
 	{expr: `$toMillis("2018 IVIII", "[Y] [MI][DI]")`, want: `1527811200000`},
 	{expr: `$toMillis("AX` + strings.Repeat("M", 66) + `", "[MA]X[YI]")`, want: `2020591612800000`},
+	// A picture far longer than any real one matches without deep recursion.
+	{expr: `$toMillis("` + strings.Repeat("1-", 50_000) + `", "` + strings.Repeat("[D]-", 50_000) + `")`, want: `1790812800000`},
 	// Exhausts the step budget (README known difference #16).
 	{expr: `$toMillis("` + strings.Repeat("I", 1600) + `x", "` + strings.Repeat("[MI]I", 800) + `y")`, want: undefined},
 	{expr: `$toMillis("A` + strings.Repeat("M", 20) + ` 2018", "[MA] [Y]")`, want: `null`},
