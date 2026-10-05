@@ -24,17 +24,11 @@ func evalPath(node *parser.Node, input any, env *Environment) (any, error) {
 }
 
 // pathHasTupleStep returns true when at least one path step requires tuple
-// tracking: either the step itself carries a #$var Index, a subscript whose
-// left-hand node has an Index, or any step/sub-expression references NodeParent (%).
+// tracking: the step or any subscript it is predicated on carries a #$var or
+// @$var binding, or any step/sub-expression references NodeParent (%).
 func pathHasTupleStep(steps []*parser.Node) bool {
 	for _, step := range steps {
-		if step.Index != "" || step.Focus != "" {
-			return true
-		}
-		// A subscript step whose left child has an Index or Focus binding also requires
-		// tuple-aware path evaluation so each element gets its own env for $pos/$var.
-		if step.Type == parser.NodeBinary && step.Value == "[" &&
-			step.Left != nil && (step.Left.Index != "" || step.Left.Focus != "") {
+		if stepHasBinding(step) {
 			return true
 		}
 		// A sort step whose Left is a path containing #$var bindings needs tuple
@@ -389,78 +383,6 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			continue
 		}
 
-		// Subscript step whose Left has a Focus binding (join operator @):
-		// e.g., Contact@$c[$c.ssn = $e.SSN]. We evaluate the Left to get
-		// elements, bind each to $focus_var, then apply the predicate with
-		// access to both the focus variable and previously bound variables.
-		if evalStep.Type == parser.NodeBinary && evalStep.Value == "[" &&
-			evalStep.Left != nil && evalStep.Left.Focus != "" {
-			predicate := evalStep.Right
-			leftNode := evalStep.Left
-			focusVar := leftNode.Focus
-			indexVar := leftNode.Index
-			postFilterIndex := evalStep.Index
-			var err error
-			if nextCtxs, err = evalJoinFilter(ctxs, nextCtxs, leftNode, predicate, focusVar, indexVar); err != nil {
-				return nil, err
-			}
-			if postFilterIndex != "" {
-				for k := range nextCtxs {
-					nextCtxs[k].env.Bind(postFilterIndex, float64(k))
-				}
-			}
-			ctxs = nextCtxs
-			if len(ctxs) == 0 {
-				break
-			}
-			continue
-		}
-
-		// Compound subscript after a join-filter: binary "[" whose Left is a
-		// binary "[" with Left.Focus set. E.g., books@$b[pred][1] or
-		// books@$b[pred][]. Process the inner join-filter first to collect
-		// tuples, then apply the outer subscript to the entire tuple collection.
-		if evalStep.Type == parser.NodeBinary && evalStep.Value == "[" &&
-			evalStep.Left != nil && evalStep.Left.Type == parser.NodeBinary && evalStep.Left.Value == "[" &&
-			evalStep.Left.Left != nil && evalStep.Left.Left.Focus != "" {
-			// Process the inner join-filter as if it were a standalone step.
-			innerStep := evalStep.Left
-			predicate := innerStep.Right
-			leftNode := innerStep.Left
-			focusVar := leftNode.Focus
-			indexVar := leftNode.Index
-			var err error
-			if nextCtxs, err = evalJoinFilter(ctxs, nextCtxs, leftNode, predicate, focusVar, indexVar); err != nil {
-				return nil, err
-			}
-
-			// Apply the outer subscript to the collected tuples.
-			outerExpr := evalStep.Right
-			if len(nextCtxs) > 0 {
-				outerResult, err := Eval(outerExpr, nextCtxs[0].value, nextCtxs[0].env)
-				if err != nil {
-					return nil, err
-				}
-				if idx, ok := ToFloat64(outerResult); ok {
-					i := ToIntClamped(idx)
-					if i < 0 {
-						i = len(nextCtxs) + i
-					}
-					if i >= 0 && i < len(nextCtxs) {
-						nextCtxs = []pathCtx{nextCtxs[i]}
-					} else {
-						nextCtxs = nil
-					}
-				}
-			}
-
-			ctxs = nextCtxs
-			if len(ctxs) == 0 {
-				break
-			}
-			continue
-		}
-
 		if base, stages := splitTupleStages(evalStep); stepIdx >= tupleStart && len(stages) > 0 && isPlainTupleBase(base) {
 			var err error
 			if ctxs, err = evalTupleStages(base, stages, ctxs, node.KeepSingletonArray); err != nil {
@@ -729,61 +651,6 @@ const (
 	parentKey      = "%%"
 	parentJoinFlag = "%%j"
 )
-
-// evalJoinFilter evaluates a join-filter step: it walks ctxs, evaluates
-// leftNode against each context value, resolves the result into individual
-// items, binds focusVar (and optionally indexVar) in a child environment,
-// then keeps only contexts whose predicate evaluates to true.
-// Matching contexts are appended to dst and the updated slice is returned.
-func evalJoinFilter(ctxs, dst []pathCtx, leftNode, predicate *parser.Node, focusVar, indexVar string) ([]pathCtx, error) {
-	for _, ctx := range ctxs {
-		val := ctx.value
-		if seq, ok := val.(*Sequence); ok {
-			val = CollapseSequence(seq)
-		}
-		if val == nil {
-			continue
-		}
-		leftResult, err := evalPathStep(leftNode, val, ctx.env, false, false)
-		if err != nil {
-			return nil, err
-		}
-		if leftResult == nil {
-			continue
-		}
-		var items []any
-		switch rv := leftResult.(type) {
-		case []any:
-			items = rv
-		case *Sequence:
-			c := CollapseSequence(rv)
-			if arr, ok := c.([]any); ok {
-				items = arr
-			} else if c != nil {
-				items = []any{c}
-			}
-		default:
-			items = []any{leftResult}
-		}
-		for j, item := range items {
-			childEnv := NewChildEnvironment(ctx.env)
-			childEnv.Bind(parentKey, ctx.value)
-			childEnv.Bind(parentJoinFlag, true)
-			childEnv.Bind(focusVar, item)
-			if indexVar != "" {
-				childEnv.Bind(indexVar, float64(j))
-			}
-			predResult, err := Eval(predicate, item, childEnv)
-			if err != nil {
-				return nil, err
-			}
-			if ToBoolean(predResult) {
-				dst = append(dst, pathCtx{value: ctx.value, env: childEnv})
-			}
-		}
-	}
-	return dst, nil
-}
 
 // appendTupleResults flattens a step's result into individual (value, env) contexts.
 // It binds step.Index to the OUTPUT element position j (for #$var bindings),
@@ -1149,17 +1016,24 @@ type tupleStage struct {
 // @$var binding, or len(steps) when there is none. From that step on,
 // jsonata-js evaluates the path as a tuple stream.
 func firstBindingStep(steps []*parser.Node) int {
-	for i, step := range steps {
-		for n := step; n != nil; n = n.Left {
-			if n.Index != "" || n.Focus != "" {
-				return i
-			}
-			if n.Type != parser.NodeBinary || n.Value != "[" {
-				break
-			}
-		}
+	if i := slices.IndexFunc(steps, stepHasBinding); i >= 0 {
+		return i
 	}
 	return len(steps)
+}
+
+// stepHasBinding reports whether a step, or any subscript it is predicated
+// on, carries a #$var or @$var binding, as in X#$i[p1][p2].
+func stepHasBinding(step *parser.Node) bool {
+	for n := step; n != nil; n = n.Left {
+		if n.Index != "" || n.Focus != "" {
+			return true
+		}
+		if n.Type != parser.NodeBinary || n.Value != "[" {
+			return false
+		}
+	}
+	return false
 }
 
 // splitTupleStages splits a step such as X[p1]#$i[p2] into its base step X
@@ -1175,13 +1049,14 @@ func splitTupleStages(step *parser.Node) (*parser.Node, []tupleStage) {
 }
 
 // isPlainTupleBase reports whether a predicated step's base is one that
-// evalTupleStages can expand per context; joins and % keep their dedicated
-// handling.
+// evalTupleStages can expand per context. Groups keep their dedicated
+// handling, and so does a base referencing % unless it carries an @$v
+// binding, which only evalTupleStages binds.
 func isPlainTupleBase(base *parser.Node) bool {
 	switch base.Type {
 	case parser.NodeName, parser.NodeString, parser.NodeWildcard, parser.NodeDescendant,
 		parser.NodeBlock, parser.NodeFunction, parser.NodeVariable, parser.NodeUnary:
-		return base.Focus == "" && base.Group == nil && !nodeHasParentRef(base)
+		return base.Group == nil && (base.Focus != "" || !nodeHasParentRef(base))
 	}
 	return false
 }

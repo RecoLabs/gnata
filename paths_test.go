@@ -124,6 +124,22 @@ var bindingOperatorCases = []exprCase{
 	{expr: `a.(b)@$v.$v`, data: `{"a":[{"b":[1,2],"c":"x"},{"b":[3],"c":"y"}]}`, want: `[1,2,3]`},
 	{expr: `a.(b)@$v.c`, data: `{"a":[{"b":[1,2],"c":"x"},{"b":[3],"c":"y"}]}`, want: `["x","x","y"]`},
 	{expr: `a.(b)#$i.$i`, data: `{"a":[{"b":[1,2],"c":"x"},{"b":[3],"c":"y"}]}`, want: `[0,1,0]`},
+	{expr: `Account.Order.Product#$i[true][0].Name`, data: accountJSON, want: `"Hat"`},
+	{expr: `Account.Order.Product#$i[Price>5][-1].Name`, data: accountJSON, want: `"Bag"`},
+	{expr: `Account.Order.Product#$i[Price<20][$i=0].Name`, data: accountJSON, want: `"Hat"`},
+	{expr: `Account.Order.Product#$i[true][[0,2]].Name`, data: accountJSON, want: `["Hat","Bag"]`},
+	{expr: `Account.Order.Product#$i[true][true][1].{"n":Name,"i":$i}`, data: accountJSON, want: `{"i":1,"n":"Cap"}`},
+	{expr: `Account.Order.(Product)#$i[true][0].Name`, data: accountJSON, want: `"Hat"`},
+	{expr: `Account.Order.Product@$p[0].$p.Name`, data: accountJSON, want: `"Hat"`},
+	{expr: `Account.Order.Product@$p[$p.Price>5][0].$p.Name`, data: accountJSON, want: `"Hat"`},
+	{expr: `Account.Order.Product@$p[OrderID="o2"].$p.Name`, data: accountJSON, want: `"Bag"`},
+	{
+		expr: `library.loans@$l.books@$b[$l.isbn=$b.isbn][$l.customer!="c1"][0].$b.title`, data: libraryJSON,
+		want: `"B"`,
+	},
+	{expr: `library.loans@$l.books@$b[$l.isbn=$b.isbn][[0,2]].$l.customer`, data: libraryJSON, want: `["c1","c3"]`},
+	{expr: `Account.Order.(Product[%.OrderID="o1"])@$p[$p.Price>5].$p.Name`, data: accountJSON, want: `"Hat"`},
+	{expr: `Account.Order.(Product.%)@$o[$o.OrderID="o2"].$o.OrderID`, data: accountJSON, want: `"o2"`},
 }
 
 var groupAndSortCases = []exprCase{
