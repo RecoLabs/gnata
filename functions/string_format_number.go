@@ -1,6 +1,7 @@
 package functions
 
 import (
+	"errors"
 	"math"
 	"slices"
 	"strconv"
@@ -153,9 +154,12 @@ func containsScaling(s string, fc fmtChars) (int, error) {
 	return 0, nil
 }
 
-// scanSubPictureRegion finds the active region (prefix/suffix boundaries),
-// validates its characters, and determines the scaling factor.
-func scanSubPictureRegion(runes []rune, fc fmtChars, sp *subPicture) (active []rune, _ error) {
+// scanSubPictureRegion finds the active region (prefix/suffix boundaries)
+// and determines the scaling factor. passiveInside reports a passive
+// character within the active region, which the caller turns into D3086 once
+// it knows no later check fails: jsonata-js runs every picture check in code
+// order and reports the last failure.
+func scanSubPictureRegion(runes []rune, fc fmtChars, sp *subPicture) (active []rune, passiveInside bool, _ error) {
 	start := 0
 	for start < len(runes) && !isActiveChar(runes[start], fc) {
 		start++
@@ -165,22 +169,32 @@ func scanSubPictureRegion(runes []rune, fc fmtChars, sp *subPicture) (active []r
 		end--
 	}
 	if start > end {
-		return nil, &evaluator.JSONataError{Code: "D3085", Message: "$formatNumber: picture has no digit or separator characters"}
+		if len(runes) > 0 {
+			return nil, false, &evaluator.JSONataError{Code: "D3086", Message: "$formatNumber: picture has only passive characters"}
+		}
+		return nil, false, &evaluator.JSONataError{Code: "D3085", Message: "$formatNumber: picture has no digit or separator characters"}
 	}
 	sp.prefix = string(runes[:start])
 	sp.suffix = string(runes[end+1:])
 	active = runes[start : end+1]
-	for _, c := range active {
-		if !isActiveChar(c, fc) && c != fc.percent && c != fc.perMille {
-			return nil, &evaluator.JSONataError{Code: "D3086", Message: "$formatNumber: invalid character in active picture region"}
-		}
-	}
+	passiveInside = slices.ContainsFunc(active, func(c rune) bool {
+		return !isActiveChar(c, fc) && c != fc.percent && c != fc.perMille
+	})
 	scale, err := containsScaling(string(runes), fc)
 	if err != nil {
-		return nil, err
+		return nil, passiveInside, err
 	}
 	sp.scale = scale
-	return active, nil
+	return active, passiveInside, nil
+}
+
+// misplacedPassiveError is D3086 for a passive character inside the active
+// region, unless err is a check jsonata-js runs after it (a higher code).
+func misplacedPassiveError(err error) error {
+	if je := new(evaluator.JSONataError); errors.As(err, &je) && je.Code > "D3086" {
+		return err
+	}
+	return &evaluator.JSONataError{Code: "D3086", Message: "$formatNumber: invalid character in active picture region"}
 }
 
 // locateSubPictureSeparators finds the decimal and exponent positions within
@@ -211,24 +225,29 @@ func locateSubPictureSeparators(active []rune, fc fmtChars, scale int) (decPos, 
 }
 
 func parseSubPicture(pic string, fc fmtChars) (subPicture, error) {
-	runes := []rune(pic)
-	sp := subPicture{}
-
-	active, err := scanSubPictureRegion(runes, fc, &sp)
-	if err != nil {
-		return sp, err
+	var sp subPicture
+	active, passiveInside, err := scanSubPictureRegion([]rune(pic), fc, &sp)
+	if err == nil {
+		err = parseActiveRegion(active, fc, &sp)
 	}
+	if passiveInside {
+		return sp, misplacedPassiveError(err)
+	}
+	return sp, err
+}
 
+// parseActiveRegion fills sp from the active region of a sub-picture.
+func parseActiveRegion(active []rune, fc fmtChars, sp *subPicture) error {
 	decPos, expPos, err := locateSubPictureSeparators(active, fc, sp.scale)
 	if err != nil {
-		return sp, err
+		return err
 	}
 
 	var intPart, fracPart, expPart []rune
 	switch {
 	case decPos >= 0 && expPos >= 0:
 		if expPos < decPos {
-			return sp, &evaluator.JSONataError{Code: "D3085", Message: "$formatNumber: invalid picture"}
+			return &evaluator.JSONataError{Code: "D3085", Message: "$formatNumber: invalid picture"}
 		}
 		intPart = active[:decPos]
 		fracPart = active[decPos+1 : expPos]
@@ -247,8 +266,8 @@ func parseSubPicture(pic string, fc fmtChars) (subPicture, error) {
 		sp.hasDecimal = true
 	}
 
-	if err := parseIntPart(intPart, fc, &sp); err != nil {
-		return sp, err
+	if err := parseIntPart(intPart, fc, sp); err != nil {
+		return err
 	}
 
 	hasFracDigit := false
@@ -258,12 +277,15 @@ func parseSubPicture(pic string, fc fmtChars) (subPicture, error) {
 			break
 		}
 	}
+	if expPos >= 0 && (len(expPart) == 0 || slices.ContainsFunc(expPart, func(c rune) bool { return !isDigitChar(c, fc) })) {
+		return &evaluator.JSONataError{Code: "D3093", Message: "$formatNumber: exponent part must consist of decimal digits only"}
+	}
 	if !sp.hasAnyIntDigit && !hasFracDigit && (decPos >= 0 || expPos >= 0) {
-		return sp, &evaluator.JSONataError{Code: "D3085", Message: "$formatNumber: picture has no digit placeholders in mantissa"}
+		return &evaluator.JSONataError{Code: "D3085", Message: "$formatNumber: picture has no digit placeholders in mantissa"}
 	}
 
-	if err := parseFracPart(fracPart, fc, &sp); err != nil {
-		return sp, err
+	if err := parseFracPart(fracPart, fc, sp); err != nil {
+		return err
 	}
 
 	for _, c := range expPart {
@@ -273,7 +295,7 @@ func parseSubPicture(pic string, fc fmtChars) (subPicture, error) {
 	}
 	sp.expMinWidth = sp.expMandatory
 
-	return sp, nil
+	return nil
 }
 
 func parseIntPart(intPart []rune, fc fmtChars, sp *subPicture) error {
@@ -410,7 +432,8 @@ func formatNumberPicture(n float64, picture string, opts map[string]any) (string
 	if sp.expMandatory > 0 {
 		result = formatWithExponent(n, &sp, fc)
 	} else {
-		result = formatFixed(strconv.FormatFloat(n, 'f', sp.fracMandatory+sp.fracOptional, 64), &sp, fc)
+		frac := sp.fracMandatory + sp.fracOptional
+		result = formatFixed(strconv.FormatFloat(bankersRound(n, frac), 'f', frac, 64), &sp, fc)
 	}
 	return sp.prefix + applyDigitFamily(result, fc.zeroDigit) + sp.suffix, nil
 }
@@ -470,12 +493,16 @@ func formatFixed(formatted string, sp *subPicture, fc fmtChars) string {
 		fracStr = parts[1]
 	}
 
-	minInt := sp.intMandatory
-	if minInt < 1 && !sp.hasDecimal && !sp.hasAnyIntDigit {
-		minInt = 1
-	} else if minInt < 1 && sp.intOptional > 0 {
+	// XPath F&O §4.7.5: the integer part keeps only its mandatory digits, so
+	// "#.0" renders 0.5 as ".5", unless the picture has no digits at all.
+	minInt, minFrac := sp.intMandatory, sp.fracMandatory
+	if minInt == 0 && sp.fracMandatory+sp.fracOptional == 0 {
 		minInt = 1
 	}
+	if minInt == 0 && minFrac == 0 {
+		minFrac = 1
+	}
+	intStr = strings.TrimLeft(intStr, "0")
 	for len(intStr) < minInt {
 		intStr = "0" + intStr
 	}
@@ -484,14 +511,14 @@ func formatFixed(formatted string, sp *subPicture, fc fmtChars) string {
 		intStr = applyIntGrouping(intStr, sp.intGrpPos, string(fc.groupingSep))
 	}
 
-	if sp.fracOptional > 0 && len(fracStr) > sp.fracMandatory {
+	if len(fracStr) > minFrac {
 		trimmed := strings.TrimRight(fracStr, "0")
-		if len(trimmed) < sp.fracMandatory {
-			trimmed = fracStr[:sp.fracMandatory]
+		if len(trimmed) < minFrac {
+			trimmed = fracStr[:minFrac]
 		}
 		fracStr = trimmed
 	}
-	for len(fracStr) < sp.fracMandatory {
+	for len(fracStr) < minFrac {
 		fracStr += "0"
 	}
 
@@ -499,7 +526,7 @@ func formatFixed(formatted string, sp *subPicture, fc fmtChars) string {
 		fracStr = applyFracGrouping(fracStr, sp.fracGrpPos, string(fc.groupingSep))
 	}
 
-	if fracStr != "" || sp.hasDecimal {
+	if fracStr != "" {
 		return intStr + string(fc.decimalSep) + fracStr
 	}
 	return intStr
@@ -551,19 +578,8 @@ func formatWithExponent(n float64, sp *subPicture, fc fmtChars) string {
 	N := sp.intMandatory
 	fracSig := expFracDigits(sp)
 
-	exp := 0
-	if n != 0 {
-		logVal := math.Floor(math.Log10(math.Abs(n)))
-		if N > 0 {
-			exp = int(logVal) - (N - 1)
-		} else {
-			exp = int(logVal) + 1
-		}
-	}
-	mantissa := n / math.Pow10(exp)
-
-	factor := math.Pow10(fracSig)
-	mantissa = math.Round(mantissa*factor) / factor
+	mantissa, exp := scaleMantissa(n, N)
+	mantissa = bankersRound(mantissa, fracSig)
 
 	var threshold float64
 	if N > 0 {
@@ -577,6 +593,34 @@ func formatWithExponent(n float64, sp *subPicture, fc fmtChars) string {
 	}
 
 	return formatExponent(strconv.FormatFloat(math.Abs(mantissa), 'f', fracSig, 64), exp, sp, fc)
+}
+
+// scaleMantissa returns mantissa and exp with mantissa × 10^exp = n and
+// 10^(intDigits-1) <= mantissa < 10^intDigits, for a non-negative n. It
+// scales by ten one step at a time, as jsonata-js does, so the mantissa
+// carries the same float64 rounding and rounds to the same digits.
+func scaleMantissa(n float64, intDigits int) (mantissa float64, exp int) {
+	if n == 0 || math.IsInf(n, 0) || math.IsNaN(n) {
+		return n, 0
+	}
+	maxMantissa, minMantissa := math.Pow10(intDigits), math.Pow10(intDigits-1)
+	if math.IsInf(maxMantissa, 0) {
+		// Stepping toward a bound float64 cannot hold overflows on the way,
+		// so place the shortest decimal form's digits directly.
+		digits, exponent, _ := strings.Cut(strconv.FormatFloat(n, 'e', -1, 64), "e")
+		logVal, _ := strconv.Atoi(exponent)
+		mantissa, _ = strconv.ParseFloat(digits+"e"+strconv.Itoa(intDigits-1), 64)
+		return mantissa, logVal - (intDigits - 1)
+	}
+	for n < minMantissa {
+		n *= 10
+		exp--
+	}
+	for n >= maxMantissa {
+		n /= 10
+		exp++
+	}
+	return n, exp
 }
 
 // formatExponent lays out mantissa, in plain digits with expFracDigits
@@ -606,7 +650,7 @@ func formatExponent(mantissa string, exp int, sp *subPicture, fc fmtChars) strin
 
 	var mantissaPart string
 	if sp.hasAnyIntDigit || sp.intMandatory > 0 {
-		if fracStr != "" || sp.hasDecimal {
+		if fracStr != "" {
 			mantissaPart = intStr + string(fc.decimalSep) + fracStr
 		} else {
 			mantissaPart = intStr

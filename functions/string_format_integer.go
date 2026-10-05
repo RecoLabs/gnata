@@ -106,20 +106,11 @@ func formatIntegerWithPicture(n int64, picture string) (string, error) {
 		result = toRoman(absN, true)
 	default:
 		runes := []rune(formatToken)
-		if len(runes) == 1 {
-			ch := runes[0]
-			if ch >= 'a' && ch <= 'z' {
-				result = toAlphabetic(absN, 'a')
-				break
-			}
-			if ch >= 'A' && ch <= 'Z' && ch != 'W' && ch != 'I' {
-				result = toAlphabetic(absN, 'A')
-				break
-			}
+		if formatToken == "a" || formatToken == "A" {
+			result = toAlphabetic(absN, runes[0])
+			break
 		}
-		if !slices.ContainsFunc(runes, func(c rune) bool {
-			return c == '#' || (c >= '0' && c <= '9') || unicodeDigitZero(c) != 0
-		}) {
+		if !slices.ContainsFunc(runes, isPictureDigit) {
 			return "", &evaluator.JSONataError{Code: "D3130", Message: fmt.Sprintf("$formatInteger: unsupported picture string %q", formatToken)}
 		}
 		var err error
@@ -152,27 +143,9 @@ func splitPictureModifier(picture string) (token, modifier string) {
 func formatIntegerDecimal(n int64, picture string) (string, error) {
 	runes := []rune(picture)
 
-	zeroRune := '0'
-	foundFamily := false
-	for _, c := range runes {
-		if c >= '0' && c <= '9' {
-			if foundFamily && zeroRune != '0' {
-				return "", &evaluator.JSONataError{Code: "D3131", Message: "$formatInteger: mixed digit families in picture"}
-			}
-			zeroRune = '0'
-			foundFamily = true
-			continue
-		}
-		if z := unicodeDigitZero(c); z != 0 {
-			if foundFamily && zeroRune != z {
-				return "", &evaluator.JSONataError{Code: "D3131", Message: "$formatInteger: mixed digit families in picture"}
-			}
-			if foundFamily && zeroRune == '0' {
-				return "", &evaluator.JSONataError{Code: "D3131", Message: "$formatInteger: mixed digit families in picture"}
-			}
-			zeroRune = z
-			foundFamily = true
-		}
+	zeroRune, err := digitFamilyZero(picture)
+	if err != nil {
+		return "", err
 	}
 
 	mandatoryCount := 0
@@ -180,7 +153,7 @@ func formatIntegerDecimal(n int64, picture string) (string, error) {
 	for _, c := range runes {
 		if c == '#' {
 			totalDigits++
-		} else if (c >= '0' && c <= '9') || isUnicodeDigit(c) {
+		} else if isPictureDigit(c) {
 			mandatoryCount++
 			totalDigits++
 		}
@@ -196,7 +169,7 @@ func formatIntegerDecimal(n int64, picture string) (string, error) {
 	var grpInfos []grpInfo
 	digitFromRight := 0
 	for _, c := range slices.Backward(runes) {
-		if c == '#' || (c >= '0' && c <= '9') || isUnicodeDigit(c) {
+		if c == '#' || isPictureDigit(c) {
 			digitFromRight++
 		} else if digitFromRight > 0 {
 			grpInfos = append(grpInfos, grpInfo{c, digitFromRight})
@@ -205,9 +178,7 @@ func formatIntegerDecimal(n int64, picture string) (string, error) {
 
 	digits := strconv.FormatInt(n, 10)
 	if len(digits) < mandatoryCount {
-		for len(digits) < mandatoryCount {
-			digits = "0" + digits
-		}
+		digits = strings.Repeat("0", mandatoryCount-len(digits)) + digits
 	}
 
 	type grpAnon = struct {
@@ -300,6 +271,29 @@ func applyDigitFamilyRune(s string, zero rune) string {
 	return sb.String()
 }
 
+// digitFamilyZero returns the zero digit of the first decimal digit family in
+// picture, '0' when it has no digits, and D3131 when it mixes families.
+func digitFamilyZero(picture string) (rune, error) {
+	var zero rune
+	for _, c := range picture {
+		family := unicodeDigitZero(c)
+		if c >= '0' && c <= '9' {
+			family = '0'
+		}
+		if family == 0 || family == zero {
+			continue
+		}
+		if zero != 0 {
+			return zero, &evaluator.JSONataError{Code: "D3131", Message: "$formatInteger: mixed digit families in picture"}
+		}
+		zero = family
+	}
+	if zero == 0 {
+		zero = '0'
+	}
+	return zero, nil
+}
+
 func unicodeDigitZero(c rune) rune {
 	for _, z := range unicodeZeros {
 		if c >= z && c <= z+9 {
@@ -318,13 +312,10 @@ var unicodeZeros = []rune{
 	'\uFF10',
 }
 
-func isUnicodeDigit(c rune) bool {
-	for _, z := range unicodeZeros {
-		if c >= z && c <= z+9 {
-			return true
-		}
-	}
-	return false
+// isPictureDigit reports whether c is a mandatory digit of a picture string,
+// in ASCII or any other decimal digit family.
+func isPictureDigit(c rune) bool {
+	return (c >= '0' && c <= '9') || unicodeDigitZero(c) != 0
 }
 
 func ordinalSuffix(n int64) string {
@@ -506,7 +497,7 @@ func formatBigFloatWords(f float64, formatToken, modifier string) string {
 		}
 	}
 	if negative {
-		words = "minus " + words
+		words = "-" + words
 	}
 	return words
 }

@@ -908,7 +908,7 @@ func TestDecimalFunctions(t *testing.T) {
 		{desc: "format_number_exponent_negative", expr: `$formatNumber(-0.00015, "0.0e00")`, want: `"-1.5e-04"`, sameInFloat64: true},
 		{desc: "format_number_exponent_tiny", expr: `$formatNumber(1.5e-300, "0.0e0")`, want: `"1.5e-300"`, sameInFloat64: true},
 		{desc: "format_number_exponent_zero", expr: `$formatNumber(0, "0.0e0")`, want: `"0.0e0"`, sameInFloat64: true},
-		{desc: "format_number_exponent_range", expr: `$substring($formatNumber(1e10, p), 0, 4)`, payload: `{"p":"` + strings.Repeat("0", 309) + `e0"}`, want: `"0999"`, sameInFloat64: true},
+		{desc: "format_number_exponent_range", expr: `$substring($formatNumber(1e10, p), 0, 4)`, payload: `{"p":"` + strings.Repeat("0", 309) + `e0"}`, want: `"1000"`, sameInFloat64: true},
 		{desc: "format_number_scale_overflow", expr: `$formatNumber(a, "0‰")`, payload: `{"a":9e307}`, want: `"+Inf‰"`, sameInFloat64: true},
 		{desc: "format_number_long_picture", expr: `$formatNumber(1.5, p)`, payload: `{"p":"0.` + strings.Repeat("0", 10_001) + `"}`, want: `"1.5` + strings.Repeat("0", 10_000) + `"`, sameInFloat64: true},
 		{desc: "format_number_picture_number", expr: `$formatNumber(1.5, 1)`, code: "T0410", sameInFloat64: true},
