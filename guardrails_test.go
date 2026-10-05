@@ -122,6 +122,22 @@ func TestWithTimeout_SlowCallsBoundOverrun(t *testing.T) {
 	}
 }
 
+// A $lookup over arrays that share nested arrays visits 2^40 items here, so
+// the walk itself must stop at the deadline.
+func TestWithTimeout_LookupNestedArrays(t *testing.T) {
+	e, err := gnata.Compile(
+		`$lookup($reduce([1..40], function($acc, $i){[[$acc],[$acc]]}, [{"b":1}]), "a")`,
+		gnata.WithTimeout(50*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	_, err = e.Eval(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "D1012") {
+		t.Fatalf("expected D1012, got %v", err)
+	}
+}
+
 func TestWithTimeout_ParentCancellationPreserved(t *testing.T) {
 	e, err := gnata.Compile("1+1", gnata.WithTimeout(time.Minute))
 	if err != nil {
