@@ -315,6 +315,8 @@ var toMillisCases = []exprCase{
 	// The rest differ from jsonata-js (README known differences #4 and #14).
 	{expr: `$toMillis("2018-04-01T10:00+596524:00", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: undefined},
 	{expr: `$toMillis("2018-04-01T10:00+99999999999999999999:00", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: undefined},
+	{expr: `$toMillis("2018-04-01 10+05:10000000005", "[Y]-[M]-[D] [H][Z][m]")`, want: undefined},
+	{expr: `$toMillis("` + strings.Repeat("one ", 4000) + `x", "` + strings.Repeat("[Fw] ", 2000) + `y")`, want: undefined},
 	{expr: `$toMillis("2018-04-01T10:00-02:30", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: `1522585800000`},
 	{expr: `$toMillis("13:45", "[H]:[m]") % 86400000`, want: `49500000`},
 	{expr: `$toMillis("2018", "[Y")`, code: "D3135"},

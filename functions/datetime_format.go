@@ -227,9 +227,11 @@ func paddingWidth(m dateMarker) int {
 	return max(m.minWidth, 0)
 }
 
-// parseMarkerWidth reads a width the way JavaScript's parseInt does, taking an
-// optional "+" and the leading digits and ignoring the rest; "*" or no digits
-// means no width, and a width too large for an int reads as math.MaxInt.
+// parseMarkerWidth reads a width as JavaScript's parseInt reads a decimal one,
+// taking an optional "+" and the leading digits and ignoring the rest; "*" or
+// no digits means no width, and a width too large for an int reads as
+// math.MaxInt. A negative or "0x" width is no width (README known
+// difference #10).
 func parseMarkerWidth(spec string) int {
 	digits := []rune(strings.TrimPrefix(spec, "+"))
 	end := leadingDigits(digits, 0)

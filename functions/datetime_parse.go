@@ -58,123 +58,11 @@ func parseWithPicture(input, picture string, now time.Time, stop func() error) (
 			components[part.marker.component] = match.values[i]
 		}
 	}
-	if len(components) == 0 {
+	if len(components) == 0 || components['Z'] == tzOutOfRange || components['z'] == tzOutOfRange {
 		return 0, false, nil
 	}
 	millis, err = resolveParsedDate(components, now)
 	return millis, err == nil, err
-}
-
-// matchStepsPerRune bounds the runes a match may parse in total, per rune of
-// input and part of picture, so that backtracking stays linear in both; a
-// match that runs out reads as no match (README known difference #16).
-const matchStepsPerRune = 256
-
-// pictureMatch matches input against a picture's parts as jsonata-js's
-// anchored regex does: each marker reads as much as it can, then gives back
-// one rune at a time until the parts after it match. failed memoizes the
-// (part, position) pairs that cannot match.
-type pictureMatch struct {
-	parts  []datePicturePart
-	input  []rune
-	values []int
-	failed map[[2]int]bool
-	steps  int // runes the match may still parse
-	stop   func() error
-	err    error // why the match stopped early, from stop
-}
-
-func newPictureMatch(parts []datePicturePart, input string, stop func() error) *pictureMatch {
-	runes := []rune(input)
-	return &pictureMatch{
-		parts: parts, input: runes, values: make([]int, len(parts)), failed: map[[2]int]bool{},
-		steps: matchStepsPerRune * min(len(runes)+len(parts)+1, math.MaxInt/matchStepsPerRune), stop: stop,
-	}
-}
-
-// spend charges n parsed runes, plus one for the attempt, to the match,
-// reporting false once its steps run out or stop reports an error.
-func (pm *pictureMatch) spend(n int) bool {
-	if pm.steps -= n + 1; pm.steps < 0 {
-		return false
-	}
-	if pm.err == nil {
-		pm.err = pm.stop()
-	}
-	return pm.err == nil
-}
-
-// matchFrame is part i being matched at input position pos; next is the
-// next length to try for it, 0 when none is left.
-type matchFrame struct{ i, pos, next int }
-
-// run reports whether the parts match the whole input, recording each
-// marker's value in values. It searches depth first on an explicit stack, so
-// a long picture cannot exhaust the goroutine's.
-func (pm *pictureMatch) run() bool {
-	stack := []matchFrame{pm.enter(0, 0)}
-	for len(stack) > 0 {
-		top := &stack[len(stack)-1]
-		if top.i == len(pm.parts) {
-			if top.pos == len(pm.input) {
-				return true
-			}
-			stack = stack[:len(stack)-1]
-			continue
-		}
-		k, value, ok := pm.nextLength(top)
-		if !ok {
-			if pm.steps < 0 || pm.err != nil {
-				return false
-			}
-			pm.failed[[2]int{top.i, top.pos}] = true
-			stack = stack[:len(stack)-1]
-			continue
-		}
-		pm.values[top.i] = value
-		stack = append(stack, pm.enter(top.i+1, top.pos+k))
-	}
-	return false
-}
-
-// enter starts matching part i at pos: a literal has one length to try, a
-// marker every length from the longest it can read down to one.
-func (pm *pictureMatch) enter(i, pos int) matchFrame {
-	f := matchFrame{i: i, pos: pos}
-	switch {
-	case i == len(pm.parts), pm.failed[[2]int{i, pos}]:
-	case !pm.parts[i].isMarker:
-		f.next = utf8.RuneCountInString(pm.parts[i].literal)
-	default:
-		f.next = longestMatch(pm.input[pos:], pm.parts[i].marker)
-	}
-	return f
-}
-
-// nextLength returns the next length at which the frame's part matches, with
-// the marker's value, reporting false when none is left or the match stops.
-func (pm *pictureMatch) nextLength(f *matchFrame) (length, value int, ok bool) {
-	part, rest := &pm.parts[f.i], pm.input[f.pos:]
-	for f.next > 0 {
-		k := f.next
-		f.next--
-		if !part.isMarker {
-			f.next = 0
-		}
-		if !pm.spend(k) {
-			return 0, 0, false
-		}
-		if !part.isMarker {
-			if hasFoldPrefix(rest, part.literal) {
-				return k, 0, true
-			}
-			continue
-		}
-		if value, n := parseMarkerValue(rest[:k], part.marker); n == k {
-			return k, value, true
-		}
-	}
-	return 0, 0, false
 }
 
 // longestMatch returns the most runes a marker can read at the start of
@@ -407,8 +295,9 @@ const maxDateMillis = 8.64e15
 // components too large for time.Date's int arithmetic are rejected first.
 func nearDateRange(year, month, day, hour, minute, second int) bool {
 	const msPerDay, daysPerYear, slackDays = 86_400_000, 365.2425, 2
-	// math.MaxInt marks a component that overflowed (atoiSaturating). With
-	// 32-bit ints it can still estimate in range, as minutes for example.
+	// math.MaxInt marks a component that overflowed (atoiSaturating). On
+	// 32-bit targets that is 2³¹−1, which as minutes, about 4,000 years,
+	// would pass the estimate below.
 	if slices.Contains([]int{year, month, day, hour, minute, second}, math.MaxInt) {
 		return false
 	}
@@ -449,7 +338,13 @@ func leadingDigits(runes []rune, width int) int {
 // every platform gnata builds for, 32-bit TinyGo included: about 68 years.
 const maxTZOffsetSeconds = math.MaxInt32
 
-// parseTZFromInput reads a [Z] or [z] offset in seconds, matched by scanTZ.
+// tzOutOfRange is the offset parseTZFromInput reads for one over
+// maxTZOffsetSeconds, which no in-range offset can equal.
+const tzOutOfRange = math.MinInt
+
+// parseTZFromInput reads a [Z] or [z] offset in seconds, matched by scanTZ;
+// an offset too large still matches, as tzOutOfRange, so that it does not
+// give its digits to the parts after it.
 func parseTZFromInput(runes []rune, m dateMarker) (offset, consumed int) {
 	sign, hours, mins, n := scanTZ(runes, m)
 	if n == 0 || sign == 0 {
@@ -457,7 +352,7 @@ func parseTZFromInput(runes []rune, m dateMarker) (offset, consumed int) {
 	}
 	seconds, ok := offsetSeconds(hours, mins)
 	if !ok {
-		return 0, 0
+		return tzOutOfRange, n
 	}
 	return sign * seconds, n
 }
@@ -526,21 +421,25 @@ func offsetSeparator(presentation string) rune {
 // offsetSeconds converts an offset's hour and minute digits to seconds,
 // reporting false when it exceeds maxTZOffsetSeconds.
 func offsetSeconds(hourDigits, minuteDigits []rune) (int, bool) {
-	hours, err := strconv.ParseInt(string(hourDigits), 10, 64)
-	if err != nil || hours > maxTZOffsetSeconds/3600 {
+	hours, okHours := offsetUnits(hourDigits, 3600)
+	minutes, okMinutes := offsetUnits(minuteDigits, 60)
+	if seconds := hours + minutes; okHours && okMinutes && seconds <= maxTZOffsetSeconds {
+		return int(seconds), true
+	}
+	return 0, false
+}
+
+// offsetUnits converts digits counting units of the given seconds, none being
+// zero, reporting false when they exceed maxTZOffsetSeconds.
+func offsetUnits(digits []rune, seconds int64) (int64, bool) {
+	if len(digits) == 0 {
+		return 0, true
+	}
+	n, err := strconv.ParseInt(string(digits), 10, 64)
+	if err != nil || n > maxTZOffsetSeconds/seconds {
 		return 0, false
 	}
-	minutes := int64(0)
-	if len(minuteDigits) > 0 {
-		if minutes, err = strconv.ParseInt(string(minuteDigits), 10, 64); err != nil || minutes > maxTZOffsetSeconds/60 {
-			return 0, false
-		}
-	}
-	seconds := hours*3600 + minutes*60
-	if seconds > maxTZOffsetSeconds {
-		return 0, false
-	}
-	return int(seconds), true
+	return n * seconds, true
 }
 
 // parseTokenValue reads an integer marker's value. Month names read their
@@ -690,10 +589,13 @@ func parseMonthName(runes []rune, modifier string) (month, consumed int) {
 	return -1, -1
 }
 
+// maxWordNumberRunes bounds how much input a word number is read from, far
+// beyond the longest one gnata parses, so that each try at matching a picture
+// costs the same however much input follows.
+const maxWordNumberRunes = 1024
+
 func parseWordNumber(runes []rune, _ string) (value, consumed int) {
-	// Consume up to the end of a word-number expression.
-	// Word numbers end at a non-word char that's not '-' or space.
-	n, v := parseWordNumberFromString(string(runes))
+	n, v := parseWordNumberFromString(string(runes[:min(len(runes), maxWordNumberRunes)]))
 	if n == 0 {
 		return -1, -1
 	}
