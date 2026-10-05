@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/recolabs/gnata/internal/evaluator"
 	"github.com/recolabs/gnata/internal/parser"
@@ -96,9 +98,13 @@ func fnBase64Decode(args []any, _ any) (any, error) {
 
 // ── $encodeUrl / $encodeUrlComponent / $decodeUrl / $decodeUrlComponent ───────
 
-const encodeURISafe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'();/?:@&=+$,#"
+const encodeURISafe = encodeURIComponentSafe + uriReserved
 
 const encodeURIComponentSafe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
+
+// uriReserved are the characters ECMAScript's encodeURI leaves and decodeURI
+// keeps escaped, so a URL's delimiters keep their meaning.
+const uriReserved = ";/?:@&=+$,#"
 
 func fnEncodeURL(args []any, _ any) (any, error) {
 	if len(args) == 0 || args[0] == nil {
@@ -155,31 +161,77 @@ func encodeWithSafeChars(s, safe string) string {
 }
 
 func fnDecodeURL(args []any, _ any) (any, error) {
+	return decodeURIArg("$decodeUrl", args, uriReserved)
+}
+
+func fnDecodeURLComponent(args []any, _ any) (any, error) {
+	return decodeURIArg("$decodeUrlComponent", args, "")
+}
+
+// jsonQuote quotes s as JSON, as jsonata-js quotes the values in its error
+// messages.
+func jsonQuote(s string) string {
+	quoted, _ := evaluator.AppendJSON(nil, s) // only numbers fail to encode
+	return string(quoted)
+}
+
+func decodeURIArg(name string, args []any, reserved string) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
 	s, ok := args[0].(string)
 	if !ok {
-		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$decodeUrl: argument must be a string"}
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": argument must be a string"}
 	}
-	decoded, err := url.PathUnescape(s)
-	if err != nil {
-		return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("$decodeUrl: %v", err)}
+	decoded, ok := decodeURI(s, reserved)
+	if !ok {
+		return nil, &evaluator.JSONataError{Code: "D3140", Message: fmt.Sprintf("Malformed URL passed to %s(): %s", name, jsonQuote(s))}
 	}
 	return decoded, nil
 }
 
-func fnDecodeURLComponent(args []any, _ any) (any, error) {
-	if len(args) == 0 || args[0] == nil {
-		return nil, nil
+// decodeURI ports ECMAScript's Decode, used by decodeURI and
+// decodeURIComponent: it decodes %XX escapes as UTF-8, keeps an escape of a
+// character in reserved as it is, and fails on a malformed escape or when a
+// run of decoded escapes is not valid UTF-8. Text outside escapes is copied
+// as it is.
+//
+// https://tc39.es/ecma262/#sec-decode
+func decodeURI(s, reserved string) (string, bool) {
+	if strings.IndexByte(s, '%') < 0 {
+		return s, true
 	}
-	s, ok := args[0].(string)
-	if !ok {
-		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$decodeUrlComponent: argument must be a string"}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] != '%' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		run := b.Len()
+		for i < len(s) && s[i] == '%' {
+			if i+3 > len(s) {
+				return "", false
+			}
+			c, err := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			if err != nil {
+				return "", false
+			}
+			if c < utf8.RuneSelf && strings.IndexByte(reserved, byte(c)) >= 0 {
+				break
+			}
+			b.WriteByte(byte(c))
+			i += 3
+		}
+		if !utf8.ValidString(b.String()[run:]) {
+			return "", false
+		}
+		if i < len(s) && s[i] == '%' {
+			// A reserved character's escape, kept as written.
+			b.WriteString(s[i : i+3])
+			i += 3
+		}
 	}
-	decoded, err := url.PathUnescape(s)
-	if err != nil {
-		return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("$decodeUrlComponent: %v", err)}
-	}
-	return decoded, nil
+	return b.String(), true
 }
