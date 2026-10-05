@@ -375,7 +375,8 @@ gnata targets exact parity with the JSONata reference implementation ([jsonata-j
 | 12 | **Regex match positions** | `$match("😀ab", /a/).index` → `1` | `2` | gnata counts code points, like `$length` and `$substring`; jsonata-js counts UTF-16 units. Applies to `index`, `start` and `end`. |
 | 13 | **Exponent mantissa width** | `$formatNumber(1000, "0.0e0")` → `"1.0e3"` | `"10.0e2"` | gnata keeps the mantissa within the picture's integer digits, also when rounding carries over (`9.95` → `"1.0e1"`, not `"10.0e0"`). |
 | 14 | **Negative offsets in `[Z]`** | `$fromMillis(0, "[Z0000]", "-0530")` → `"-0530"` | `"-0630"` | jsonata-js floors a negative `hhmm` offset into its hours, so half-hour zones west of UTC lose an hour. |
-| 15 | **Match object `next`** | `$replace("ababab", /b/, function($m){ $m.next() ? "X" : "Y" })` → `"aXaXaY"` | `"aXabaY"` | Only `$replace` callbacks get `next`, which returns the match after `$m`. jsonata-js advances the cursor `$replace` itself uses, skipping the returned match. `$match` and `~> /re/` results omit `next` so they hold no function values. |
+| 15 | **Match object `next`** | `$replace("ababab", /b/, function($m){ $m.next() ? "X" : "Y" })` → `"aXaXaY"` | `"aXabaY"` | Only `$replace` callbacks get `next`, which returns the match after `$m`. jsonata-js advances the cursor `$replace` itself uses, skipping the returned match. `$match`, `~> /re/` and `/re/(s)` results omit `next` so they hold no function values. |
+| 16 | **Regex called as a function** | `/b/("abc", 2)` → match at `1`; `/5/(5)` → `undefined` | `undefined`; a match | gnata searches a string from the start. jsonata-js reads a second argument as the offset to search from, so `$map`, which passes the index, skips matches before it. It also converts a non-string to a string, which gnata leaves unmatched, as with `~> /re/`. |
 
 ## Regex Engine: RE2 vs JavaScript RegExp
 
