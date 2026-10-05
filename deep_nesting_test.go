@@ -71,6 +71,8 @@ func TestDeepNesting(t *testing.T) {
 		{desc: "encode an object", expr: "$length($string($))", data: deepObject(), want: float64(len(objectJSON))},
 		{desc: "compare arrays", expr: "$[0] = $[1]", data: []any{deepArray(), deepArray()}, want: true},
 		{desc: "compare objects", expr: "$[0] = $[1]", data: []any{deepObject(), deepObject()}, want: true},
+		{desc: "descendants of an array", expr: "$count([**])", data: deepArray(), want: float64(deepNesting)},
+		{desc: "descendants of an object", expr: "$count([**])", data: deepObject(), want: float64(deepNesting)},
 		{desc: "encode built objects", expr: "$length($string(" + deepBuilt + "))", want: float64(len(objectJSON))},
 		{desc: "compare built objects", expr: "($f := function(){" + deepBuilt + "}; $f() = $f())", want: true},
 	}

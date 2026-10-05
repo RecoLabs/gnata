@@ -1460,33 +1460,54 @@ func evalPathFunctionStep(step *parser.Node, item any, env *Environment) (any, e
 	return callFunction(fn, args, item, env)
 }
 
-// descendantLookup recursively collects all values at all depths from maps and arrays.
-// It returns a *Sequence (never collapses to []any) so that appendToSequence can
-// properly flatten the results when building the descendant step sequence.
+// descendantLookup collects all values at all depths from maps and arrays, in
+// depth-first order. It returns a *Sequence (never collapses to []any) so that
+// appendToSequence can properly flatten the results when building the
+// descendant step sequence.
 //
 // For arrays, individual elements are added (not the array as a whole), matching
 // JSONata semantics where ** traverses into arrays and exposes each element for
 // field lookup in subsequent path steps.
+//
+// The walk keeps each level's remaining values on an explicit stack rather
+// than recursing, so a deeply nested value cannot overflow the goroutine stack.
 func descendantLookup(input any) *Sequence {
 	seq := CreateSequence()
-	if IsMap(input) {
-		MapRange(input, func(_ string, val any) bool {
-			if arr, ok := val.([]any); ok {
-				for _, item := range arr {
-					appendToSequence(seq, item)
-					appendToSequence(seq, descendantLookup(item))
-				}
-			} else {
-				appendToSequence(seq, val)
-				appendToSequence(seq, descendantLookup(val))
-			}
-			return true
-		})
-	} else if arr, ok := input.([]any); ok {
-		for _, item := range arr {
-			appendToSequence(seq, item)
-			appendToSequence(seq, descendantLookup(item))
+	stack := [][]any{descendantChildren(input)}
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		if len(*top) == 0 {
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		v := (*top)[0]
+		*top = (*top)[1:]
+		appendToSequence(seq, v)
+		if children := descendantChildren(v); len(children) > 0 {
+			stack = append(stack, children)
 		}
 	}
 	return seq
+}
+
+// descendantChildren returns the values descendantLookup visits directly
+// below v: an array's items, or an object's values with each array value
+// replaced by its items.
+func descendantChildren(v any) []any {
+	if arr, ok := v.([]any); ok {
+		return arr
+	}
+	if !IsMap(v) {
+		return nil
+	}
+	children := make([]any, 0, MapLen(v))
+	MapRange(v, func(_ string, val any) bool {
+		if arr, ok := val.([]any); ok {
+			children = append(children, arr...)
+		} else {
+			children = append(children, val)
+		}
+		return true
+	})
+	return children
 }
