@@ -134,24 +134,42 @@ func isIntegerMarker(part *datePicturePart) bool {
 		!isNamePresentation(part.marker.presentation)
 }
 
-// digitsNeeded returns how many digits the run of decimal integer markers
-// starting at parts[0] needs. A marker before it that ends in a digit run
-// (endsInDigitRun) reads every digit, but jsonata-js's regex backtracks it to
-// leave each marker of the run its fixed width, or one digit.
+// digitsNeeded returns the fewest digits the parts starting at parts[0] read
+// before the first non-digit they require. A marker before them that ends in
+// a digit run (endsInDigitRun) reads every digit, but jsonata-js's regex
+// backtracks it to leave them those: a fixed width each, one digit for a
+// marker of any width, and a literal's leading digits. An ordinal's suffix or
+// a literal's first non-digit ends the run.
 func digitsNeeded(parts []datePicturePart) int {
 	needed := 0
 	for i := range parts {
 		next := &parts[i]
-		if !isIntegerMarker(next) || next.marker.component == 'f' {
-			break
+		if !next.isMarker {
+			digits := 0
+			for _, c := range next.literal {
+				if !unicode.IsDigit(c) {
+					return needed + digits
+				}
+				digits++
+			}
+			needed += digits
+			continue
 		}
-		if mandatory, _ := decimalPictureDigits(next.marker.presentation); mandatory == 0 {
-			break
+		m := &next.marker
+		if m.component == 'f' {
+			needed++
+			continue
 		}
-		if next.marker.parseWidth <= 0 {
-			return needed + 1
+		if !isIntegerMarker(next) {
+			return needed
 		}
-		needed += next.marker.parseWidth
+		if mandatory, _ := decimalPictureDigits(m.presentation); mandatory == 0 {
+			return needed
+		}
+		needed += max(m.parseWidth, 1)
+		if m.ordinal {
+			return needed
+		}
 	}
 	return needed
 }
