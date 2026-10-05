@@ -70,7 +70,7 @@ type sigParam struct {
 	symbols  uint8 // accepted type symbols (see symbolBit), including 'm' for undefined where allowed
 	optional bool  // '?', or '-', which jsonata-js turns into '?'
 	variadic bool  // '+'
-	lazy     bool  // '+' with '?' or '-', which jsonata-js's regex makes "+?"
+	lazy     bool  // takes as few arguments as it can, see parser.ParamSpec.Lazy
 	context  bool  // '-'
 	array    bool  // type 'a', whose non-array arguments are wrapped in an array
 	subtype  byte  // the content type of an array, or 0
@@ -80,12 +80,11 @@ type sigParam struct {
 func compileSignature(specs []parser.ParamSpec) *Signature {
 	params := make([]sigParam, len(specs))
 	for i, spec := range specs {
-		lazy := spec.Optional || spec.Context
 		params[i] = sigParam{
 			symbols:  paramSymbols(spec.Types),
-			optional: lazy && !spec.Variadic,
+			optional: (spec.Optional || spec.Context) && !spec.Variadic,
 			variadic: spec.Variadic,
-			lazy:     lazy && spec.Variadic,
+			lazy:     spec.Lazy,
 			context:  spec.Context,
 			array:    len(spec.Types) == 1 && spec.Types[0] == 'a',
 			subtype:  spec.ContentType,
@@ -143,7 +142,7 @@ const smallMatch = 8
 // maxMatchCells bounds a matching table, so an absurdly wide lambda
 // signature cannot allocate without limit on every call; a call needing a
 // larger table is passed on unfilled and unvalidated.
-const maxMatchCells = 1 << 20
+const maxMatchCells = 1 << 16
 
 // scratch returns buf resized to n, allocating only when buf is too small.
 func scratch[T any](buf []T, n int) []T {
@@ -237,19 +236,12 @@ func (s *Signature) Validate(args []any, focus any) ([]any, error) {
 			continue
 		}
 		if counts[i] == 0 {
-			var arg any
-			if argIndex < len(args) {
-				arg = args[argIndex]
-			}
-			pass(arg, true)
+			pass(argAt(args, argIndex), true)
 			continue
 		}
 		for _, matched := range args[symbolIndex : symbolIndex+counts[i]] {
 			symbol := sigSymbol(matched)
-			var arg any
-			if argIndex < len(args) {
-				arg = args[argIndex]
-			}
+			arg := argAt(args, argIndex)
 			if !param.array {
 				pass(arg, true)
 				continue
@@ -266,6 +258,14 @@ func (s *Signature) Validate(args []any, focus any) ([]any, error) {
 		return args, nil
 	}
 	return out, nil
+}
+
+// argAt returns args[i], or undefined past the end of args.
+func argAt(args []any, i int) any {
+	if i < len(args) {
+		return args[i]
+	}
+	return nil
 }
 
 // copyPrefix returns a copy of args[:n], with undefined for indexes past the
@@ -328,31 +328,28 @@ func contentTypeError(param sigParam, argIndex int) error {
 // match: it matches ever longer prefixes of the parameters against the start
 // of the arguments, and blames the one after the longest prefix's match.
 // Whether a prefix matches only gets less likely as it grows, so a binary
-// search finds the longest.
+// search finds the longest. Prefixes too wide for maxMatchCells are not
+// tried, so an absurdly wide signature may blame an earlier argument.
 func (s *Signature) mismatchError(args []any) error {
 	symbols := argSymbols(args, nil)
+	if !s.variadic && len(symbols) > len(s.params) {
+		// Each parameter takes at most one argument.
+		symbols = symbols[:len(s.params)]
+	}
 	longest := 0
-	for low, high := 1, len(s.params); low <= high; {
+	for low, high := 1, min(len(s.params), maxMatchCells/(len(symbols)+1)-1); low <= high; {
 		mid := (low + high) / 2
-		if _, ok := s.solve(symbols, mid, false, nil); ok {
+		if _, _, ok := s.solve(symbols, mid, false, nil); ok {
 			longest, low = mid, mid+1
 		} else {
 			high = mid - 1
 		}
 	}
-	taken, _ := s.solve(symbols, longest, false, nil)
+	_, matched, _ := s.solve(symbols, longest, false, nil)
 	return &JSONataError{
 		Code:    "T0410",
-		Message: fmt.Sprintf("argument %d does not match function signature", sum(taken)+1),
+		Message: fmt.Sprintf("argument %d does not match function signature", matched+1),
 	}
-}
-
-func sum(counts []int) int {
-	total := 0
-	for _, n := range counts {
-		total += n
-	}
-	return total
 }
 
 // argSymbols returns the type symbol of each argument, in buf when it is
@@ -384,20 +381,19 @@ func (s *Signature) match(args []any, counts []int) ([]int, bool) {
 	if !s.variadic {
 		return s.matchFixed(symbols, counts)
 	}
-	return s.solve(symbols, len(s.params), true, counts)
+	counts, _, ok := s.solve(symbols, len(s.params), true, counts)
+	return counts, ok
 }
 
 // solve matches the arguments with the given symbols against the first
 // nParams parameters, as the regex of those parameters does: anchored, it
-// must take every argument; unanchored, as many from the start as it takes.
-// A table of which suffixes of the arguments match which suffixes of the
-// parameters replaces backtracking.
-func (s *Signature) solve(symbols []uint8, nParams int, anchored bool, counts []int) ([]int, bool) {
+// must take every argument; unanchored, as many from the start as it takes,
+// which it also returns. A table of which suffixes of the arguments match
+// which suffixes of the parameters replaces backtracking; the caller keeps
+// it within maxMatchCells.
+func (s *Signature) solve(symbols []uint8, nParams int, anchored bool, counts []int) (_ []int, matched int, ok bool) {
 	nArgs := len(symbols)
 	width := nArgs + 1
-	if (nParams+1)*width > maxMatchCells {
-		return nil, false
-	}
 	// reach[p*width+a] reports whether args[a:] match params[p:nParams];
 	// filling it is linear in params × args.
 	var reachBuf [(smallMatch + 1) * (smallMatch + 1)]bool
@@ -417,7 +413,7 @@ func (s *Signature) solve(symbols []uint8, nParams int, anchored bool, counts []
 		}
 	}
 	if !reach[0] {
-		return nil, false
+		return nil, 0, false
 	}
 	counts = counts[:0]
 	a := 0
@@ -440,13 +436,14 @@ func (s *Signature) solve(symbols []uint8, nParams int, anchored bool, counts []
 		counts = append(counts, n)
 		a += n
 	}
-	return counts, true
+	return counts, a, true
 }
 
 // matchFixed is match for a signature without '+', where each parameter
 // takes at most one argument. Its table is indexed by how many parameters
 // were skipped, at most len(params) - len(args), so a wide signature called
-// with most of its arguments stays linear.
+// with most of its arguments stays linear; the caller keeps it within
+// maxMatchCells.
 func (s *Signature) matchFixed(symbols []uint8, counts []int) ([]int, bool) {
 	nArgs, nParams := len(symbols), len(s.params)
 	skips := nParams - nArgs
@@ -454,9 +451,6 @@ func (s *Signature) matchFixed(symbols []uint8, counts []int) ([]int, bool) {
 		return nil, false
 	}
 	width := skips + 1
-	if (nParams+1)*width > maxMatchCells {
-		return nil, false
-	}
 	// reach[p*width+k] reports whether params[p:] match the arguments left
 	// after skipping k of params[:p], that is args[p-k:].
 	var reachBuf [(smallMatch + 1) * (smallMatch + 1)]bool
@@ -483,7 +477,9 @@ func (s *Signature) matchFixed(symbols []uint8, counts []int) ([]int, bool) {
 	k := 0
 	for p, param := range s.params {
 		a := p - k
-		if a < nArgs && param.symbols&symbols[a] != 0 && reach[(p+1)*width+k] {
+		take := a < nArgs && param.symbols&symbols[a] != 0 && reach[(p+1)*width+k]
+		skip := param.optional && k < skips && reach[(p+1)*width+k+1]
+		if take && (!skip || !param.lazy) {
 			counts = append(counts, 1)
 			continue
 		}

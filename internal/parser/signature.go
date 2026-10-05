@@ -12,10 +12,11 @@ type ParamSpec struct {
 	Optional    bool   // ? — param may be omitted
 	Variadic    bool   // + — repeats; must be the last spec
 	Context     bool   // - — inject focus (context value) when the argument is missing
+	Lazy        bool   // the regex quantifier is lazy: "+?", "??", or one made by '-'
 }
 
 // ParseSig parses and validates a raw function-signature string (the content
-// between the outer < > brackets, as stored in Signature.Raw).
+// between the outer < > brackets).
 //
 // Error codes:
 //   - S0401 when a content-type specifier (<X>) is applied to a type other than
@@ -48,17 +49,23 @@ func ParseSig(raw string) ([]ParamSpec, error) {
 			}
 		}
 
+		// jsonata-js appends '?' to the parameter's regex for both '?' and
+		// '-', so a second one makes the quantifier lazy.
+		questions := 0
 		for i < len(s) && (s[i] == '?' || s[i] == '+' || s[i] == '-') {
 			switch s[i] {
 			case '?':
 				spec.Optional = true
+				questions++
 			case '+':
 				spec.Variadic = true
 			case '-':
 				spec.Context = true
+				questions++
 			}
 			i++
 		}
+		spec.Lazy = questions > 1 || spec.Variadic && questions > 0
 
 		specs = append(specs, spec)
 	}
