@@ -222,6 +222,7 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("275760-09-14T00:00+01:00", "[Y]-[M]-[D]T[H]:[m][Z]")`, want: `null`},
 	{expr: `$toMillis("2018-04-9999999999", "[Y]-[M]-[D]")`, want: `null`},
 	{expr: `$toMillis("2018-04-01 99999999999999999", "[Y]-[M]-[D] [H]")`, want: `null`},
+	{expr: `$toMillis("2018-04-01 99999999999999999999pm", "[Y]-[M]-[D] [h][P]")`, want: `null`},
 	{expr: `$toMillis("2018-04-99999999999999999999999", "[Y]-[M]-[D]")`, want: `null`},
 	{expr: `$toMillis("2018 04TH1", "[Y] [M01o][D]")`, want: `1522540800000`},
 	{expr: `$toMillis("2018-4 1nd", "[Y]-[M] [D1o]")`, want: `1522540800000`},

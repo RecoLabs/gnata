@@ -115,7 +115,8 @@ func isASCIILetter(c rune) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
-// isASCIIDigit matches the digits jsonata-js accepts in a number, [0-9].
+// isASCIIDigit matches the digits jsonata-js reads in a parsed number or a
+// picture width, [0-9].
 func isASCIIDigit(c rune) bool {
 	return c >= '0' && c <= '9'
 }
@@ -245,6 +246,9 @@ func resolveParsedDate(components map[byte]int, now time.Time) (float64, error) 
 			hour = 0
 		}
 		if components['P'] == 1 {
+			if hour > math.MaxInt-12 {
+				return math.NaN(), nil // saturated, or past a 32-bit int
+			}
 			hour += 12
 		}
 	}
@@ -413,8 +417,8 @@ func offsetSeconds(hourDigits, minuteDigits []rune) (int, bool) {
 	return 0, false
 }
 
-// offsetUnits converts digits counting units of the given seconds, none being
-// zero, reporting false when they exceed maxTZOffsetSeconds.
+// offsetUnits returns digits × seconds, 0 for no digits, reporting false
+// above maxTZOffsetSeconds.
 func offsetUnits(digits []rune, seconds int64) (int64, bool) {
 	if len(digits) == 0 {
 		return 0, true
@@ -455,8 +459,8 @@ func parseNumericValue(runes []rune, width int) (value, consumed int) {
 	return atoiSaturating(runes[:i]), i
 }
 
-// atoiSaturating reads ASCII digits, saturating at math.MaxInt, which
-// nearDateRange reads as out of range, as a huge component is in jsonata-js.
+// atoiSaturating reads ASCII digits, saturating at math.MaxInt on overflow;
+// for $toMillis, nearDateRange reads that as out of range.
 func atoiSaturating(digits []rune) int {
 	n, _ := strconv.Atoi(string(digits)) // ASCII digits fail only by overflow
 	return n
@@ -478,14 +482,16 @@ func parseOrdinalNumber(runes []rune, width int) (value, consumed int) {
 	return -1, -1
 }
 
+// romanValues are the values of the roman numerals parseRoman reads.
+var romanValues = map[rune]int{
+	'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000,
+	'i': 1, 'v': 5, 'x': 10, 'l': 50, 'c': 100, 'd': 500, 'm': 1000,
+}
+
 func parseRoman(runes []rune) (value, consumed int) {
-	romanVals := map[rune]int{
-		'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000,
-		'i': 1, 'v': 5, 'x': 10, 'l': 50, 'c': 100, 'd': 500, 'm': 1000,
-	}
 	i := 0
 	for i < len(runes) {
-		if _, ok := romanVals[runes[i]]; !ok {
+		if _, ok := romanValues[runes[i]]; !ok {
 			break
 		}
 		i++
@@ -497,7 +503,7 @@ func parseRoman(runes []rune) (value, consumed int) {
 	total := 0
 	prev := 0
 	for j := i - 1; j >= 0; j-- {
-		v := romanVals[runes[j]]
+		v := romanValues[runes[j]]
 		if v < prev {
 			total -= v
 		} else {
