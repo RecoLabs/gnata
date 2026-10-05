@@ -90,7 +90,12 @@ func evalDescendant(input any, env *Environment) (any, error) {
 // ApplyFunction is the public API used by the standard library to call a
 // function argument with the given args. Like jsonata-js, which wraps a
 // function argument in a closure that applies it with a null context, it
-// calls fn with a null context.
+// calls fn with a null context. A builtin's sequence result is collapsed,
+// as a lambda's is where its body calls the builtin.
 func ApplyFunction(fn any, args []any, env *Environment) (any, error) {
-	return callFunction(fn, args, Null, env)
+	result, err := callFunction(fn, args, Null, env)
+	if err != nil {
+		return nil, err
+	}
+	return CollapseAndKeep(result, false), nil
 }

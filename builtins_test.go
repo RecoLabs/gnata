@@ -627,3 +627,17 @@ var functionContextCases = []exprCase{
 func TestFunctionContext(t *testing.T) {
 	runExprCases(t, functionContextCases)
 }
+
+// builtinSequenceCases cover HOFs whose callback returns a builtin's
+// sequence.
+var builtinSequenceCases = []exprCase{
+	{expr: `$map([{"a":1,"b":2},{"c":1,"d":2}], $keys)`, want: `[["a","b"],["c","d"]]`},
+	{expr: `$each({"a":{"x":1,"y":2},"b":{"z":1,"w":2}}, $keys)`, want: `[["x","y"],["z","w"]]`},
+	{expr: `$map([1,2], function($v){$keys({"a":1})})[0] = "a"`, want: `true`},
+	{expr: `$map([1,2], function($v){$filter([$v], function($x){true})})`, want: `[[1],[2]]`},
+	{expr: `$reduce([{"a":1},{"b":1}], function($acc,$v){$keys($v)})`, want: `"b"`},
+}
+
+func TestBuiltinSequenceResults(t *testing.T) {
+	runExprCases(t, builtinSequenceCases)
+}
