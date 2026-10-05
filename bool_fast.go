@@ -48,7 +48,9 @@ func evalBoolLeaf(b *parser.BoolFastPath, data json.RawMessage, mapData map[stri
 	case b.Func != nil:
 		return evalFunc(b.Func, data, mapData)
 	case b.PurePath != "":
-		value, ok := resolvePurePath(b.PurePath, b.PureSteps, data, mapData)
+		// and / or / $not only test a leaf for truthiness, which a number has
+		// alike as float64 or json.Number.
+		value, ok := resolvePurePath(b.PurePath, b.PureSteps, data, mapData, false)
 		return value, ok, nil
 	}
 	return nil, false, nil

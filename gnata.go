@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/recolabs/gnata/functions"
+	"github.com/recolabs/gnata/internal/decimal"
 	"github.com/recolabs/gnata/internal/evaluator"
 	"github.com/recolabs/gnata/internal/parser"
 	"github.com/tidwall/gjson"
@@ -41,29 +42,31 @@ type Expression struct {
 	// Non-nil when the expression qualifies; nil otherwise.
 	funcFast *parser.FuncFastPath
 	boolFast *parser.BoolFastPath
-	// guardrails holds optional resource limits set via Compile options.
-	// nil when Compile was called without options (default, unlimited behavior).
-	guardrails *guardrails
+	// options holds the settings passed to Compile; nil when Compile was called
+	// without options (default, unlimited float64 behavior).
+	options *compileOptions
 }
 
-// guardrails holds the resource limits configured via Option, matching the
-// jsonata-js 2.2 guardrails API (stack / timeout / sequence).
-type guardrails struct {
-	stack    int
-	timeout  time.Duration
-	sequence int
+// compileOptions holds the settings configured via Option: the resource
+// limits of the jsonata-js 2.2 guardrails API (stack / timeout / sequence) and
+// the decimal precision.
+type compileOptions struct {
+	stack            int
+	timeout          time.Duration
+	sequence         int
+	decimalPrecision int
 }
 
-// Option configures an optional resource guardrail on a compiled Expression.
-// See WithStack, WithTimeout, and WithSequence.
-type Option func(*guardrails)
+// Option configures a compiled Expression: a resource guardrail (WithStack,
+// WithTimeout, WithSequence) or decimal arithmetic (WithDecimalPrecision).
+type Option func(*compileOptions)
 
 // WithStack limits the maximum lambda recursion depth. Exceeding it returns
 // error D1011. Without this option, gnata still enforces its built-in limit
 // of 100 (error U1001) — WithStack only changes the limit and the resulting
 // error code, matching jsonata-js's `stack` guardrail.
 func WithStack(n int) Option {
-	return func(g *guardrails) { g.stack = n }
+	return func(o *compileOptions) { o.stack = n }
 }
 
 // WithTimeout limits total evaluation time. Exceeding it returns error
@@ -76,7 +79,7 @@ func WithStack(n int) Option {
 // custom function call is not interrupted: evaluation can exceed the timeout
 // by at most the duration of the call in progress.
 func WithTimeout(d time.Duration) Option {
-	return func(g *guardrails) { g.timeout = d }
+	return func(o *compileOptions) { o.timeout = d }
 }
 
 // WithSequence limits the length of sequences built during evaluation: the
@@ -85,7 +88,25 @@ func WithTimeout(d time.Duration) Option {
 // `sequence` guardrail. Without this option, only the built-in 10,000,000
 // element hard caps (D2014 / D3010) apply.
 func WithSequence(n int) Option {
-	return func(g *guardrails) { g.sequence = n }
+	return func(o *compileOptions) { o.sequence = n }
+}
+
+// WithDecimalPrecision enables decimal arithmetic and comparison of numbers,
+// rounded half to even to digits significant digits (e.g. 78 for uint256).
+// digits must be between 17 and 100; 0 leaves decimal arithmetic off, the
+// default.
+//
+// Numbers computed in decimal are returned as json.Number; others keep their
+// type, so results and the arguments of custom functions may be float64 or
+// json.Number. A float64 counts as its shortest decimal form (0.1 as 0.1), so
+// for input numbers to keep more digits than float64 holds, pass raw JSON to
+// EvalBytes, EvalMap or a StreamEvaluator, or decode with
+// json.Decoder.UseNumber for Eval.
+// Magnitudes are limited to the range of float64, with the same errors.
+// Exponentiation with a fractional power is the costliest operation, about a
+// millisecond at 100 digits.
+func WithDecimalPrecision(digits int) Option {
+	return func(o *compileOptions) { o.decimalPrecision = digits }
 }
 
 // Compile parses a JSONata expression string and returns an Expression.
@@ -101,28 +122,38 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 		return nil, err
 	}
 	fp := parser.AnalyzeFastPath(ast)
-	var g *guardrails
+	var o *compileOptions
 	if len(opts) > 0 {
-		g = &guardrails{}
+		o = &compileOptions{}
 		for _, opt := range opts {
-			opt(g)
+			opt(o)
+		}
+		if o.decimalPrecision != 0 && (o.decimalPrecision < decimal.MinPrecision || o.decimalPrecision > decimal.MaxPrecision) {
+			return nil, fmt.Errorf("gnata: WithDecimalPrecision %d must be between %d and %d digits",
+				o.decimalPrecision, decimal.MinPrecision, decimal.MaxPrecision)
+		}
+		if o.decimalPrecision > 0 {
+			fp.DecimalSafe()
 		}
 	}
 	return &Expression{
-		src:        expr,
-		ast:        ast,
-		fastPath:   fp.IsFastPath,
-		paths:      fp.GJSONPaths,
-		pathSteps:  fp.PathSteps,
-		cmpFast:    fp.CmpFast,
-		funcFast:   fp.FuncFast,
-		boolFast:   fp.BoolFast,
-		guardrails: g,
+		src:       expr,
+		ast:       ast,
+		fastPath:  fp.IsFastPath,
+		paths:     fp.GJSONPaths,
+		pathSteps: fp.PathSteps,
+		cmpFast:   fp.CmpFast,
+		funcFast:  fp.FuncFast,
+		boolFast:  fp.BoolFast,
+		options:   o,
 	}, nil
 }
 
 // CustomFunc is a user-defined function that can be registered with gnata.
 // It receives evaluated arguments and the current context value (focus).
+// Numbers arrive as float64 or json.Number (always so for numbers computed
+// under WithDecimalPrecision); evaluator-style helpers such as a type switch
+// on both handle either.
 type CustomFunc func(args []any, focus any) (any, error)
 
 // CustomEnvironment is a reusable root environment containing standard library
@@ -268,15 +299,18 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 	env := evaluator.NewChildEnvironment(parent)
 	env.ResetCallCounter()
 	env.SetContext(ctx)
-	if e.guardrails != nil {
-		if e.guardrails.timeout > 0 {
-			env.SetDeadline(time.Now().Add(e.guardrails.timeout))
+	if e.options != nil {
+		if e.options.timeout > 0 {
+			env.SetDeadline(time.Now().Add(e.options.timeout))
 		}
-		if e.guardrails.stack > 0 {
-			env.SetMaxStackDepth(e.guardrails.stack)
+		if e.options.stack > 0 {
+			env.SetMaxStackDepth(e.options.stack)
 		}
-		if e.guardrails.sequence > 0 {
-			env.SetMaxSequence(e.guardrails.sequence)
+		if e.options.sequence > 0 {
+			env.SetMaxSequence(e.options.sequence)
+		}
+		if e.options.decimalPrecision > 0 {
+			env.SetDecimalPrecision(e.options.decimalPrecision)
 		}
 	}
 	env.Bind("$", data)
@@ -286,7 +320,7 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 	result, err = evaluator.Eval(e.ast, data, env)
 	if err != nil {
 		if env.DeadlineExceeded() {
-			return nil, &evaluator.JSONataError{Code: "D1012", Message: fmt.Sprintf("Evaluation timeout after %s", e.guardrails.timeout)}
+			return nil, &evaluator.JSONataError{Code: "D1012", Message: fmt.Sprintf("Evaluation timeout after %s", e.options.timeout)}
 		}
 		return nil, err
 	}
@@ -312,7 +346,7 @@ func (e *Expression) Eval(ctx context.Context, data any) (result any, err error)
 // neither tier could resolve the expression.
 func (e *Expression) tryFastPathBytes(data json.RawMessage, mapData map[string]json.RawMessage) (result any, handled bool, err error) {
 	if e.fastPath && len(e.paths) == 1 {
-		if v, ok := resolvePurePath(e.paths[0], e.pathSteps, data, mapData); ok {
+		if v, ok := resolvePurePath(e.paths[0], e.pathSteps, data, mapData, e.decimalPrecision() > 0); ok {
 			return v, true, nil
 		}
 		// The walker couldn't resolve the path either — fall through to the
@@ -490,16 +524,19 @@ func resolveGjsonPath(data json.RawMessage, mapData map[string]json.RawMessage, 
 
 // resolvePurePath resolves a pure-path fast path against raw bytes or a
 // pre-decoded map, walking through arrays when a direct gjson lookup misses.
-// ok is false when the walker cannot resolve the path.
-func resolvePurePath(path string, steps []string, data json.RawMessage, mapData map[string]json.RawMessage) (any, bool) {
+// ok is false when the walker cannot resolve the path. With useNumber, numbers
+// are returned as json.Number.
+func resolvePurePath(
+	path string, steps []string, data json.RawMessage, mapData map[string]json.RawMessage, useNumber bool,
+) (any, bool) {
 	if res := resolveGjsonPath(data, mapData, path); res.Exists() {
-		return gjsonValueToAny(&res), true
+		return gjsonValue(&res, useNumber), true
 	}
 	switch {
 	case data != nil:
-		return walkPureStepsBytes(steps, data)
+		return walkPureStepsBytes(steps, data, useNumber)
 	case mapData != nil:
-		return walkPureStepsMapBytes(steps, mapData)
+		return walkPureStepsMapBytes(steps, mapData, useNumber)
 	default:
 		return nil, false
 	}
@@ -586,6 +623,28 @@ func matchComparison(lhs *gjson.Result, c *parser.ComparisonFastPath) (match, ok
 		match = !match
 	}
 	return match, true
+}
+
+func (e *Expression) decimalPrecision() int {
+	if e.options == nil {
+		return 0
+	}
+	return e.options.decimalPrecision
+}
+
+// fastValue converts a pure-path result, keeping numbers as json.Number under
+// decimal precision.
+func (e *Expression) fastValue(r *gjson.Result) any {
+	return gjsonValue(r, e.decimalPrecision() > 0)
+}
+
+// gjsonValue is gjsonValueToAny, except that with useNumber (decimal precision)
+// numbers stay json.Number so they keep full precision, as in the full evaluator.
+func gjsonValue(r *gjson.Result, useNumber bool) any {
+	if r.Type == gjson.Number && useNumber {
+		return json.Number(r.Raw)
+	}
+	return gjsonValueToAny(r)
 }
 
 // gjsonValueToAny converts a gjson.Result to a native Go value.

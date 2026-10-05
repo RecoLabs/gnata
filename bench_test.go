@@ -3,6 +3,7 @@ package gnata_test
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"strings"
 	"testing"
@@ -28,6 +29,15 @@ const (
 	}`
 )
 
+var benchDecimalPrecision = flag.Int("bench.decimalprecision", 0, "WithDecimalPrecision(n) for benchmark expressions; 0 = default")
+
+func benchOpts() []gnata.Option {
+	if *benchDecimalPrecision == 0 {
+		return nil
+	}
+	return []gnata.Option{gnata.WithDecimalPrecision(*benchDecimalPrecision)}
+}
+
 var benchExprs = []string{
 	"Account.Name",
 	"Account.Order.Product.SKU",
@@ -40,7 +50,7 @@ func BenchmarkCompile(b *testing.B) {
 		b.Run(expr, func(b *testing.B) {
 			b.ReportAllocs()
 			for range b.N {
-				_, err := gnata.Compile(expr)
+				_, err := gnata.Compile(expr, benchOpts()...)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -55,7 +65,7 @@ func BenchmarkEval(b *testing.B) {
 		b.Fatal(err)
 	}
 	for _, exprStr := range benchExprs {
-		expr, err := gnata.Compile(exprStr)
+		expr, err := gnata.Compile(exprStr, benchOpts()...)
 		if err != nil {
 			b.Logf("skip %q: %v", exprStr, err)
 			continue
@@ -74,7 +84,7 @@ func BenchmarkEval(b *testing.B) {
 func BenchmarkEvalBytes(b *testing.B) {
 	rawData := json.RawMessage(benchData)
 	for _, exprStr := range benchExprs {
-		expr, err := gnata.Compile(exprStr)
+		expr, err := gnata.Compile(exprStr, benchOpts()...)
 		if err != nil {
 			b.Logf("skip %q: %v", exprStr, err)
 			continue
@@ -131,7 +141,7 @@ var wideArraysExprs = []string{
 func BenchmarkEvalBytes_WideArrays(b *testing.B) {
 	rawData := json.RawMessage(wideArraysData(20, 5))
 	for _, exprStr := range wideArraysExprs {
-		expr, err := gnata.Compile(exprStr)
+		expr, err := gnata.Compile(exprStr, benchOpts()...)
 		if err != nil {
 			b.Fatalf("compile %q: %v", exprStr, err)
 		}
@@ -151,7 +161,7 @@ func BenchmarkStreamEvaluator(b *testing.B) {
 	exprs := make([]*gnata.Expression, 0, len(benchExprs))
 	indices := make([]int, 0, len(benchExprs))
 	for _, exprStr := range benchExprs {
-		e, err := gnata.Compile(exprStr)
+		e, err := gnata.Compile(exprStr, benchOpts()...)
 		if err != nil {
 			b.Logf("skip %q: %v", exprStr, err)
 			continue

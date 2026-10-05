@@ -249,7 +249,18 @@ func normalizeNumber(v any) any {
 }
 
 // DeepEqual implements JSONata structural equality.
-func DeepEqual(a, b any) bool { //nolint:gocyclo // type-switch fast path adds branches but not real complexity
+func DeepEqual(a, b any) bool {
+	return DeepEqualPrec(a, b, 0)
+}
+
+// DeepEqualPrec is DeepEqual comparing numbers in decimal to prec significant
+// digits, or in float64 when prec is 0.
+func DeepEqualPrec(a, b any, prec int) bool { //nolint:gocyclo // type-switch fast path adds branches but not real complexity
+	if prec > 0 {
+		if equal, ok := decimalEqual(a, b, prec); ok {
+			return equal
+		}
+	}
 	switch av := a.(type) {
 	case float64:
 		if bv, ok := b.(float64); ok {
@@ -284,7 +295,7 @@ func DeepEqual(a, b any) bool { //nolint:gocyclo // type-switch fast path adds b
 			return false
 		}
 		for i := range avSlice {
-			if !DeepEqual(avSlice[i], bv[i]) {
+			if !DeepEqualPrec(avSlice[i], bv[i], prec) {
 				return false
 			}
 		}
@@ -295,7 +306,7 @@ func DeepEqual(a, b any) bool { //nolint:gocyclo // type-switch fast path adds b
 		}
 		for k, va := range av {
 			vb, exists := MapGet(b, k)
-			if !exists || !DeepEqual(va, vb) {
+			if !exists || !DeepEqualPrec(va, vb, prec) {
 				return false
 			}
 		}
@@ -307,7 +318,7 @@ func DeepEqual(a, b any) bool { //nolint:gocyclo // type-switch fast path adds b
 		equal := true
 		av.Range(func(k string, va any) bool {
 			vb, exists := MapGet(b, k)
-			if !exists || !DeepEqual(va, vb) {
+			if !exists || !DeepEqualPrec(va, vb, prec) {
 				equal = false
 				return false
 			}

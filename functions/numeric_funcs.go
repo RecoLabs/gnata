@@ -13,6 +13,23 @@ import (
 
 // ── $number ───────────────────────────────────────────────────────────────────
 
+// radixPrefix returns the base of a hex (0x), binary (0b) or octal (0o) prefix
+// on s, and the bits each digit carries, or 0, 0 when there is none.
+func radixPrefix(s string) (base, digitBits int) {
+	if len(s) < 2 || s[0] != '0' {
+		return 0, 0
+	}
+	switch s[1] {
+	case 'x', 'X':
+		return 16, 4
+	case 'b', 'B':
+		return 2, 1
+	case 'o', 'O':
+		return 8, 3
+	}
+	return 0, 0
+}
+
 func fnNumber(args []any, focus any) (any, error) {
 	var arg any
 	switch len(args) {
@@ -40,25 +57,11 @@ func fnNumber(args []any, focus any) (any, error) {
 		return f, nil
 	case string:
 		s := strings.TrimSpace(v)
-		// Support hex (0x/0X), binary (0b/0B), octal (0o/0O) prefixes
-		if len(s) >= 2 && s[0] == '0' {
-			switch s[1] {
-			case 'x', 'X':
-				if n, err := strconv.ParseInt(s[2:], 16, 64); err == nil {
-					return float64(n), nil
-				}
-				return nil, &evaluator.JSONataError{Code: "D3030", Message: fmt.Sprintf("$number: unable to cast %q to a number", v)}
-			case 'b', 'B':
-				if n, err := strconv.ParseInt(s[2:], 2, 64); err == nil {
-					return float64(n), nil
-				}
-				return nil, &evaluator.JSONataError{Code: "D3030", Message: fmt.Sprintf("$number: unable to cast %q to a number", v)}
-			case 'o', 'O':
-				if n, err := strconv.ParseInt(s[2:], 8, 64); err == nil {
-					return float64(n), nil
-				}
-				return nil, &evaluator.JSONataError{Code: "D3030", Message: fmt.Sprintf("$number: unable to cast %q to a number", v)}
+		if base, _ := radixPrefix(s); base != 0 {
+			if n, err := strconv.ParseInt(s[2:], base, 64); err == nil {
+				return float64(n), nil
 			}
+			return nil, &evaluator.JSONataError{Code: "D3030", Message: fmt.Sprintf("$number: unable to cast %q to a number", v)}
 		}
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {

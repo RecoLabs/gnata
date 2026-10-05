@@ -1,8 +1,10 @@
 package gnata_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/recolabs/gnata"
@@ -653,4 +655,347 @@ func TestConsArrayPathFilter(t *testing.T) {
 			}
 		})
 	}
+}
+
+// decimalCase is run with WithDecimalPrecision(78) through Eval, EvalBytes,
+// EvalMap and StreamEvaluator. want is the JSON encoding of the result, so json.Number
+// precision is checked exactly.
+type decimalCase struct {
+	desc          string
+	expr          string
+	payload       string
+	want          string
+	code          string
+	sameInFloat64 bool // also run without decimal precision, expecting the same result
+}
+
+const (
+	u127 = "170141183460469231731687303715884105728"
+	u255 = "57896044618658097711785492504343953926634992332820282019728792003956564819968"
+	u256 = "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+)
+
+func runDecimalCases(t *testing.T, cases []decimalCase) {
+	t.Helper()
+	for _, tC := range cases {
+		t.Run(tC.desc, func(t *testing.T) {
+			payload := cmp.Or(tC.payload, "{}")
+			dec := json.NewDecoder(strings.NewReader(payload))
+			dec.UseNumber()
+			var data any
+			if err := dec.Decode(&data); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			var mapData map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(payload), &mapData); err != nil {
+				t.Fatalf("decode map: %v", err)
+			}
+			precs := []int{78}
+			if tC.sameInFloat64 {
+				precs = append(precs, 0)
+			}
+			for _, prec := range precs {
+				e, err := gnata.Compile(tC.expr, gnata.WithDecimalPrecision(prec))
+				if err != nil {
+					t.Fatalf("precision %d: compile: %v", prec, err)
+				}
+				viaEval, evalErr := e.Eval(context.Background(), data)
+				viaBytes, bytesErr := e.EvalBytes(context.Background(), json.RawMessage(payload))
+				viaMap, mapErr := e.EvalMap(context.Background(), mapData)
+				viaStream, streamErr := gnata.NewStreamEvaluator([]*gnata.Expression{e}).EvalOne(context.Background(), json.RawMessage(payload), "k", 0)
+				for _, r := range []struct {
+					got any
+					err error
+				}{{viaEval, evalErr}, {viaBytes, bytesErr}, {viaMap, mapErr}, {viaStream, streamErr}} {
+					if tC.code != "" {
+						if r.err == nil || !strings.Contains(r.err.Error(), tC.code) {
+							t.Fatalf("precision %d: expected error %s, got %v (%v)", prec, tC.code, r.got, r.err)
+						}
+						continue
+					}
+					if r.err != nil {
+						t.Fatalf("precision %d: eval: %v", prec, r.err)
+					}
+					if b, _ := json.Marshal(r.got); string(b) != tC.want {
+						t.Fatalf("precision %d: got %s (%T), want %s", prec, b, r.got, tC.want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestWithDecimalPrecisionRange(t *testing.T) {
+	tests := []struct {
+		digits  int
+		wantErr bool
+	}{
+		{digits: -1, wantErr: true},
+		{digits: 0},
+		{digits: 16, wantErr: true},
+		{digits: 17},
+		{digits: 78},
+		{digits: 100},
+		{digits: 101, wantErr: true},
+	}
+	for _, tC := range tests {
+		_, err := gnata.Compile("1", gnata.WithDecimalPrecision(tC.digits))
+		if (err != nil) != tC.wantErr {
+			t.Fatalf("precision %d: err = %v, wantErr %v", tC.digits, err, tC.wantErr)
+		}
+	}
+}
+
+// TestDecimalArithmetic covers operators with WithDecimalPrecision.
+func TestDecimalArithmetic(t *testing.T) {
+	//nolint:lll // large literals
+	runDecimalCases(t, []decimalCase{
+		{desc: "add_beyond_2^53", expr: "9007199254740993 + 1", want: "9007199254740994"},                                                                                 // float64: 2^53 rounding
+		{desc: "add_fields", expr: "a + b", payload: `{"a":9007199254740993,"b":1}`, want: "9007199254740994"},                                                            // float64: 2^53 rounding
+		{desc: "add_int64_overflow", expr: "9223372036854775807 + 1", want: "9223372036854775808"},                                                                        // float64: 2^53 rounding
+		{desc: "add_decimals", expr: "0.1 + 0.2", want: "0.3"},                                                                                                            // float64: binary fractions inexact
+		{desc: "sub_uint256", expr: "a - 1", payload: `{"a":` + u256 + `}`, want: "115792089237316195423570985008687907853269984665640564039457584007913129639934"},       // float64: ~16 digits
+		{desc: "mul_to_2^254", expr: "a * a", payload: `{"a":` + u127 + `}`, want: "28948022309329048855892746252171976963317496166410141009864396001978282409984"},       // float64: ~16 digits
+		{desc: "mul_rounded", expr: "a * a", payload: `{"a":` + u255 + `}`, want: "3.35195198248564927489350624955146153186984145514809834443089036093044100751839e+153"}, // float64: ~16 digits
+		{desc: "div_terminating", expr: "10 / 4", want: "2.5", sameInFloat64: true},
+		{desc: "div_rounded", expr: "1 / 3", want: "0." + strings.Repeat("3", 78)},                                            // float64: ~16 digits
+		{desc: "div_big_exact", expr: "a / 2", payload: `{"a":` + u127 + `}`, want: "85070591730234615865843651857942052864"}, // float64: ~16 digits
+		{desc: "mod_sign_follows_dividend", expr: "-7 % 3", want: "-1", sameInFloat64: true},
+		{desc: "mod_decimal", expr: "7.5 % 2", want: "1.5", sameInFloat64: true},
+		{desc: "mod_big", expr: "a % 10", payload: `{"a":` + u256 + `}`, want: "5"}, // float64: ~16 digits
+		{desc: "mod_by_zero", expr: "a % 0", payload: `{"a":` + u256 + `}`, code: "D3001", sameInFloat64: true},
+		{desc: "pow_integer", expr: "2 ** 100", want: "1267650600228229401496703205376"}, // float64: ~16 digits
+		{desc: "pow_negative_integer", expr: "2 ** -2", want: "0.25", sameInFloat64: true},
+		{desc: "div_counts", expr: "$count(a) / $count(b) = 2 / 3", payload: `{"a":[1,2],"b":[1,2,3]}`, want: "true"},
+		{desc: "rem_large_ratio", expr: "1e50 % 7", want: "2"},
+		{desc: "overflow_beyond_float64", expr: "a * 2", payload: `{"a":1e308}`, code: "D1001", sameInFloat64: true},
+		{desc: "overflow_hidden_by_float64_rounding", expr: "1.0000000000000000001 ** 1e22", code: "D1001"},
+		{desc: "power_overflow_hidden_by_float64_rounding", expr: "$power(1.0000000000000000001, 1e25)", code: "D3061"},
+		{desc: "sum_overflow_hidden_by_float64_rounding", expr: "$sum([a, 1e289])", payload: `{"a":1.7976931348623158079e308}`, code: "D1001"},
+		{desc: "underflow_to_zero", expr: "0.9999999999999999999 ** 1e300", want: "0"},
+		{desc: "negate", expr: "-a", payload: `{"a":2.5}`, want: "-2.5", sameInFloat64: true},
+		{desc: "range", expr: "[1..3]", want: "[1,2,3]", sameInFloat64: true},
+		{desc: "range_beyond_2^53", expr: "[a..a+2]", payload: `{"a":9007199254740993}`, want: "[9007199254740993,9007199254740994,9007199254740995]"},
+		{desc: "range_fractional_bound", expr: "[a..a]", payload: `{"a":9007199254740993.5}`, code: "T2003"},
+		{desc: "range_fractional_right", expr: "[1..a]", payload: `{"a":2.5}`, code: "T2004", sameInFloat64: true},
+		{desc: "pow_fractional", expr: "2 ** 0.5", want: "1.41421356237309504880168872420969807856967187537694807317667973799073247846211"},
+		{desc: "pow_rounded", expr: "2 ** 300", want: "2.03703597633448608626844568840937816105146839366593625063614044935438129976334e+90"}, // float64: ~16 digits
+		{desc: "pow_overflow", expr: "2 ** 100000", code: "D1001", sameInFloat64: true},
+		{desc: "unary_minus", expr: "-a", payload: `{"a":` + u256 + `}`, want: "-" + u256}, // float64: ~16 digits
+		{desc: "float_operand", expr: "$count([1,2,3]) * 0.1", want: "0.3"},                // float64: binary fractions inexact
+		{desc: "huge_exponent_input_unchanged", expr: "a + 1", payload: `{"a":1e999999}`, code: "T2001", sameInFloat64: true},
+		{desc: "huge_digits_input_unchanged", expr: "a + 1", payload: `{"a":` + strings.Repeat("9", 1_000_000) + `}`, code: "T2001", sameInFloat64: true},
+		{desc: "add_rounds_half_even", expr: "a * 10 + 5", payload: `{"a":` + u256 + `}`, want: "1.15792089237316195423570985008687907853269984665640564039457584007913129639936e+78"}, // float64: ~16 digits
+		{desc: "add_negligible", expr: "1 + 1e-100", want: "1", sameInFloat64: true},
+		{desc: "add_beyond_2^256", expr: "a + 2 = a + 1", payload: `{"a":` + u256 + `}`, want: `false`}, // float64: ~16 digits
+		{desc: "mul_overflow", expr: "1e308 * 10", code: "D1001", sameInFloat64: true},
+		{desc: "div_underflow", expr: "1e-308 / 1e100", want: "0", sameInFloat64: true},
+	})
+}
+
+// TestDecimalLiterals covers number literals with WithDecimalPrecision.
+func TestDecimalLiterals(t *testing.T) {
+	runDecimalCases(t, []decimalCase{
+		{desc: "negative_literal", expr: "-9007199254740993", want: "-9007199254740993"}, // float64: 2^53 rounding
+		{desc: "literal_exponent", expr: "1e3 + 1", want: "1001", sameInFloat64: true},
+		{desc: "literal_exponent_string", expr: "$string(1e21)", want: `"1e+21"`, sameInFloat64: true},
+		{desc: "literal_negative_zero", expr: "-0", want: "0"},                   // float64: keeps -0
+		{desc: "literal_negative_zero_string", expr: "$string(-0)", want: `"0"`}, // float64: keeps -0
+		{desc: "literal_trailing_zero", expr: "1.50", want: "1.5", sameInFloat64: true},
+		{desc: "literal_underflow", expr: "1e-400", want: "0", sameInFloat64: true},
+		{desc: "literal_double_negative", expr: "--1.5", want: "1.5", sameInFloat64: true},
+	})
+}
+
+// TestDecimalPaths covers numbers read from the input with WithDecimalPrecision.
+func TestDecimalPaths(t *testing.T) {
+	//nolint:lll // large literals
+	runDecimalCases(t, []decimalCase{
+		{desc: "path_decimal", expr: "a", payload: `{"a":9007199254740993.5}`, want: `9007199254740993.5`},                                                // float64: 2^53 rounding
+		{desc: "path_uint256", expr: "a.b", payload: `{"a":{"b":` + u256 + `}}`, want: u256},                                                              // float64: ~16 digits
+		{desc: "path_through_array", expr: "a.b", payload: `{"a":[{"b":9007199254740993.5},{"b":1}]}`, want: `[9007199254740993.5,1]`},                    // float64: 2^53 rounding
+		{desc: "path_through_arrays", expr: "a.b.c", payload: `{"a":[{"b":[{"c":0.1},{"c":` + u256 + `}]},{"b":{"c":1}}]}`, want: `[0.1,` + u256 + `,1]`}, // float64: ~16 digits
+		{desc: "path_array_of_objects", expr: "a.b", payload: `{"a":[{"b":{"c":` + u256 + `}},{"b":[1.5]}]}`, want: `[{"c":` + u256 + `},1.5]`},           // float64: ~16 digits
+		{desc: "path_array_mixed", expr: "a.b", payload: `{"a":[{"b":"x"},{"b":null},{"b":true},{"b":2}]}`, want: `["x",null,true,2]`, sameInFloat64: true},
+		{desc: "path_eq_beyond_2^53", expr: "a = 9007199254740992", payload: `{"a":9007199254740993}`, want: `false`}, // float64: 2^53 rounding
+		{desc: "path_eq_string", expr: `a = "x"`, payload: `{"a":"x"}`, want: `true`, sameInFloat64: true},
+		{desc: "path_distinct", expr: "$distinct(a)", payload: `{"a":[9007199254740993.5,9007199254740993.5]}`, want: `9007199254740993.5`}, // float64: 2^53 rounding
+		{desc: "path_string", expr: "$string(a)", payload: `{"a":9007199254740993}`, want: `"9007199254740993"`, sameInFloat64: true},
+	})
+}
+
+// TestDecimalComparison covers comparison and sorting with WithDecimalPrecision.
+func TestDecimalComparison(t *testing.T) {
+	//nolint:lll // large literals
+	runDecimalCases(t, []decimalCase{
+		{desc: "eq_beyond_2^53", expr: "9007199254740993 = 9007199254740992", want: `false`},                      // float64: 2^53 rounding
+		{desc: "neq_beyond_2^53", expr: "a != 9007199254740992", payload: `{"a":9007199254740993}`, want: `true`}, // float64: 2^53 rounding
+		{desc: "eq_decimal_sum", expr: "0.1 + 0.2 = 0.3", want: `true`},                                           // float64: binary fractions inexact
+		{desc: "eq_float_operand", expr: "$count([1,2]) = a", payload: `{"a":2.0}`, want: `true`, sameInFloat64: true},
+		{desc: "lt_uint256", expr: "a < " + u256, payload: `{"a":` + u255 + `}`, want: `true`, sameInFloat64: true},
+		{desc: "ge_uint256", expr: "a >= " + u256, payload: `{"a":` + u256 + `}`, want: `true`, sameInFloat64: true},
+		{desc: "order_by_beyond_2^53", expr: "a^(>$).$string()", payload: `{"a":[9007199254740993,9007199254740995,9007199254740994]}`, want: `["9007199254740995","9007199254740994","9007199254740993"]`, sameInFloat64: true},
+		{desc: "sort_beyond_2^53", expr: "$sort(a).$string()", payload: `{"a":[9007199254740995,9007199254740993,9007199254740994]}`, want: `["9007199254740993","9007199254740994","9007199254740995"]`, sameInFloat64: true},
+		{desc: "sort_strings", expr: `$sort(["b","a"])`, want: `["a","b"]`, sameInFloat64: true},
+		{desc: "sort_mixed", expr: `$sort([1,"a"])`, code: "D3070", sameInFloat64: true},
+		{desc: "le_decimal", expr: "1.5 <= 2", want: `true`, sameInFloat64: true},
+		{desc: "gt_decimal", expr: "1.5 > 2", want: `false`, sameInFloat64: true},
+		{desc: "lt_string", expr: `1.5 < "a"`, code: "T2009", sameInFloat64: true},
+	})
+}
+
+// TestDecimalFunctions covers the numeric builtins with WithDecimalPrecision.
+func TestDecimalFunctions(t *testing.T) {
+	//nolint:lll // large literals
+	runDecimalCases(t, []decimalCase{
+		{desc: "number_uint256", expr: "$number(a)", payload: `{"a":"` + u256 + `"}`, want: u256}, // float64: ~16 digits
+		{desc: "number_canonical", expr: "$number(a)", payload: `{"a":1.10}`, want: `1.1`, sameInFloat64: true},
+		{desc: "number_hex_uint256", expr: `$number("0x" & $join(["ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff","ff"]))`, want: u256}, // float64: hex beyond int64 rejected
+		{desc: "number_hex_too_long", expr: `$number("0x" & a)`, payload: `{"a":"` + strings.Repeat("f", 100_000) + `"}`, code: "D3030", sameInFloat64: true},
+		{desc: "number_fraction_rejected", expr: `$number("1/3")`, code: "D3030", sameInFloat64: true},
+		{desc: "number_exponent_form", expr: `$number("1e80")`, want: `1e+80`, sameInFloat64: true},
+		{desc: "number_overflow", expr: `$number("1e400")`, code: "D3030", sameInFloat64: true},
+		{desc: "abs_big", expr: "$abs(a)", payload: `{"a":-` + u256 + `}`, want: u256}, // float64: ~16 digits
+		{desc: "floor_negative", expr: "$floor(a)", payload: `{"a":-9007199254740993.5}`, want: `-9007199254740994`, sameInFloat64: true},
+		{desc: "ceil_negative", expr: "$ceil(a)", payload: `{"a":-9007199254740993.5}`, want: `-9007199254740993`}, // float64: 2^53 rounding
+		{desc: "round_half_even", expr: "$round(2.5) & $round(3.5) & $round(-2.5)", want: `"24-2"`, sameInFloat64: true},
+		{desc: "round_places", expr: "$round(a, 2)", payload: `{"a":9007199254740993.125}`, want: `9007199254740993.12`}, // float64: 2^53 rounding
+		{desc: "round_negative_places", expr: "$round(a, -2)", payload: `{"a":9007199254740950}`, want: `9007199254741000`, sameInFloat64: true},
+		{desc: "round_huge_places_bounded", expr: "$round(1.5, 100000)", want: `1.5`, sameInFloat64: true},
+		{desc: "sum_beyond_2^53", expr: "$sum(a)", payload: `{"a":[9007199254740993,1]}`, want: `9007199254740994`},                                                        // float64: 2^53 rounding
+		{desc: "sum_decimals", expr: "$sum([0.1, 0.2])", want: `0.3`},                                                                                                      // float64: binary fractions inexact
+		{desc: "sum_to_2^256", expr: "$sum(a)", payload: `{"a":[` + u256 + `,1]}`, want: `115792089237316195423570985008687907853269984665640564039457584007913129639936`}, // float64: ~16 digits
+		{desc: "average_terminating", expr: "$average(a)", payload: `{"a":[9007199254740993,9007199254740995]}`, want: `9007199254740994`, sameInFloat64: true},
+		{desc: "average_rounded", expr: "$average([1, 1, 1.5])", want: `1.1` + strings.Repeat("6", 75) + `7`}, // float64: ~16 digits
+		{desc: "max_uint256", expr: "$max(a)", payload: `{"a":[` + u255 + `,` + u256 + `,1]}`, want: u256},    // float64: ~16 digits
+		{desc: "min_beyond_2^53", expr: "$min(a)", payload: `{"a":[9007199254740993,9007199254740992]}`, want: `9007199254740992`, sameInFloat64: true},
+		{desc: "number_context", expr: "a.$number()", payload: `{"a":"1.50"}`, want: `1.5`, sameInFloat64: true},
+		{desc: "number_too_many_args", expr: "$number(1, 2)", code: "T0410", sameInFloat64: true},
+		{desc: "number_boolean", expr: "$number(true)", want: `1`, sameInFloat64: true},
+		{desc: "number_binary", expr: `$number("0b101")`, want: `5`, sameInFloat64: true},
+		{desc: "number_octal", expr: `$number("0o17")`, want: `15`, sameInFloat64: true},
+		{desc: "number_hex_invalid", expr: `$number("0xzz")`, code: "D3030", sameInFloat64: true},
+		{desc: "abs_no_args", expr: "$abs()", code: "T0410", sameInFloat64: true},
+		{desc: "abs_float", expr: `$abs($length("ab"))`, want: `2`, sameInFloat64: true},
+		{desc: "round_float", expr: `$round($length("ab"))`, want: `2`, sameInFloat64: true},
+		{desc: "round_overflow", expr: "$round(a, -308)", payload: `{"a":9.5e308}`, code: "T0410", sameInFloat64: true},
+		{desc: "round_places_string", expr: `$round(1.5, "x")`, code: "T0410", sameInFloat64: true},
+		{desc: "sum_no_args", expr: "$sum()", code: "T0410", sameInFloat64: true},
+		{desc: "sum_empty", expr: "$sum([])", want: `0`, sameInFloat64: true},
+		{desc: "sum_string", expr: `$sum(["1"])`, code: "T0412", sameInFloat64: true},
+		{desc: "sum_overflow", expr: "$sum(a)", payload: `{"a":[5e308,5e308]}`, code: "T0412"}, // float64: +Inf, no error
+		{desc: "average_empty", expr: "$average([])", want: `null`, sameInFloat64: true},
+		{desc: "max_no_args", expr: "$max()", code: "T0410", sameInFloat64: true},
+		{desc: "max_empty", expr: "$max([])", want: `null`, sameInFloat64: true},
+		{desc: "max_floats", expr: `$max([$length("a"), $length("ab")])`, want: `2`, sameInFloat64: true},
+		{desc: "max_string", expr: `$max([1, "a"])`, code: "T0412", sameInFloat64: true},
+		{desc: "format_number_big", expr: `$formatNumber(12345678901234567.89, "#,##0.00")`, want: `"12,345,678,901,234,567.89"`},                                                                                            // float64: ~16 digits
+		{desc: "format_number_uint256", expr: `$formatNumber(a, "#,##0")`, payload: `{"a":` + u256 + `}`, want: `"115,792,089,237,316,195,423,570,985,008,687,907,853,269,984,665,640,564,039,457,584,007,913,129,639,935"`}, // float64: ~16 digits
+		{desc: "format_number_decimal_tie", expr: `$formatNumber(2.675, "0.00")`, want: `"2.68"`},                                                                                                                            // float64: binary fractions inexact
+		{desc: "format_number_half_even", expr: `$formatNumber(0.125, "0.00")`, want: `"0.12"`, sameInFloat64: true},
+		{desc: "format_number_integer", expr: `$formatNumber(2.5, "0")`, want: `"2"`, sameInFloat64: true},
+		{desc: "format_number_negative_picture", expr: `$formatNumber(-1234.5, "#,##0.0;(#,##0.0)")`, want: `"(1,234.5)"`, sameInFloat64: true},
+		{desc: "format_number_percent", expr: `$formatNumber(0.1234567890123456789, "0.0000000000000000000%")`, want: `"12.3456789012345678900%"`}, // float64: ~16 digits
+		{desc: "format_number_per_mille", expr: `$formatNumber(0.0125, "0.0‰")`, want: `"12.5‰"`, sameInFloat64: true},
+		{desc: "format_number_zero_digit", expr: `$formatNumber(1.5, "##٠.٠٠", {"zero-digit": "٠"})`, want: `"١.٥٠"`, sameInFloat64: true},
+		{desc: "format_number_exponent", expr: `$formatNumber(1.5, "0.0e0")`, want: `"1.5e0"`, sameInFloat64: true},
+		{desc: "format_number_exponent_big", expr: `$formatNumber(12345678901234567.89, "0.0000000000000000000e0")`, want: `"1.2345678901234567890e16"`},                     // float64: ~16 digits
+		{desc: "format_number_exponent_uint256", expr: `$formatNumber(a, "0.000000000000000000000e0")`, payload: `{"a":` + u256 + `}`, want: `"1.157920892373161954236e77"`}, // float64: ~16 digits
+		{desc: "format_number_exponent_tie", expr: `$formatNumber(1.25, "0.0e0")`, want: `"1.2e0"`},                                                                          // float64: rounds half away from zero
+		{desc: "format_number_exponent_carry", expr: `$formatNumber(9.96, "0.0e0")`, want: `"1.0e1"`, sameInFloat64: true},
+		{desc: "format_number_exponent_fraction", expr: `$formatNumber(1234, ".00e0")`, want: `".12e4"`, sameInFloat64: true},
+		{desc: "format_number_exponent_int_digits", expr: `$formatNumber(12345, "00.0e0")`, want: `"12.3e3"`, sameInFloat64: true},
+		{desc: "format_number_exponent_negative", expr: `$formatNumber(-0.00015, "0.0e00")`, want: `"-1.5e-04"`, sameInFloat64: true},
+		{desc: "format_number_exponent_tiny", expr: `$formatNumber(1.5e-300, "0.0e0")`, want: `"1.5e-300"`, sameInFloat64: true},
+		{desc: "format_number_exponent_zero", expr: `$formatNumber(0, "0.0e0")`, want: `"0.0e0"`, sameInFloat64: true},
+		{desc: "format_number_exponent_range", expr: `$substring($formatNumber(1e10, p), 0, 4)`, payload: `{"p":"` + strings.Repeat("0", 309) + `e0"}`, want: `"0999"`, sameInFloat64: true},
+		{desc: "format_number_scale_overflow", expr: `$formatNumber(a, "0‰")`, payload: `{"a":9e307}`, want: `"+Inf‰"`, sameInFloat64: true},
+		{desc: "format_number_long_picture", expr: `$formatNumber(1.5, p)`, payload: `{"p":"0.` + strings.Repeat("0", 10_001) + `"}`, want: `"1.5` + strings.Repeat("0", 10_000) + `"`, sameInFloat64: true},
+		{desc: "format_number_picture_number", expr: `$formatNumber(1.5, 1)`, code: "T0410", sameInFloat64: true},
+		{desc: "format_number_no_picture", expr: `$formatNumber(a)`, payload: `{"a":1.5}`, code: "D3006", sameInFloat64: true},
+		{desc: "format_number_bad_negative_picture", expr: `$formatNumber(1.5, "0;0.0.0")`, code: "D3081", sameInFloat64: true},
+		{desc: "format_number_two_separators", expr: `$formatNumber(1.5, "#;#;#")`, code: "D3080", sameInFloat64: true},
+		{desc: "format_base_uint256", expr: `$formatBase(a, 16)`, payload: `{"a":` + u256 + `}`, want: `"` + strings.Repeat("f", 64) + `"`}, // float64: int64 overflow
+		{desc: "format_base_beyond_2^53", expr: `$formatBase(9007199254740993, 2)`, want: `"1` + strings.Repeat("0", 52) + `1"`},            // float64: 2^53 rounding
+		{desc: "format_base_half_even", expr: `$formatBase(2.5) & $formatBase(-2.5)`, want: `"2-2"`},                                        // float64: rounds half away from zero
+		{desc: "format_base_negative", expr: `$formatBase(-255, 16)`, want: `"-ff"`, sameInFloat64: true},
+		{desc: "format_base_default", expr: `$formatBase(a)`, payload: `{"a":100}`, want: `"100"`, sameInFloat64: true},
+		{desc: "format_base_fraction_base", expr: `$formatBase(255, 16.9)`, want: `"ff"`, sameInFloat64: true},
+		{desc: "format_base_bad_base", expr: `$formatBase(1, 37)`, code: "D3100", sameInFloat64: true},
+		{desc: "format_base_string_base", expr: `$formatBase(1, "2")`, code: "T0410", sameInFloat64: true},
+		{desc: "power_2^100", expr: `$power(2, 100)`, want: `1267650600228229401496703205376`}, // float64: ~16 digits
+		{desc: "power_decimal", expr: `$power(1.1, 2)`, want: `1.21`},                          // float64: binary fractions inexact
+		{desc: "power_matches_operator", expr: `$power(a, 3) = a ** 3`, payload: `{"a":9007199254740993}`, want: `true`, sameInFloat64: true},
+		{desc: "power_negative_exponent", expr: `$power(2, -2)`, want: `0.25`, sameInFloat64: true},
+		{desc: "power_fractional_exponent", expr: `$power(4, 0.5)`, want: `2`, sameInFloat64: true},
+		{desc: "power_zero_negative", expr: `$power(0, -1)`, code: "D3061", sameInFloat64: true},
+		{desc: "power_overflow", expr: `$power(10, 400)`, code: "D3061", sameInFloat64: true},
+		{desc: "power_one_argument", expr: `$power(2)`, code: "T0410", sameInFloat64: true},
+		{desc: "sqrt", expr: `$sqrt(2)`, want: "1.41421356237309504880168872420969807856967187537694807317667973799073247846211"},
+		{desc: "sqrt_exact", expr: `$sqrt(a)`, payload: `{"a":152415787532388367504942236884722755800955129}`, want: "12345678901234567890123"},
+		{desc: "sqrt_negative", expr: `$sqrt(-1)`, code: "D3060", sameInFloat64: true},
+		{desc: "power_string_exponent", expr: `$power(2, "2")`, code: "T0410", sameInFloat64: true},
+	})
+}
+
+// TestDecimalNumberArguments covers builtins and path indexes that take a
+// count or index, which must accept a json.Number as well as a float64.
+func TestDecimalNumberArguments(t *testing.T) {
+	runDecimalCases(t, []decimalCase{
+		{desc: "split_limit", expr: `$split("a,b,c", ",", n)`, payload: `{"n":2}`, want: `["a","b"]`, sameInFloat64: true},
+		{desc: "replace_limit", expr: `$replace("aaa", "a", "b", n)`, payload: `{"n":2}`, want: `"bba"`, sameInFloat64: true},
+		{desc: "match_limit", expr: `$count($match("aaa", /a/, n))`, payload: `{"n":2}`, want: "2", sameInFloat64: true},
+		{desc: "flatten_depth", expr: `$flatten([[1, [2]]], n)`, payload: `{"n":1}`, want: "[1,[2]]", sameInFloat64: true},
+		{desc: "path_index", expr: `arr[$$.n]`, payload: `{"arr":["x","y"],"n":1}`, want: `"y"`, sameInFloat64: true},
+		{desc: "flatten_depth_string", expr: `$flatten([1], "x")`, code: "T0410", sameInFloat64: true},
+		{desc: "match_limit_string", expr: `$match("a", /a/, "x")`, code: "T0410", sameInFloat64: true},
+	})
+}
+
+// TestDecimalFastPaths checks that and / or / $not expressions, which have a
+// fast path of their own, compare numbers in decimal too.
+func TestDecimalFastPaths(t *testing.T) {
+	runDecimalCases(t, []decimalCase{
+		{desc: "and_number_equal", expr: `a = 0.3 and b`, payload: `{"a":0.30000000000000001,"b":true}`, want: "false"},
+		{desc: "and_number_not_equal", expr: `a != 0.3 and b`, payload: `{"a":0.30000000000000001,"b":true}`, want: "true"},
+		{desc: "or_number_equal", expr: `a = 1e20 or b`, payload: `{"a":100000000000000000001,"b":false}`, want: "false"},
+		{desc: "not_number_equal", expr: `$not(a = 1e20)`, payload: `{"a":100000000000000000001}`, want: "true"},
+		{desc: "not_sum", expr: `$not($sum(a))`, payload: `{"a":[100000000000000000001,-100000000000000000000]}`, want: "false"},
+		{desc: "and_string_leaves", expr: `$exists(a) and a = "x"`, payload: `{"a":"x"}`, want: "true", sameInFloat64: true},
+	})
+}
+
+// TestDecimalEquality covers structural equality, in and $distinct, which must
+// agree with = on numbers.
+func TestDecimalEquality(t *testing.T) {
+	const payload = `{"a":100000000000000000001,"b":100000000000000000000,"d":[1.0,2,1e0]}`
+	runDecimalCases(t, []decimalCase{
+		{desc: "scalar", expr: `a = b`, payload: payload, want: "false"},
+		{desc: "in", expr: `a in [b]`, payload: payload, want: "false"},
+		{desc: "in_same", expr: `a in [b, a]`, payload: payload, want: "true"},
+		{desc: "array", expr: `[a] = [b]`, payload: payload, want: "false"},
+		{desc: "object", expr: `{"x": a} = {"x": b}`, payload: payload, want: "false"},
+		{desc: "distinct_close_values", expr: `$count($distinct([a, b]))`, payload: payload, want: "2"},
+		{desc: "distinct_equal_forms", expr: `$distinct(d)`, payload: payload, want: "[1.0,2]"},
+	})
+}
+
+// TestDecimalString covers numbers in exponent form, which $string and & must
+// format with all their digits.
+func TestDecimalString(t *testing.T) {
+	//nolint:lll // large literals
+	runDecimalCases(t, []decimalCase{
+		{desc: "string_product", expr: `$string(a * 1000)`, payload: `{"a":` + u256 + `}`, want: `"1.15792089237316195423570985008687907853269984665640564039457584007913129639935e+80"`},
+		{desc: "string_input_exponent", expr: `$string(a)`, payload: `{"a":1.1579208923731619542357098500868790785326998466564056403945758400791312963993e+77}`, want: `"1.1579208923731619542357098500868790785326998466564056403945758400791312963993e+77"`},
+		{desc: "concat_input_exponent", expr: `"v=" & a`, payload: `{"a":1.1579208923731619542357098500868790785326998466564056403945758400791312963993e+77}`, want: `"v=1.1579208923731619542357098500868790785326998466564056403945758400791312963993e+77"`},
+		{desc: "string_literal_exponent", expr: `$string(1e21)`, want: `"1e+21"`, sameInFloat64: true},
+		{desc: "string_computed_exponent", expr: `$string(1e20 * 10)`, want: `"1e+21"`, sameInFloat64: true},
+		{desc: "string_large_power", expr: `$string(10 ** 25)`, want: `"1e+25"`, sameInFloat64: true},
+		{desc: "string_computed_small", expr: `$string(0.000001 / 10)`, want: `"1e-7"`, sameInFloat64: true},
+		{desc: "concat_computed_exponent", expr: `"x" & 10 ** 21`, want: `"x1e+21"`, sameInFloat64: true},
+		{desc: "string_array", expr: `$string([1e21, 0.5, a])`, payload: `{"a":0.30000000000000001}`, want: `"[1e+21,0.5,0.30000000000000001]"`},
+		{desc: "string_matches_value", expr: `$string(a) = "0.3"`, payload: `{"a":0.30000000000000004}`, want: "false", sameInFloat64: true},
+		{desc: "string_small_exponent", expr: `$string(1.5e-7)`, want: `"1.5e-7"`, sameInFloat64: true},
+		{desc: "string_small_plain", expr: `$string(a)`, payload: `{"a":1.5e-6}`, want: `"0.0000015"`, sameInFloat64: true},
+	})
 }

@@ -93,7 +93,7 @@ func compareSortTerms(terms []parser.SortTerm, aVal, bVal any, aEnv, bEnv *Envir
 		if err != nil {
 			return 0, err
 		}
-		if cmp, err := compareOrder(av, bv); err != nil {
+		if cmp, err := compareOrder(av, bv, aEnv.DecimalPrecision()); err != nil {
 			return 0, err
 		} else if cmp != 0 {
 			if term.Descending {

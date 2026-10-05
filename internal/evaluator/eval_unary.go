@@ -3,6 +3,7 @@ package evaluator
 import (
 	"fmt"
 
+	"github.com/recolabs/gnata/internal/decimal"
 	"github.com/recolabs/gnata/internal/parser"
 )
 
@@ -15,6 +16,11 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 		}
 		if val == nil {
 			return nil, nil
+		}
+		if prec := env.DecimalPrecision(); prec > 0 {
+			if d, ok := decimal.FromValue(val, prec); ok {
+				return d.Neg().Value(prec), nil
+			}
 		}
 		f, ok := ToFloat64(val)
 		if !ok {

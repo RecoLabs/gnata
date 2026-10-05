@@ -26,7 +26,7 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodeString:
 		return node.Value, nil
 	case parser.NodeNumber:
-		return node.NumVal, nil
+		return evalNumber(node, env), nil
 	case parser.NodeVariable:
 		return evalVariable(node, input, env)
 	case parser.NodeName:

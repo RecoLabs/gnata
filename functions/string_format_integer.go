@@ -28,18 +28,24 @@ func fnFormatBase(args []any, focus any) (any, error) {
 	if !nOk {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$formatBase: argument 1 must be a number"}
 	}
-	base := 10
-	if len(args) >= 2 && args[1] != nil {
-		bf, bOk := evaluator.ToFloat64(args[1])
-		if !bOk {
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$formatBase: argument 2 must be a number"}
-		}
-		base = evaluator.ToIntClamped(bf)
+	base, ok := formatBaseArg(args)
+	if !ok {
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$formatBase: argument 2 must be a number"}
 	}
 	if base < 2 || base > 36 {
 		return nil, &evaluator.JSONataError{Code: "D3100", Message: "$formatBase: base must be between 2 and 36"}
 	}
 	return strconv.FormatInt(int64(math.Round(n)), base), nil
+}
+
+// formatBaseArg returns $formatBase's base argument, 10 when it is absent. ok
+// is false when it is not a number.
+func formatBaseArg(args []any) (base int, ok bool) {
+	if len(args) < 2 || args[1] == nil {
+		return 10, true
+	}
+	bf, ok := evaluator.ToFloat64(args[1])
+	return evaluator.ToIntClamped(bf), ok
 }
 
 // ── $formatInteger ────────────────────────────────────────────────────────────

@@ -432,7 +432,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 				if err != nil {
 					return nil, err
 				}
-				if idx, ok := outerResult.(float64); ok {
+				if idx, ok := ToFloat64(outerResult); ok {
 					i := ToIntClamped(idx)
 					if i < 0 {
 						i = len(nextCtxs) + i
@@ -970,6 +970,7 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 	}
 	// Find the common ancestor to use as parent of the merged env.
 	merged := NewChildEnvironment(envs[0].Parent())
+	merged.decimalPrecision = envs[0].decimalPrecision
 
 	// Collect variable names from tuple-specific envs only (stop at envs
 	// that lack parentKey — those are shared ancestors with built-in bindings).
@@ -1005,7 +1006,7 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 			// Check if all values are identical — if so, keep single value.
 			allSame := true
 			for _, v := range vals[1:] {
-				if !DeepEqual(v, vals[0]) {
+				if !DeepEqualPrec(v, vals[0], merged.DecimalPrecision()) {
 					allSame = false
 					break
 				}

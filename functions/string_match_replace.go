@@ -26,7 +26,7 @@ func makeFnMatch(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 		limit := -1
 		if len(args) >= 3 && args[2] != nil {
-			lf, ok := args[2].(float64)
+			lf, ok := evaluator.ToFloat64(args[2])
 			if !ok {
 				return nil, &evaluator.JSONataError{Code: "T0410", Message: "$match: argument 3 must be a number"}
 			}
@@ -152,7 +152,7 @@ func makeFnReplace(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			if args[3] == nil {
 				return nil, &evaluator.JSONataError{Code: "T0410", Message: "$replace: argument 4 must be a number"}
 			}
-			lf, ok := args[3].(float64)
+			lf, ok := evaluator.ToFloat64(args[3])
 			if !ok {
 				return nil, &evaluator.JSONataError{Code: "T0410", Message: "$replace: argument 4 must be a number"}
 			}

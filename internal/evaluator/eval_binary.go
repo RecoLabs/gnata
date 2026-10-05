@@ -1,10 +1,12 @@
 package evaluator
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
 
+	"github.com/recolabs/gnata/internal/decimal"
 	"github.com/recolabs/gnata/internal/parser"
 )
 
@@ -89,7 +91,7 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 	case "+", "-", "*", "/", "%", "**":
 		op := node.Value
 
-		if lf, ok := left.(float64); ok {
+		if lf, ok := left.(float64); ok && env.DecimalPrecision() == 0 {
 			if rf, ok2 := right.(float64); ok2 {
 				return evalArithFloat64(lf, rf, op)
 			}
@@ -119,47 +121,46 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 		if right == nil {
 			return nil, nil
 		}
+		if prec := env.DecimalPrecision(); prec > 0 {
+			res, err := DecimalArith(left, right, op, prec)
+			switch {
+			case err == nil:
+				return res, nil
+			case errors.Is(err, decimal.ErrOverflow):
+				return nil, &JSONataError{Code: "D1001", Message: "Number out of range"}
+			}
+		}
 		l, _ := ToFloat64(left)
 		r, _ := ToFloat64(right)
 		return evalArithFloat64(l, r, op)
 
 	case "&":
-		ls, err := stringifyValue(left)
+		ls, err := stringifyValue(left, env.DecimalPrecision())
 		if err != nil {
 			return nil, err
 		}
-		rs, err := stringifyValue(right)
+		rs, err := stringifyValue(right, env.DecimalPrecision())
 		if err != nil {
 			return nil, err
 		}
 		return ls + rs, nil
 
-	case "=":
+	case "=", "!=":
 		if left == nil || right == nil {
 			return false, nil
 		}
-		return DeepEqual(left, right), nil
+		return DeepEqualPrec(left, right, env.DecimalPrecision()) == (node.Value == "="), nil
 
-	case "!=":
-		if left == nil || right == nil {
-			return false, nil
+	case "<", "<=", ">", ">=":
+		if prec := env.DecimalPrecision(); prec > 0 {
+			if c, ok := decimalOrder(left, right, prec); ok {
+				return applyCmpOp(c, node.Value), nil
+			}
 		}
-		return !DeepEqual(left, right), nil
-
-	case "<":
-		return compareValues(left, right, "<")
-
-	case "<=":
-		return compareValues(left, right, "<=")
-
-	case ">":
-		return compareValues(left, right, ">")
-
-	case ">=":
-		return compareValues(left, right, ">=")
+		return compareValues(left, right, node.Value)
 
 	case "in":
-		return containsValue(right, left), nil
+		return containsValue(right, left, env.DecimalPrecision()), nil
 
 	case "..":
 		return evalRange(left, right, env)

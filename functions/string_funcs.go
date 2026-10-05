@@ -15,6 +15,12 @@ import (
 // ── $string ──────────────────────────────────────────────────────────────────
 
 func fnString(args []any, focus any) (any, error) {
+	return stringify(args, focus, 0)
+}
+
+// stringify is $string, laying out numbers in decimal to prec significant
+// digits, or through float64 when prec is 0.
+func stringify(args []any, focus any, prec int) (any, error) {
 	if len(args) == 0 {
 		if focus == nil {
 			return nil, nil
@@ -23,7 +29,7 @@ func fnString(args []any, focus any) (any, error) {
 		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
 			return nil, nil
 		}
-		return valueToString(focus, false)
+		return valueToString(focus, false, prec)
 	}
 	arg := args[0]
 	if arg == nil {
@@ -43,10 +49,10 @@ func fnString(args []any, focus any) (any, error) {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("$string: second argument must be a boolean, got %T", v)}
 		}
 	}
-	return valueToString(arg, prettify)
+	return valueToString(arg, prettify, prec)
 }
 
-func valueToString(v any, prettify bool) (string, error) {
+func valueToString(v any, prettify bool, prec int) (string, error) {
 	if evaluator.IsNull(v) {
 		return parser.NullJSON, nil
 	}
@@ -54,8 +60,14 @@ func valueToString(v any, prettify bool) (string, error) {
 	case string:
 		return val, nil
 	case json.Number:
+		if s, ok := evaluator.FormatDecimal(val, prec); ok {
+			return s, nil
+		}
 		return evaluator.FormatNumber(val), nil
 	case float64:
+		if s, ok := evaluator.FormatDecimal(val, prec); ok {
+			return s, nil
+		}
 		if math.IsInf(val, 0) || math.IsNaN(val) {
 			return "", &evaluator.JSONataError{Code: "D3001", Message: "Number out of range"}
 		}
@@ -70,9 +82,9 @@ func valueToString(v any, prettify bool) (string, error) {
 	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
 		return "", nil // functions serialize as empty string in JSONata
 	case *evaluator.Sequence:
-		return valueToString(evaluator.CollapseSequence(val), prettify)
+		return valueToString(evaluator.CollapseSequence(val), prettify, prec)
 	default:
-		out, err := evaluator.AppendJSON(nil, sanitizeForJSON(v))
+		out, err := evaluator.AppendJSON(nil, sanitizeForJSON(v, prec))
 		if err != nil {
 			return "", &evaluator.JSONataError{Code: "D1001", Message: "Number out of range"}
 		}
@@ -87,36 +99,42 @@ func valueToString(v any, prettify bool) (string, error) {
 	}
 }
 
-// sanitizeForJSON replaces function values with "" so they can be JSON-marshaled.
+// sanitizeForJSON replaces function values with "" so they can be JSON-marshaled,
+// and under decimal precision prec lays out numbers as valueToString does.
 // For *OrderedMap, returns a new *OrderedMap preserving insertion order.
-func sanitizeForJSON(v any) any {
+func sanitizeForJSON(v any, prec int) any {
 	if evaluator.IsNull(v) {
 		return nil
 	}
 	switch val := v.(type) {
 	case *evaluator.Sequence:
-		return sanitizeForJSON(evaluator.CollapseSequence(val))
+		return sanitizeForJSON(evaluator.CollapseSequence(val), prec)
 	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
 		return ""
 	case *evaluator.OrderedMap:
 		out := evaluator.NewOrderedMapWithCapacity(val.Len())
 		val.Range(func(k string, v any) bool {
-			out.Set(k, sanitizeForJSON(v))
+			out.Set(k, sanitizeForJSON(v, prec))
 			return true
 		})
 		return out
 	case map[string]any:
 		out := evaluator.NewOrderedMapWithCapacity(len(val))
 		for _, k := range evaluator.MapKeys(val) {
-			out.Set(k, sanitizeForJSON(val[k]))
+			out.Set(k, sanitizeForJSON(val[k], prec))
 		}
 		return out
 	case []any:
 		out := make([]any, 0, len(val))
 		for _, v := range val {
-			out = append(out, sanitizeForJSON(v))
+			out = append(out, sanitizeForJSON(v, prec))
 		}
 		return out
+	case json.Number, float64:
+		if s, ok := evaluator.FormatDecimal(val, prec); ok {
+			return json.Number(s)
+		}
+		return v
 	default:
 		return v
 	}
@@ -438,7 +456,7 @@ func fnSplit(args []any, _ any) (any, error) {
 
 	limit := -1
 	if len(args) >= 3 && args[2] != nil {
-		lf, ok := args[2].(float64)
+		lf, ok := evaluator.ToFloat64(args[2])
 		if !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$split: argument 3 must be a number"}
 		}

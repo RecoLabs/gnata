@@ -27,15 +27,19 @@ func fnFormatNumber(args []any, _ any) (any, error) {
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$formatNumber: argument 2 must be a string"}
 	}
-	var opts map[string]any
-	if len(args) >= 3 && args[2] != nil {
-		if om, ok := args[2].(*evaluator.OrderedMap); ok {
-			opts = om.ToMap()
-		} else {
-			opts, _ = args[2].(map[string]any)
-		}
+	return formatNumberPicture(n, picture, formatNumberOptions(args))
+}
+
+// formatNumberOptions returns the optional third argument of $formatNumber.
+func formatNumberOptions(args []any) map[string]any {
+	if len(args) < 3 || args[2] == nil {
+		return nil
 	}
-	return formatNumberPicture(n, picture, opts)
+	if om, ok := args[2].(*evaluator.OrderedMap); ok {
+		return om.ToMap()
+	}
+	opts, _ := args[2].(map[string]any)
+	return opts
 }
 
 type fmtChars struct {
@@ -378,53 +382,67 @@ func applyDigitFamily(s string, zeroDigit rune) string {
 	return string(runes)
 }
 
-func formatNumberPicture(n float64, picture string, opts map[string]any) (string, error) {
-	fc := fmtCharsFromOptions(opts)
-
-	pics := splitOnPatternSep(picture, fc.patternSep)
-	if len(pics) > 2 {
-		return "", &evaluator.JSONataError{Code: "D3080", Message: "$formatNumber: picture has more than one pattern separator"}
+// scaleMultiplier returns the factor a percent (scale 1) or per-mille (scale 2)
+// sign in a picture applies.
+func scaleMultiplier(scale int) int64 {
+	switch scale {
+	case 1:
+		return 100
+	case 2:
+		return 1000
 	}
+	return 1
+}
 
-	posPic, err := parseSubPicture(pics[0], fc)
+func formatNumberPicture(n float64, picture string, opts map[string]any) (string, error) {
+	var sp subPicture
+	fc, err := numberPicture(&sp, picture, opts, n < 0)
 	if err != nil {
 		return "", err
 	}
-
-	var negPic subPicture
-	if len(pics) == 2 {
-		negPic, err = parseSubPicture(pics[1], fc)
-		if err != nil {
-			return "", err
-		}
-	} else {
-		negPic = posPic
-		negPic.prefix = "-" + posPic.prefix
-	}
-
-	negative := n < 0
-	sp := posPic
-	if negative {
-		sp = negPic
+	if n < 0 {
 		n = -n
 	}
 
-	switch sp.scale {
-	case 1:
-		n *= 100
-	case 2:
-		n *= 1000
-	}
+	n *= float64(scaleMultiplier(sp.scale))
 
 	var result string
 	if sp.expMandatory > 0 {
 		result = formatWithExponent(n, &sp, fc)
 	} else {
-		result = formatFixed(n, &sp, fc)
+		result = formatFixed(strconv.FormatFloat(n, 'f', sp.fracMandatory+sp.fracOptional, 64), &sp, fc)
+	}
+	return sp.prefix + applyDigitFamily(result, fc.zeroDigit) + sp.suffix, nil
+}
+
+// numberPicture parses picture into sp, the sub-picture for a negative or
+// non-negative number.
+func numberPicture(sp *subPicture, picture string, opts map[string]any, negative bool) (fmtChars, error) {
+	fc := fmtCharsFromOptions(opts)
+
+	pics := splitOnPatternSep(picture, fc.patternSep)
+	if len(pics) > 2 {
+		return fc, &evaluator.JSONataError{Code: "D3080", Message: "$formatNumber: picture has more than one pattern separator"}
 	}
 
-	result = applyDigitFamily(result, fc.zeroDigit)
-	return sp.prefix + result + sp.suffix, nil
+	posPic, err := parseSubPicture(pics[0], fc)
+	if err != nil {
+		return fc, err
+	}
+
+	*sp = posPic
+	if len(pics) == 2 {
+		negPic, err := parseSubPicture(pics[1], fc)
+		if err != nil {
+			return fc, err
+		}
+		if negative {
+			*sp = negPic
+		}
+	} else if negative {
+		sp.prefix = "-" + posPic.prefix
+	}
+	return fc, nil
 }
 
 func splitOnPatternSep(picture string, sep rune) []string {
@@ -442,9 +460,9 @@ func splitOnPatternSep(picture string, sep rune) []string {
 	return parts
 }
 
-func formatFixed(n float64, sp *subPicture, fc fmtChars) string {
-	totalFracDigits := sp.fracMandatory + sp.fracOptional
-	formatted := strconv.FormatFloat(n, 'f', totalFracDigits, 64)
+// formatFixed lays out formatted, the number in plain digits with
+// fracMandatory+fracOptional fraction digits, as sp describes.
+func formatFixed(formatted string, sp *subPicture, fc fmtChars) string {
 	parts := strings.SplitN(formatted, ".", 2)
 	intStr := parts[0]
 	fracStr := ""
@@ -520,12 +538,18 @@ func applyFracGrouping(fracStr string, grpPos []int, sep string) string {
 	return string(result)
 }
 
-func formatWithExponent(n float64, sp *subPicture, fc fmtChars) string {
-	N := sp.intMandatory
+// expFracDigits returns the mantissa fraction digits for an exponent picture.
+func expFracDigits(sp *subPicture) int {
 	fracSig := sp.fracMandatory + sp.fracOptional
-	if N == 0 && sp.fracMandatory == 0 && sp.fracOptional == 0 {
+	if sp.intMandatory == 0 && fracSig == 0 {
 		fracSig += sp.intOptional
 	}
+	return fracSig
+}
+
+func formatWithExponent(n float64, sp *subPicture, fc fmtChars) string {
+	N := sp.intMandatory
+	fracSig := expFracDigits(sp)
 
 	exp := 0
 	if n != 0 {
@@ -552,8 +576,13 @@ func formatWithExponent(n float64, sp *subPicture, fc fmtChars) string {
 		exp++
 	}
 
-	mantissaStr := strconv.FormatFloat(math.Abs(mantissa), 'f', fracSig, 64)
-	parts := strings.SplitN(mantissaStr, ".", 2)
+	return formatExponent(strconv.FormatFloat(math.Abs(mantissa), 'f', fracSig, 64), exp, sp, fc)
+}
+
+// formatExponent lays out mantissa, in plain digits with expFracDigits
+// fraction digits, and exp as sp describes.
+func formatExponent(mantissa string, exp int, sp *subPicture, fc fmtChars) string {
+	parts := strings.SplitN(mantissa, ".", 2)
 	intStr := parts[0]
 	fracStr := ""
 	if len(parts) > 1 {

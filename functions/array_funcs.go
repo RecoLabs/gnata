@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"slices"
 
+	"github.com/recolabs/gnata/internal/decimal"
 	"github.com/recolabs/gnata/internal/evaluator"
 )
 
@@ -148,6 +149,13 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 				}
 				return 0, nil
 			}
+		} else if prec := env.DecimalPrecision(); prec > 0 {
+			cmpFn = func(a, b any) (int, error) {
+				if c, ok := evaluator.DecimalCmp(a, b, prec); ok {
+					return c, nil
+				}
+				return defaultCompare(a, b)
+			}
 		} else {
 			cmpFn = defaultCompare
 		}
@@ -210,7 +218,21 @@ func fnShuffle(args []any, _ any) (any, error) {
 
 // ── $distinct ─────────────────────────────────────────────────────────────────
 
+// numberKey keys a number by its canonical decimal form, apart from strings.
+type numberKey string
+
 func fnDistinct(args []any, _ any) (any, error) {
+	return distinct(args, 0)
+}
+
+func decDistinct(args []any, _ any, prec int) (res any, ok bool, err error) {
+	res, err = distinct(args, prec)
+	return res, true, err
+}
+
+// distinct deduplicates, comparing numbers in decimal to prec significant
+// digits, or in float64 when prec is 0.
+func distinct(args []any, prec int) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
@@ -235,6 +257,16 @@ func fnDistinct(args []any, _ any) (any, error) {
 	seen := make(map[any]bool, len(arr))
 	var complexItems []any
 	for _, v := range arr {
+		if prec > 0 {
+			if d, ok := decimal.FromValue(v, prec); ok {
+				key := numberKey(d.String(prec))
+				if !seen[key] {
+					seen[key] = true
+					result = append(result, v)
+				}
+				continue
+			}
+		}
 		switch tv := v.(type) {
 		case string, float64, bool:
 			if !seen[v] {
@@ -262,7 +294,7 @@ func fnDistinct(args []any, _ any) (any, error) {
 			}
 			found := false
 			for _, existing := range complexItems {
-				if evaluator.DeepEqual(v, existing) {
+				if evaluator.DeepEqualPrec(v, existing, prec) {
 					found = true
 					break
 				}
@@ -286,7 +318,7 @@ func fnFlatten(args []any, _ any) (any, error) {
 
 	depth := -1 // unlimited
 	if len(args) >= 2 && args[1] != nil {
-		df, ok := args[1].(float64)
+		df, ok := evaluator.ToFloat64(args[1])
 		if !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$flatten: depth argument must be a number"}
 		}

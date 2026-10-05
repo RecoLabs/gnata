@@ -78,8 +78,12 @@ type Environment struct {
 	// evaluation starts, and child environments inherit it. It sits beside
 	// inlineN to reuse that field's padding.
 	hasDeadline bool
-	bindings    map[string]any // nil until inline overflows
-	calls       *callCounter   // shared call-depth counter; nil inherits from parent
+	// decimalPrecision is the significant digits set via WithDecimalPrecision
+	// (0 = float64 only), inherited by children. At most 100, so it fits in
+	// the padding after hasDeadline.
+	decimalPrecision uint16
+	bindings         map[string]any // nil until inline overflows
+	calls            *callCounter   // shared call-depth counter; nil inherits from parent
 	// done caches ctx.Done() so the per-node cancellation check in Eval is a
 	// nil check for non-cancellable contexts instead of a walk up both the
 	// environment chain and the context.valueCtx chain.
@@ -100,6 +104,7 @@ func NewChildEnvironment(parent *Environment) *Environment {
 		env.calls = parent.callCounter()
 		env.done = parent.done
 		env.hasDeadline = parent.hasDeadline
+		env.decimalPrecision = parent.decimalPrecision
 	}
 	return env
 }
@@ -219,6 +224,17 @@ func clampInt32(n int) int32 {
 	return int32(max(min(n, math.MaxInt32), math.MinInt32))
 }
 
+// SetDecimalPrecision enables decimal arithmetic to digits significant digits
+// (0 = disabled) for this environment and children created after it.
+func (e *Environment) SetDecimalPrecision(digits int) {
+	e.decimalPrecision = uint16(digits)
+}
+
+// DecimalPrecision returns the decimal precision in significant digits, or 0 when disabled.
+func (e *Environment) DecimalPrecision() int {
+	return int(e.decimalPrecision)
+}
+
 // CheckSequence returns a D2015 error if n exceeds the configured sequence
 // guardrail. No-op when no guardrail is set.
 func (e *Environment) CheckSequence(n int) error {
@@ -233,10 +249,11 @@ func (e *Environment) CheckSequence(n int) error {
 // but sharing the same parent and call counter references.
 func (e *Environment) Clone() *Environment {
 	child := &Environment{
-		parent:      e.parent,
-		calls:       e.calls,
-		done:        e.done,
-		hasDeadline: e.hasDeadline,
+		parent:           e.parent,
+		calls:            e.calls,
+		done:             e.done,
+		hasDeadline:      e.hasDeadline,
+		decimalPrecision: e.decimalPrecision,
 	}
 	if e.bindings != nil {
 		child.bindings = make(map[string]any, len(e.bindings))

@@ -24,7 +24,7 @@ func appendToSequence(seq *Sequence, v any) {
 	}
 }
 
-func stringifyValue(v any) (string, error) {
+func stringifyValue(v any, prec int) (string, error) {
 	if v == nil {
 		return "", nil
 	}
@@ -32,8 +32,14 @@ func stringifyValue(v any) (string, error) {
 	case string:
 		return val, nil
 	case json.Number:
+		if s, ok := FormatDecimal(val, prec); ok {
+			return s, nil
+		}
 		return FormatNumber(val), nil
 	case float64:
+		if s, ok := FormatDecimal(val, prec); ok {
+			return s, nil
+		}
 		return FormatFloat(val), nil
 	case bool:
 		if val {
@@ -101,6 +107,22 @@ func cleanExponent(s string) string {
 	return mantissa + "e" + sign + exp
 }
 
+// applyCmpOp applies an ordering operator to the result c of a three-way
+// comparison (-1, 0 or +1).
+func applyCmpOp(c int, op string) bool {
+	switch op {
+	case "<":
+		return c < 0
+	case "<=":
+		return c <= 0
+	case ">":
+		return c > 0
+	case ">=":
+		return c >= 0
+	}
+	return false
+}
+
 func compareValues(left, right any, op string) (any, error) {
 	_, leftIsNum := ToFloat64(left)
 	_, leftIsStr := left.(string)
@@ -133,16 +155,7 @@ func compareValues(left, right any, op string) (any, error) {
 	}
 	if ls, lok := left.(string); lok {
 		if rs, rok := right.(string); rok {
-			switch op {
-			case "<":
-				return ls < rs, nil
-			case "<=":
-				return ls <= rs, nil
-			case ">":
-				return ls > rs, nil
-			case ">=":
-				return ls >= rs, nil
-			}
+			return applyCmpOp(strings.Compare(ls, rs), op), nil
 		}
 		if _, isNum := ToFloat64(right); isNum {
 			return nil, &JSONataError{
@@ -155,7 +168,7 @@ func compareValues(left, right any, op string) (any, error) {
 	return nil, &JSONataError{Code: "T2010", Message: fmt.Sprintf("the operands of the %q operator must be numbers or strings", op)}
 }
 
-func compareOrder(a, b any) (int, error) {
+func compareOrder(a, b any, prec int) (int, error) {
 	if a == nil && b == nil {
 		return 0, nil
 	}
@@ -164,6 +177,11 @@ func compareOrder(a, b any) (int, error) {
 	}
 	if b == nil {
 		return -1, nil
+	}
+	if prec > 0 {
+		if c, ok := DecimalCmp(a, b, prec); ok {
+			return c, nil
+		}
 	}
 	an, aNum := ToFloat64(a)
 	bn, bNum := ToFloat64(b)
@@ -191,25 +209,25 @@ func compareOrder(a, b any) (int, error) {
 	return 0, &JSONataError{Code: "T2008", Message: fmt.Sprintf("cannot compare values of type %T and %T", a, b)}
 }
 
-func containsValue(arr, elem any) bool {
+func containsValue(arr, elem any, prec int) bool {
 	if arr == nil {
 		return false
 	}
 	switch v := arr.(type) {
 	case []any:
 		for _, item := range v {
-			if DeepEqual(item, elem) {
+			if DeepEqualPrec(item, elem, prec) {
 				return true
 			}
 		}
 	case *Sequence:
 		for _, item := range v.Values {
-			if DeepEqual(item, elem) {
+			if DeepEqualPrec(item, elem, prec) {
 				return true
 			}
 		}
 	default:
-		return DeepEqual(arr, elem)
+		return DeepEqualPrec(arr, elem, prec)
 	}
 	return false
 }
