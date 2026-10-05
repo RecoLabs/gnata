@@ -90,7 +90,15 @@ func evalDescendant(input any, env *Environment) (any, error) {
 // ApplyFunction is the public API used by the standard library to call a
 // function argument with the given args. Like jsonata-js, which wraps a
 // function argument in a closure that applies it with a null context, it
-// calls fn with a null context.
+// calls fn with a null context. The call spends the nesting budget, since a
+// builtin passed as a callback, such as $sort as $sort's comparator, can
+// recurse on the Go stack without any lambda call.
 func ApplyFunction(fn any, args []any, env *Environment) (any, error) {
-	return callFunction(fn, args, Null, env)
+	counter := env.callCounter()
+	if err := counter.enterNested(1); err != nil {
+		return nil, err
+	}
+	result, err := callFunction(fn, args, Null, env)
+	counter.leaveNested(1)
+	return result, err
 }

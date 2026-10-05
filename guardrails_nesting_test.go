@@ -34,6 +34,9 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		return fmt.Sprintf(`$reduce([1..%d], function($f,$i){$lookup(({"a":1}){"k": | $ | (%s$f($)%s; {}) |}, "k")}, | $ | {} |)({"k":1})`,
 			n, strings.Repeat("(", depth), strings.Repeat(")", depth))
 	}
+	sortsBySort := func(depth int) string {
+		return fmt.Sprintf(`($d := $reduce([1..%d], function($a,$i){[[$a], $sort]}, [2,1]); $count($sort($d, $sort)))`, depth)
+	}
 	nested := func(depth int) string { return strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth) }
 	const tooNested = "U1001: stack overflow error: function values nested more than 10000 deep"
 	testCases := []struct {
@@ -49,6 +52,8 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		{desc: "transforms within nesting limit", expr: transforms(2_000), want: map[string]any{"k": float64(1)}},
 		{desc: "transforms exceed nesting limit", expr: transforms(3_000_000), code: tooNested},
 		{desc: "deep transforms exceed nesting limit", expr: deepTransforms(1_000, 3_000), code: tooNested},
+		{desc: "builtin callbacks within nesting limit", expr: sortsBySort(9_000), want: float64(2)},
+		{desc: "builtin callbacks exceed nesting limit", expr: sortsBySort(1_000_000), code: tooNested},
 		{desc: "recursion through a transform within default stack", expr: recursiveTransform(99), want: float64(2)},
 		{desc: "deep transforms in a group exceed nesting limit", expr: groupedTransforms(10_000, 3_000), code: tooNested},
 		{

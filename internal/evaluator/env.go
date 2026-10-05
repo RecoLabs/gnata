@@ -59,7 +59,8 @@ const (
 )
 
 // maxNestedCalls bounds the nesting budget of calls in progress into partial
-// applications, compositions, function-argument wrappers and transforms.
+// applications, compositions, function-argument wrappers, transforms and
+// higher-order functions' callbacks.
 // Each calls further functions on the Go stack and the call depth does not
 // count it, so a long chain of them would overflow the Go stack, which cannot
 // be recovered. It is fixed, unlike the call depth WithStack sets. Native
