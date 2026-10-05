@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/RecoLabs/gnata/actions/workflows/ci.yml"><img src="https://github.com/RecoLabs/gnata/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/RecoLabs/gnata/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/coverage-82.7%25-brightgreen" alt="Coverage" /></a>
+  <a href="https://github.com/RecoLabs/gnata/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/coverage-92.7%25-brightgreen" alt="Coverage" /></a>
   <a href="https://pkg.go.dev/github.com/recolabs/gnata"><img src="https://pkg.go.dev/badge/github.com/recolabs/gnata.svg" alt="Go Reference" /></a>
   <a href="https://github.com/RecoLabs/gnata/blob/main/go.mod"><img src="https://img.shields.io/github/go-mod/go-version/RecoLabs/gnata" alt="Go version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
@@ -332,7 +332,7 @@ expr, err := gnata.Compile(userExpr,
 
 `WithTimeout` is enforced by checking a deadline on every function call and periodically between expression nodes, rather than with a timer, so it also applies inside a synchronous call on single-threaded WebAssembly hosts. A single builtin or custom function call is not interrupted, so evaluation can exceed the timeout by at most the duration of the call in progress.
 
-All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds every major sequence-growth path: the range operator, `$append`, `$map`, `$filter`, `$each`, wildcard (`*`), and descendant (`**`). Use guardrails when evaluating expressions from an untrusted source.
+All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds every major sequence-growth path: the range operator, `$append`, `$map`, `$filter`, `$each`, wildcard (`*`), descendant (`**`), and repeated positions in a filter directly after a `#`/`@` binding (`a.b#$i[...]`). Use guardrails when evaluating expressions from an untrusted source.
 
 ### Decimal Precision
 
@@ -357,13 +357,25 @@ These still use float64:
 
 ## Known Behavioral Differences from jsonata-js
 
-gnata targets exact parity with the JSONata reference implementation ([jsonata-js](https://github.com/jsonata-js/jsonata)). The differences below stem from platform differences between Go and JavaScript, not implementation bugs. In every case gnata's behavior is spec-correct or more correct than jsonata-js.
+gnata targets exact parity with the JSONata reference implementation ([jsonata-js](https://github.com/jsonata-js/jsonata)). The differences below are deliberate: they stem from platform differences between Go and JavaScript, or gnata accepts input that jsonata-js mishandles.
 
 | # | Area | gnata | jsonata-js | Notes |
 |---|------|-------|------------|-------|
 | 1 | **Large integer precision** | `"123456789012345678"` (exact) | `"123456789012345680"` (float64 rounding) | Go's `json.Number` preserves full precision; JS loses it beyond 2^53. Compare with relative tolerance ~1e-12. |
 | 2 | **Null placeholders in auto-mapping** | `["ext1", "ext2"]` | `[null, "ext1", "ext2"]` | jsonata-js inserts `null` for groups with no predicate match. gnata omits them per spec. Strip `null` entries when comparing. |
-| 3 | **Datetime formatting in picture strings** | `"October 15, 2025"` | `"Oct 15, 2025"` | picture string modifiers like `[MNn,*-3]` (abbreviated month) are partially supported. gnata may default to the full name for complex modifiers. |
+| 3 | **Argument errors** | `D3006` for a missing argument | `T0410`, or `undefined` | gnata reports wrong argument counts and types consistently; codes for malformed calls can differ. |
+| 4 | **Timezones** | `$fromMillis(0, "[H01]:[m01]", "+05:30")` → `"05:30"` | `"00:05"`; `"NaN"` for `"Europe/London"` | gnata accepts IANA zone names and `±HH:MM` offsets and rejects malformed ones (`D3137`). `$toMillis` `[Z]` also parses `Z` and `±HHMM`. |
+| 5 | **`$base64decode`** | `D3137` for invalid input | `""` | Unpadded input decodes in both. |
+| 6 | **`$contains`, `$values`, `$flatten`** | array search, object values, flattening | `T0410` / unknown function | gnata-only extensions. |
+| 7 | **Fractional seconds `[f]`** | `[f01]` → `"12"`, `[f0001]` → `"1230"` for .123 s | `"123"`, `"0123"` | gnata follows XPath F&O: one digit per picture character, padded on the right. jsonata-js formats milliseconds as an integer. |
+| 8 | **Month names in `$toMillis`** | `"2018 April"` with `[MNn,3-3]` → April | January | jsonata-js only recognizes the exact truncated name and silently defaults any other word to January. |
+| 9 | **Uncaptured regex groups** | `""` in `groups` | `undefined` (`null` once serialized) | Go arrays cannot hold `undefined`; `""` behaves the same in string operations. |
+| 10 | **Date/time picture widths** | `D3010` when zero-padding widths total over 10,000 | builds the string, or crashes | Same limit as `$pad`; widths that cannot pad (names, words, `$toMillis`) are not limited. |
+| 11 | **Years 0–99 in `$toMillis`** | `$toMillis("18", "[Y01]")` → year 18 | year 1918 | JavaScript's `Date.UTC` maps years 0–99 to 1900–1999; gnata keeps the parsed year. |
+| 12 | **Regex match positions** | `$match("😀ab", /a/).index` → `1` | `2` | gnata counts code points, like `$length` and `$substring`; jsonata-js counts UTF-16 units. Applies to `index`, `start` and `end`. |
+| 13 | **Exponent mantissa width** | `$formatNumber(1000, "0.0e0")` → `"1.0e3"` | `"10.0e2"` | gnata keeps the mantissa within the picture's integer digits, also when rounding carries over (`9.95` → `"1.0e1"`, not `"10.0e0"`). |
+| 14 | **Negative offsets in `[Z]`** | `$fromMillis(0, "[Z0000]", "-0530")` → `"-0530"` | `"-0630"` | jsonata-js floors a negative `hhmm` offset into its hours, so half-hour zones west of UTC lose an hour. |
+| 15 | **Match object `next`** | `$replace("ababab", /b/, function($m){ $m.next() ? "X" : "Y" })` → `"aXaXaY"` | `"aXabaY"` | Only `$replace` callbacks get `next`, which returns the match after `$m`. jsonata-js advances the cursor `$replace` itself uses, skipping the returned match. `$match` and `~> /re/` results omit `next` so they hold no function values. |
 
 ## Regex Engine: RE2 vs JavaScript RegExp
 
