@@ -377,3 +377,69 @@ func processPathChildren(node *Node) (*Node, error) {
 	}
 	return node, nil
 }
+
+// ParseAndProcess parses src and runs the post-parse passes, returning the
+// tree the evaluator runs.
+func ParseAndProcess(src string) (*Node, error) {
+	ast, err := NewParser(src).Parse()
+	if err != nil {
+		return nil, err
+	}
+	if ast, err = ProcessAST(ast); err != nil {
+		return nil, err
+	}
+	markRootContext(ast)
+	return ast, nil
+}
+
+// markRootContext flags the wildcard steps that start a path evaluated
+// against the expression's root input. jsonata-js wraps a root array input,
+// so such a step sees the array as one item, while later steps and $ see its
+// items. It runs once on the whole expression.
+func markRootContext(node *Node) {
+	if node == nil {
+		return
+	}
+	switch node.Type {
+	case NodePath:
+		if len(node.Steps) > 0 {
+			if first := node.Steps[0]; first.Type == NodeWildcard {
+				first.RootContext = true
+			} else {
+				markRootContext(first)
+			}
+		}
+	case NodeBlock:
+		for _, expr := range node.Expressions {
+			markRootContext(expr)
+		}
+	case NodeUnary:
+		markRootContext(node.Expression)
+		for _, expr := range node.Expressions {
+			markRootContext(expr)
+		}
+		for _, expr := range node.LHS {
+			markRootContext(expr)
+		}
+	case NodeBinary, NodeApply:
+		markRootContext(node.Left)
+		if node.Value != "[" {
+			markRootContext(node.Right)
+		}
+	case NodeCondition:
+		markRootContext(node.Condition)
+		markRootContext(node.Then)
+		markRootContext(node.Else)
+	case NodeBind:
+		markRootContext(node.Right)
+	case NodeFunction, NodePartial:
+		for _, arg := range node.Arguments {
+			markRootContext(arg)
+		}
+	case NodeLambda:
+		// A lambda body runs against the input where the lambda is defined.
+		markRootContext(node.Body)
+	case NodeSort:
+		markRootContext(node.Left)
+	}
+}

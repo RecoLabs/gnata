@@ -112,12 +112,7 @@ func WithDecimalPrecision(digits int) Option {
 // Compile parses a JSONata expression string and returns an Expression.
 // The returned Expression is goroutine-safe and should be reused across calls.
 func Compile(expr string, opts ...Option) (*Expression, error) {
-	p := parser.NewParser(expr)
-	ast, err := p.Parse()
-	if err != nil {
-		return nil, err
-	}
-	ast, err = parser.ProcessAST(ast)
+	ast, err := parser.ParseAndProcess(expr)
 	if err != nil {
 		return nil, err
 	}
@@ -314,6 +309,7 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 		}
 	}
 	env.Bind("$", data)
+	env.SetRootInput(data)
 	for k, v := range vars {
 		env.Bind(k, v)
 	}

@@ -49,6 +49,7 @@ type Node struct {
 	ConsArray          bool // step is an array constructor used as a path step
 	Thunk              bool // lambda is a TCO thunk
 	Tuple              bool // step participates in a tuple stream
+	RootContext        bool // wildcard step starting a path over the root input (see markRootContext)
 
 	// Focus / index variable names (set by @ and # operators)
 	Focus string // variable name bound by @

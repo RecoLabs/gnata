@@ -154,6 +154,9 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 		prevWasMapper = isArr || isSeq
 	}
 
+	if seq, ok := result.(*Sequence); ok {
+		result = CollapseSequence(seq)
+	}
 	if node.KeepSingletonArray {
 		return keepSingletonArray(result, singleConsArray), nil
 	}
@@ -166,10 +169,11 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 // obj.emptyList) and must be preserved so that $exists sees it as defined.
 // For field-lookup steps (NodeName/NodeString), evalName already
 // distinguishes "nothing found" (returns nil) from "field exists with empty
-// array value" (returns []any{}), so those step types are skipped.
+// array value" (returns []any{}), and * returns nil for nothing found and []
+// only for flattened empty arrays, so those step types are skipped.
 func isNothingFound(step *parser.Node, result any) bool {
 	arr, ok := AsArray(result)
-	return ok && len(arr) == 0 && step.Type != parser.NodeName && step.Type != parser.NodeString
+	return ok && len(arr) == 0 && step.Type != parser.NodeName && step.Type != parser.NodeString && step.Type != parser.NodeWildcard
 }
 
 // unnestSingleton returns the array inside a one-item array of arrays.
@@ -208,34 +212,8 @@ func evalConsArrayStep(step *parser.Node, input any, env *Environment, keepSingl
 		return evalPathFunctionStep(step, input, env)
 	case step.Type == parser.NodeUnary && step.Value == "{":
 		return consArrayGroup(step, input, env)
-	case step.Type == parser.NodeWildcard:
-		return consArrayWildcard(input, env)
 	}
 	return evalPathStep(step, input, env, false, keepSingleton)
-}
-
-// consArrayWildcard applies a * step to a constructed array taken as one
-// context item: its values are the array's elements, with arrays flattened.
-func consArrayWildcard(input any, env *Environment) (any, error) {
-	arr, _ := AsArray(input)
-	values := make([]any, 0, len(arr))
-	for _, item := range arr {
-		if nested, ok := item.([]any); ok {
-			values = append(values, nested...)
-		} else {
-			values = append(values, item)
-		}
-	}
-	if err := env.CheckSequence(len(values)); err != nil {
-		return nil, err
-	}
-	switch len(values) {
-	case 0:
-		return nil, nil
-	case 1:
-		return values[0], nil
-	}
-	return values, nil
 }
 
 // consArrayGroup applies a {...} step to a constructed array taken as one
@@ -1063,7 +1041,9 @@ func evalPathStep(
 	case parser.NodeNumber:
 		// S0213: a numeric literal is not a valid path step (use [n] subscript notation instead).
 		return nil, &JSONataError{Code: "S0213", Token: step.Value, Message: "invalid step in path: numeric literal is not a field name"}
-	case parser.NodeName, parser.NodeWildcard,
+	case parser.NodeWildcard:
+		return evalPathStepWildcard(step, input, env)
+	case parser.NodeName,
 		parser.NodeVariable, parser.NodeString, parser.NodeValue,
 		parser.NodeSort: // Sort steps must be applied to the full accumulated input, not mapped per-element.
 		return Eval(step, input, env)
@@ -1401,25 +1381,14 @@ func pathStepArray(input any) ([]any, bool) {
 	return arr, ok
 }
 
-// evalPathStepDescendant evaluates a ** path step. It must include the input
-// itself in the search so that a later step can match at the current level
-// too, not just at deeper ones. Arrays are transparent containers: their
-// elements are already included by descendantLookup, so adding the array
-// itself would cause duplicate results when subsequent field lookups
-// auto-map through both the array and its individually-included elements.
+// evalPathStepDescendant evaluates a ** path step (see collector.descendants).
 func evalPathStepDescendant(input any, env *Environment) (any, error) {
-	seq := CreateSequence()
-	if _, isArr := AsArray(input); !isArr {
-		appendToSequence(seq, input)
+	c := collector{env: env}
+	c.descendants(input)
+	if c.err != nil || len(c.values) == 0 {
+		return nil, c.err
 	}
-	appendToSequence(seq, descendantLookup(input))
-	if err := env.CheckSequence(len(seq.Values)); err != nil {
-		return nil, err
-	}
-	if len(seq.Values) == 0 {
-		return nil, nil
-	}
-	return seq, nil
+	return &Sequence{Values: c.values}, nil
 }
 
 // evalPathFunctionStep evaluates a NodeFunction step in path context.
@@ -1460,33 +1429,3 @@ func evalPathFunctionStep(step *parser.Node, item any, env *Environment) (any, e
 	return callFunction(fn, args, item, env)
 }
 
-// descendantLookup recursively collects all values at all depths from maps and arrays.
-// It returns a *Sequence (never collapses to []any) so that appendToSequence can
-// properly flatten the results when building the descendant step sequence.
-//
-// For arrays, individual elements are added (not the array as a whole), matching
-// JSONata semantics where ** traverses into arrays and exposes each element for
-// field lookup in subsequent path steps.
-func descendantLookup(input any) *Sequence {
-	seq := CreateSequence()
-	if IsMap(input) {
-		MapRange(input, func(_ string, val any) bool {
-			if arr, ok := val.([]any); ok {
-				for _, item := range arr {
-					appendToSequence(seq, item)
-					appendToSequence(seq, descendantLookup(item))
-				}
-			} else {
-				appendToSequence(seq, val)
-				appendToSequence(seq, descendantLookup(val))
-			}
-			return true
-		})
-	} else if arr, ok := input.([]any); ok {
-		for _, item := range arr {
-			appendToSequence(seq, item)
-			appendToSequence(seq, descendantLookup(item))
-		}
-	}
-	return seq
-}

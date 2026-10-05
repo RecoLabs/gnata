@@ -151,6 +151,16 @@ func (e *Environment) Bind(name string, value any) {
 	e.inlineN = 0
 }
 
+// rootInputKey binds the input jsonata-js wraps as one item when it is an
+// array; a character outside JSONata identifiers keeps it from colliding.
+const rootInputKey = "%%root"
+
+// SetRootInput records data as the root input: the evaluation's input, or the
+// context argument of $eval.
+func (e *Environment) SetRootInput(data any) {
+	e.Bind(rootInputKey, data)
+}
+
 // Parent returns the parent environment (nil for root environments).
 func (e *Environment) Parent() *Environment {
 	return e.parent

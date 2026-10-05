@@ -36,20 +36,16 @@ func makeFnEval() evaluator.EnvAwareBuiltin {
 			return nil, err
 		}
 		defer env.DecrEvalDepth()
-		p := parser.NewParser(expr)
-		ast, parseErr := p.Parse()
+		ast, parseErr := parser.ParseAndProcess(expr)
 		if parseErr != nil {
 			return nil, &evaluator.JSONataError{Code: "D3120", Message: fmt.Sprintf("$eval: invalid expression: %v", parseErr)}
 		}
-		ast, processErr := parser.ProcessAST(ast)
-		if processErr != nil {
-			return nil, &evaluator.JSONataError{Code: "D3120", Message: fmt.Sprintf("$eval: invalid expression: %v", processErr)}
-		}
 		ctx := focus
+		childEnv := evaluator.NewChildEnvironment(env)
 		if len(args) >= 2 && args[1] != nil {
 			ctx = args[1]
+			childEnv.SetRootInput(ctx)
 		}
-		childEnv := evaluator.NewChildEnvironment(env)
 		result, evalErr := evaluator.Eval(ast, ctx, childEnv)
 		if evalErr != nil {
 			if je := new(evaluator.JSONataError); errors.As(evalErr, &je) && !slices.Contains(evalPassthroughCodes, je.Code) {

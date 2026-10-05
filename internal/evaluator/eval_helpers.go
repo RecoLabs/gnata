@@ -333,54 +333,159 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 	}
 }
 
+// evalWildcard evaluates * against one context item (see wildcardItem).
 func evalWildcard(_ *parser.Node, input any, env *Environment) (any, error) {
-	if IsMap(input) {
-		if MapLen(input) == 0 {
-			return nil, nil
+	c := collector{env: env}
+	c.wildcardItem(input)
+	return c.wildcardResult()
+}
+
+// evalPathStepWildcard maps a * step over a sequence of context items. A root
+// path's first step sees the root array as one item, as jsonata-js wraps it.
+func evalPathStepWildcard(step *parser.Node, input any, env *Environment) (any, error) {
+	items, ok := input.([]any)
+	if !ok || len(items) == 1 || step.RootContext && isRootInput(items, env) {
+		if ok && len(items) == 1 {
+			input = items[0]
 		}
-		seq := CreateSequence()
-		MapRange(input, func(_ string, val any) bool {
-			if arr, ok := val.([]any); ok {
-				seq.Values = append(seq.Values, arr...)
-			} else {
-				seq.Values = append(seq.Values, val)
-			}
-			return true
-		})
-		if len(seq.Values) == 0 {
-			return nil, nil
-		}
-		if err := env.CheckSequence(len(seq.Values)); err != nil {
-			return nil, err
-		}
-		if len(seq.Values) == 1 {
-			return seq.Values[0], nil
-		}
-		return CollapseSequence(seq), nil
+		return evalWildcard(step, input, env)
 	}
-	switch v := input.(type) {
-	case []any:
-		seq := CreateSequence()
-		for _, item := range v {
-			if IsMap(item) {
-				val, err := evalWildcard(nil, item, env)
-				if err != nil {
-					return nil, err
-				}
-				if val != nil {
-					appendToSequence(seq, val)
-				}
-			} else if item != nil {
-				seq.Values = append(seq.Values, item)
-			}
+	// As jsonata-js evaluateStep does, a lone item result that is a plain
+	// array (see collector.wildcardResult) is returned as is; otherwise the
+	// item results are flattened into one sequence.
+	c := collector{env: env}
+	defined, lonePlain := 0, false
+	for _, item := range items {
+		start := len(c.values)
+		c.fromArray = false
+		c.wildcardItem(item)
+		if c.err != nil {
+			return nil, c.err
 		}
-		if err := env.CheckSequence(len(seq.Values)); err != nil {
-			return nil, err
+		if len(c.values) > start || c.fromArray {
+			defined++
+			lonePlain = c.fromArray
 		}
-		return CollapseSequence(seq), nil
-	case ConsArray:
-		return evalWildcard(nil, []any(v), env)
-	default:
-		return nil, nil
+	}
+	c.fromArray = defined == 1 && lonePlain
+	return c.wildcardResult()
+}
+
+// isRootInput reports whether items is the root input (see SetRootInput).
+func isRootInput(items []any, env *Environment) bool {
+	root, ok := env.Lookup(rootInputKey)
+	if !ok {
+		return false
+	}
+	rootItems, ok := root.([]any)
+	return ok && len(rootItems) == len(items) && (len(items) == 0 || &rootItems[0] == &items[0])
+}
+
+// collector gathers the values * and ** yield. It enforces WithSequence as
+// values arrive and checks for cancellation as it walks, so a large or
+// deeply shared structure cannot run unbounded before the limits apply.
+type collector struct {
+	env       *Environment
+	values    []any
+	visits    int
+	fromArray bool // some value came from flattening an array member
+	err       error
+}
+
+// cancelCheckInterval is how many visited values pass between cancellation
+// checks; checking every value would dominate a small walk.
+const cancelCheckInterval = 1024
+
+func (c *collector) visit() bool {
+	if c.err != nil {
+		return false
+	}
+	c.visits++
+	if c.visits%cancelCheckInterval == 0 {
+		c.err = c.env.Err()
+	}
+	return c.err == nil
+}
+
+func (c *collector) add(v any) {
+	c.values = append(c.values, v)
+	c.err = c.env.CheckSequence(len(c.values))
+}
+
+// wildcardItem collects what * yields for one item, as jsonata-js
+// evaluateWildcard does: an object's values or an array's elements, with
+// arrays among them flattened at every depth. A scalar yields nothing.
+func (c *collector) wildcardItem(item any) {
+	if arr, ok := AsArray(item); ok {
+		for _, elem := range arr {
+			c.flatten(elem)
+		}
+		return
+	}
+	if IsMap(item) {
+		MapRange(item, func(_ string, val any) bool {
+			c.flatten(val)
+			return c.err == nil
+		})
+	}
+}
+
+func (c *collector) flatten(v any) {
+	if !c.visit() {
+		return
+	}
+	arr, ok := AsArray(v)
+	if !ok {
+		c.add(v)
+		return
+	}
+	c.fromArray = true
+	for _, elem := range arr {
+		c.flatten(elem)
+	}
+}
+
+// wildcardResult returns the collected values. jsonata-js appends flattened
+// array members with fn.append, which yields a plain array that no longer
+// collapses to a single value or undefined.
+func (c *collector) wildcardResult() (any, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	if c.fromArray {
+		if c.values == nil {
+			return []any{}, nil
+		}
+		return c.values, nil
+	}
+	return CollapseSequence(&Sequence{Values: c.values}), nil
+}
+
+// descendants collects v and every value nested in it, as jsonata-js
+// recurseDescendants does. Arrays are transparent: they contribute their
+// members but are never values themselves, so a later step does not match
+// both an array and its elements.
+func (c *collector) descendants(v any) {
+	if !c.visit() {
+		return
+	}
+	if seq, ok := v.(*Sequence); ok {
+		v = seq.Values
+	}
+	if arr, ok := AsArray(v); ok {
+		for _, elem := range arr {
+			c.descendants(elem)
+		}
+		return
+	}
+	if v == nil {
+		return
+	}
+	c.add(v)
+	if IsMap(v) {
+		MapRange(v, func(_ string, val any) bool {
+			c.descendants(val)
+			return c.err == nil
+		})
 	}
 }

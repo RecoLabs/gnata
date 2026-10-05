@@ -112,6 +112,7 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$reverse(o.[b]).$string()`, data: pairsJSON, want: `"[5]"`},
 	{expr: `$shuffle(o.[b]).$string()`, data: pairsJSON, want: `"[5]"`},
 	{expr: `$sort(o.[b])[]`, data: pairsJSON, want: `[5]`},
+	{expr: `$count(**)`, data: `{"a":{"b":1}}`, want: `3`},
 	{expr: `($f := function($x)<a>{$x}; $f(o.[b,c]).$string())`, data: pairsJSON, want: `"[5,6]"`},
 	{expr: `($f := function($x)<a<n>:n>{$x.$sum($)}; $f(o.[b,c]))`, data: pairsJSON, want: `11`},
 	{expr: `$single()`, want: undefined},

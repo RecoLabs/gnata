@@ -8,6 +8,7 @@ const (
 		`{"OrderID":"o2","Product":[{"Name":"Bag","Price":20,"Qty":1}]}]}}`
 	libraryJSON = `{"library":{"books":[{"title":"A","isbn":"1"},{"title":"B","isbn":"2"}],` +
 		`"loans":[{"isbn":"1","customer":"c1"},{"isbn":"2","customer":"c2"},{"isbn":"1","customer":"c3"}]}}`
+	nestedJSON = `{"x":[1,2],"y":[[1,2],[3]],"z":[{"a":1},2,[3,[4]]],"m":{"a":[1,[2]],"b":{"c":3}}}`
 )
 
 var parentOperatorCases = []exprCase{
@@ -248,6 +249,30 @@ var pathStepCases = []exprCase{
 	{expr: `a.[b,c].($x := $; $x).$string()`, data: pairsJSON, want: `["[1,2]","[3,4]"]`},
 	{expr: `a.[b,c].$sum($)`, data: pairsJSON, want: `[3,7]`},
 	{expr: `a.[b,c].[$, 9].$string()`, data: pairsJSON, want: `["[1,2,9]","[3,4,9]"]`},
+	{expr: `a.[[b,c]].*`, data: pairsJSON, want: `[1,2,3,4]`},
+	{expr: `x.*`, data: nestedJSON, want: undefined},
+	{expr: `y.*`, data: nestedJSON, want: `[1,2,3]`},
+	{expr: `z.*`, data: nestedJSON, want: `[1,3,4]`},
+	{expr: `m.*`, data: nestedJSON, want: `[1,2,{"c":3}]`},
+	{expr: `[1,2].*`, want: undefined},
+	{expr: `[[1,2],[3]].*`, want: `[1,2,3]`},
+	{expr: `*`, data: `[1,[2,[3]]]`, want: `[1,2,3]`},
+	{expr: `$.*`, data: `[{"a":1},{"b":[2,[3]]}]`, want: `[1,2,3]`},
+	{expr: `*`, data: `[{"a":1},{"b":[2,[3]]}]`, want: `[{"a":1},{"b":[2,[3]]}]`},
+	{expr: `**`, data: `{"a":[1,[2]]}`, want: `[{"a":[1,[2]]},1,2]`},
+	{expr: `z.**`, data: nestedJSON, want: `[{"a":1},1,2,3,4]`},
+	{expr: `a.[b,c].**`, data: pairsJSON, want: `[1,2,3,4]`},
+	{expr: `o.[b,c].**`, data: pairsJSON, want: `[5,6]`},
+	{expr: `y.(*)`, data: nestedJSON, want: `[1,2,3]`},
+	{expr: `y.[*]`, data: nestedJSON, want: `[[1,2],[3]]`},
+	{expr: `m.*`, data: `{"m":{"a":[1]}}`, want: `[1]`},
+	{expr: `*`, data: `[[]]`, want: `[]`},
+	{expr: `y.*`, data: `{"y":[[[1]],[]]}`, want: `[1]`},
+	{expr: `y.*`, data: `{"y":[[[]]]}`, want: `[]`},
+	{expr: `$count(y.**)`, data: nestedJSON, want: `3`},
+	{expr: `$eval("*", y)`, data: nestedJSON, want: `[1,2,3]`},
+	{expr: `$eval("*", z)`, data: nestedJSON, want: `[{"a":1},2,3,4]`},
+	{expr: `$map([1], function($v){*})`, data: `[{"a":1},{"b":2}]`, want: `[{"a":1},{"b":2}]`},
 	{expr: `a.$`, data: `{"a":[[1,2],[3]]}`, want: `[1,2,3]`},
 	{expr: `($v := [[1,2]]; [1].$v)`, want: `[[1,2]]`},
 	{expr: `a[$error("f")]`, data: `{"a":[{"b":1}]}`, code: "D3137"},

@@ -80,11 +80,12 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 // evalDescendant evaluates the ** operator, enforcing the sequence guardrail
 // (if any) on the collected result.
 func evalDescendant(input any, env *Environment) (any, error) {
-	seq := descendantLookup(input)
-	if err := env.CheckSequence(len(seq.Values)); err != nil {
-		return nil, err
+	c := collector{env: env}
+	c.descendants(input)
+	if c.err != nil {
+		return nil, c.err
 	}
-	return seq, nil
+	return CollapseSequence(&Sequence{Values: c.values}), nil
 }
 
 // ApplyFunction is the public API used by the standard library to call
