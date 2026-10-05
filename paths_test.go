@@ -146,6 +146,8 @@ var bindingOperatorCases = []exprCase{
 	{expr: `[a.[b,c], 1]`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2,1]`},
 	{expr: `($c := a.[b,c]; [$c, 3])`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2,3]`},
 	{expr: `[[[1,2]][0], 3]`, want: `[[1,2],3]`},
+	// A tuple group skips a record whose key is undefined.
+	{expr: `r.a#$i{k:$i}`, data: `{"r":{"a":[{"x":1,"k":"p"},{"x":2}]}}`, want: `{"p":0}`},
 }
 
 var groupAndSortCases = []exprCase{

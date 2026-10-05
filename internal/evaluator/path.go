@@ -831,6 +831,9 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 			if err != nil {
 				return nil, err
 			}
+			if keyVal == nil {
+				continue
+			}
 			key, ok := keyVal.(string)
 			if !ok {
 				return nil, &JSONataError{Code: "T1003", Message: "key expression must evaluate to a string"}
