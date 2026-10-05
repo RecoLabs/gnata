@@ -708,10 +708,12 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 	switch rv := result.(type) {
 	case ConsArray:
 		for j, elem := range rv {
+			elem = nilAsNull(elem)
 			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
 		}
 	case []any:
 		for j, elem := range rv {
+			elem = nilAsNull(elem)
 			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
 		}
 	case *Sequence:
@@ -721,6 +723,7 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 		}
 		if arr, ok := AsArray(collapsed); ok {
 			for j, elem := range arr {
+				elem = nilAsNull(elem)
 				*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
 			}
 		} else {
@@ -744,10 +747,12 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 	switch rv := result.(type) {
 	case ConsArray:
 		for j, elem := range rv {
+			elem = nilAsNull(elem)
 			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
 		}
 	case []any:
 		for j, elem := range rv {
+			elem = nilAsNull(elem)
 			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
 		}
 	case *Sequence:
@@ -757,6 +762,7 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 		}
 		if arr, ok := AsArray(collapsed); ok {
 			for j, elem := range arr {
+				elem = nilAsNull(elem)
 				*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
 			}
 		} else {
@@ -765,6 +771,15 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 	default:
 		*nextCtxs = append(*nextCtxs, pathCtx{value: result, env: bindAt(0, result)})
 	}
+}
+
+// nilAsNull returns an item of data as a value: a nil item is a JSON null
+// in data decoded with encoding/json, not undefined.
+func nilAsNull(v any) any {
+	if v == nil {
+		return Null
+	}
+	return v
 }
 
 // expandPathTuple runs a mini tuple walk over the given path steps, starting

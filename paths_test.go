@@ -1,6 +1,12 @@
 package gnata_test
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/recolabs/gnata"
+)
 
 const (
 	accountJSON = `{"Account":{"Name":"Firefly","Order":[` +
@@ -324,4 +330,37 @@ func TestPathAndOperatorSemantics(t *testing.T) {
 	t.Run("path steps", func(t *testing.T) { runExprCases(t, pathStepCases) })
 	t.Run("subscripts", func(t *testing.T) { runExprCases(t, subscriptCases) })
 	t.Run("operators", func(t *testing.T) { runExprCases(t, operatorCases) })
+}
+
+// encoding/json decodes a JSON null to nil, which an array's items keep as
+// null rather than dropping as undefined.
+func TestNullItemsOnGoMaps(t *testing.T) {
+	testCases := []struct {
+		expr string
+		want string
+	}{
+		{expr: `a#$j`, want: `[4,null]`},
+		{expr: `a#$j.$j`, want: `[0,1]`},
+		{expr: `a@$v.$v`, want: `[4,null]`},
+		{expr: `p.a#$j`, want: `[4,null]`},
+	}
+	var data any
+	if err := json.Unmarshal([]byte(`{"a":[4,null],"p":{"a":[4,null]}}`), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := e.Eval(context.Background(), data)
+			if err != nil {
+				t.Fatalf("eval: %v", err)
+			}
+			if r := render(t, got); r != tC.want {
+				t.Fatalf("got %s, want %s", r, tC.want)
+			}
+		})
+	}
 }
