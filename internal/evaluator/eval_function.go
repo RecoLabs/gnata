@@ -119,7 +119,9 @@ func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
 	case nil:
 		return nil, &JSONataError{Code: "T1008", Message: "cannot partially apply a non-function: the function is not defined"}
 	default:
-		return nil, &JSONataError{Code: "T1008", Message: fmt.Sprintf("cannot partially apply a non-function: %T", fn)}
+		if _, ok := RegexValue(fn); !ok {
+			return nil, &JSONataError{Code: "T1008", Message: fmt.Sprintf("cannot partially apply a non-function: %T", fn)}
+		}
 	}
 
 	boundArgs := make([]any, len(node.Arguments))
@@ -230,6 +232,9 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 			}
 			return result, nil
 		default:
+			if regexMap, ok := RegexValue(fn); ok {
+				return callRegex(regexMap, args)
+			}
 			return nil, &JSONataError{Code: "T1006", Message: fmt.Sprintf("not a function: %T", fn)}
 		}
 	}

@@ -45,15 +45,7 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 	if err != nil {
 		return nil, err
 	}
-	// If right side is a regex map, test piped value against it.
-	// MapGet returns (nil, false) for non-maps, so no explicit type guard needed.
-	if _, hasPattern := MapGet(fn, "pattern"); hasPattern {
-		regexMap, _ := fn.(map[string]any)
-		if regexMap == nil {
-			if om, ok := fn.(*OrderedMap); ok {
-				regexMap = om.ToMap()
-			}
-		}
+	if regexMap, ok := RegexValue(fn); ok {
 		return applyRegexTest(piped, regexMap)
 	}
 	// Validate right side is callable.

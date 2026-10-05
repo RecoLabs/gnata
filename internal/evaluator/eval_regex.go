@@ -214,19 +214,46 @@ func CompileLiteralRegex(literal string) (*Regex, error) {
 	return CachedCompileRegex(regexp.QuoteMeta(literal), "")
 }
 
-// ── Chain operator (~>) with regex ────────────────────────────────────────────
+// ── Regex as a function (~> and calls) ────────────────────────────────────────
 
-// applyRegexTest implements the JSONata chain operator (~>) with a regex on the
-// right-hand side. It returns the first match object (like $match with limit 1)
-// when the regex matches, or nil (undefined) when it does not.
+// RegexValue returns v as a regex value: a map with exactly the string
+// "pattern" and "flags" a regex literal evaluates to. Any other object,
+// including one with only a "pattern", stays an object, as in jsonata-js.
+func RegexValue(v any) (map[string]any, bool) {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != 2 {
+		return nil, false
+	}
+	_, hasPattern := m["pattern"].(string)
+	_, hasFlags := m["flags"].(string)
+	return m, hasPattern && hasFlags
+}
+
+// CompileRegexValue compiles a map that RegexValue accepted.
+func CompileRegexValue(m map[string]any) (*Regex, error) {
+	return CachedCompileRegex(m["pattern"].(string), m["flags"].(string))
+}
+
+// callRegex applies a regex called as a function to its first argument.
+// jsonata-js reads a second argument as the offset to search from; gnata
+// always searches from the start.
+func callRegex(regexMap map[string]any, args []any) (any, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	return applyRegexTest(args[0], regexMap)
+}
+
+// applyRegexTest applies a regex the way jsonata-js applies it as a function,
+// in a call (/re/(s)) or on the right of ~>. It returns the first match object
+// (like $match with limit 1) when the regex matches, or nil (undefined) when
+// it does not.
 func applyRegexTest(input any, regexMap map[string]any) (any, error) {
 	s, ok := input.(string)
 	if !ok {
 		return nil, nil
 	}
-	pattern, _ := regexMap["pattern"].(string)
-	flags, _ := regexMap["flags"].(string)
-	re, err := CachedCompileRegex(pattern, flags)
+	re, err := CompileRegexValue(regexMap)
 	if err != nil {
 		return nil, &JSONataError{Code: "D1002", Message: fmt.Sprintf("invalid regex: %v", err)}
 	}
