@@ -120,3 +120,32 @@ func TestCustomFuncArgs_CallerDecodedValuesAreNotCached(t *testing.T) {
 		t.Fatalf("result after mutation = %v, want grace-a (stale cached argument)", res[0])
 	}
 }
+
+// TestCustomFuncArgs_ConstructedArraysArePlainSlices checks that arrays built
+// by [...] path steps reach a custom function as []any at any depth.
+func TestCustomFuncArgs_ConstructedArraysArePlainSlices(t *testing.T) {
+	isSlice := func(args []any, _ any) (any, error) {
+		outer, ok := args[0].([]any)
+		if !ok {
+			return false, nil
+		}
+		for _, elem := range outer {
+			if _, ok := elem.([]any); !ok {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	se := gnata.NewStreamEvaluator(nil, gnata.WithCustomFunctions(map[string]gnata.CustomFunc{"isSlice": isSlice}))
+	idx, err := se.Compile(`$isSlice(a.[b, c])`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := se.EvalMany(context.Background(), json.RawMessage(`{"a":[{"b":1,"c":2},{"b":3,"c":4}]}`), "cons", []int{idx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0] != true {
+		t.Fatalf("$isSlice(a.[b, c]) = %v, want true", res[0])
+	}
+}

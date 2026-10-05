@@ -53,13 +53,12 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 				} else {
 					result = append(result, v.Values...)
 				}
-			case ConsArray:
-				result = append(result, val)
-			case []any:
+			case []any, ConsArray:
 				if isExplicitArray {
 					result = append(result, val)
 				} else {
-					result = append(result, v...)
+					arr, _ := AsArray(v)
+					result = append(result, arr...)
 				}
 			default:
 				result = append(result, val)

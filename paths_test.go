@@ -290,6 +290,9 @@ var operatorCases = []exprCase{
 	{expr: `nothing + "a"`, code: "T2002"},
 	{expr: `"a" + nothing`, code: "T2001"},
 	{expr: `nothing + 1`, want: undefined},
+	{expr: `5 in o.[b,c]`, data: pairsJSON, want: `true`},
+	{expr: `[o.[b,c], 1]`, data: pairsJSON, want: `[5,6,1]`},
+	{expr: `[[o.[b,c]]]`, data: pairsJSON, want: `[[5,6]]`},
 }
 
 func TestPathAndOperatorSemantics(t *testing.T) {

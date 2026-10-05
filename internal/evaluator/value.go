@@ -128,7 +128,7 @@ func CollapseAndKeep(result any, keepArray bool) any {
 	}
 	if keepArray {
 		switch result.(type) {
-		case []any:
+		case []any, ConsArray:
 			return result
 		case nil:
 			return nil

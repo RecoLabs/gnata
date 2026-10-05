@@ -274,7 +274,7 @@ func needsNormalize(v any) bool {
 		return true
 	case *evaluator.Sequence:
 		return true
-	case []any:
+	case []any, evaluator.ConsArray:
 		return true
 	}
 	return evaluator.IsNull(v)

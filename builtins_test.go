@@ -14,6 +14,10 @@ import (
 // result, keeping it distinct from JSON null.
 const undefined = "undefined"
 
+// pairsJSON holds constructed-array inputs: a.[b, c] builds one array per
+// item of a, and o.[b, c] builds one from a single context.
+const pairsJSON = `{"a":[{"b":1,"c":2},{"b":3,"c":4}],"o":{"b":5,"c":6}}`
+
 // exprCase evaluates expr against data, a JSON document ("" for no input).
 // want is the canonical JSON of the result (see render); code, when set,
 // is the error code evaluation or compilation must fail with instead.
@@ -97,6 +101,19 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `[1,2,3] ~> $filter(function($v){$v>1})`, want: `[2,3]`},
 	{expr: `$filter([1,2,3], function($v){$v>2})`, want: `3`},
 	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[0]`, want: `[1,2]`},
+	{expr: `$filter(o.[b,c], function($v){$v>5})`, data: pairsJSON, want: `6`},
+	{expr: `$filter(a.[b,c], function($v){$v[0]=3})[0]`, data: pairsJSON, want: `[3,4]`},
+	{expr: `$sum(o.[b,c])`, data: pairsJSON, want: `11`},
+	{expr: `$type(o.[b,c])`, data: pairsJSON, want: `"array"`},
+	{expr: `$map(a.[b,c], $sum)`, data: pairsJSON, want: `[3,7]`},
+	{expr: `$append(o.[b,c], nothing).$string()`, data: pairsJSON, want: `"[5,6]"`},
+	{expr: `$distinct(o.[b]).$string()`, data: pairsJSON, want: `"[5]"`},
+	{expr: `$sort(o.[b]).$string()`, data: pairsJSON, want: `"[5]"`},
+	{expr: `$reverse(o.[b]).$string()`, data: pairsJSON, want: `"[5]"`},
+	{expr: `$shuffle(o.[b]).$string()`, data: pairsJSON, want: `"[5]"`},
+	{expr: `$sort(o.[b])[]`, data: pairsJSON, want: `[5]`},
+	{expr: `($f := function($x)<a>{$x}; $f(o.[b,c]).$string())`, data: pairsJSON, want: `"[5,6]"`},
+	{expr: `($f := function($x)<a<n>:n>{$x.$sum($)}; $f(o.[b,c]))`, data: pairsJSON, want: `11`},
 	{expr: `$single()`, want: undefined},
 	{expr: `$single(5)`, want: `5`},
 	{expr: `$reduce([], function($a,$b){$a+$b})`, want: undefined},

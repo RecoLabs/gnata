@@ -214,8 +214,9 @@ func containsValue(arr, elem any, prec int) bool {
 		return false
 	}
 	switch v := arr.(type) {
-	case []any:
-		for _, item := range v {
+	case []any, ConsArray:
+		items, _ := AsArray(v)
+		for _, item := range items {
 			if DeepEqualPrec(item, elem, prec) {
 				return true
 			}

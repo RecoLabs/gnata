@@ -163,6 +163,39 @@ func stackOverflowError(counter *callCounter) error {
 	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 }
 
+// callBuiltin calls a builtin with each constructed-array argument as a
+// plain array. jsonata-js passes the array object itself, so a builtin that
+// returns an argument unchanged returns the constructed array.
+func callBuiltin(args []any, call func([]any) (any, error)) (any, error) {
+	result, err := call(unconsArgs(args))
+	if err != nil {
+		return nil, err
+	}
+	if arr, ok := result.([]any); ok && len(arr) > 0 {
+		for _, arg := range args {
+			if cons, ok := arg.(ConsArray); ok && len(cons) == len(arr) && &cons[0] == &arr[0] {
+				return cons, nil
+			}
+		}
+	}
+	return result, nil
+}
+
+// unconsArgs returns args with each top-level ConsArray as a plain []any,
+// copying args only when one is found.
+func unconsArgs(args []any) []any {
+	out, copied := args, false
+	for i, arg := range args {
+		if cons, ok := arg.(ConsArray); ok {
+			if !copied {
+				out, copied = slices.Clone(args), true
+			}
+			out[i] = []any(cons)
+		}
+	}
+	return out
+}
+
 func callFunction(fn any, args []any, focus any, env *Environment) (any, error) {
 	if fn == nil {
 		return nil, &JSONataError{Code: "T1006", Message: "attempted to invoke undefined function"}
@@ -180,11 +213,11 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 		}
 		switch f := fn.(type) {
 		case *SignedBuiltin:
-			return f.Fn(args, focus)
+			return callBuiltin(args, func(args []any) (any, error) { return f.Fn(args, focus) })
 		case BuiltinFunction:
-			return f(args, focus)
+			return callBuiltin(args, func(args []any) (any, error) { return f(args, focus) })
 		case EnvAwareBuiltin:
-			return f(args, focus, env)
+			return callBuiltin(args, func(args []any) (any, error) { return f(args, focus, env) })
 		case *Lambda:
 			if f.Sig != "" {
 				coerced, returnUndefined, err := processCallArgs(f.ParsedSig, args, focus)

@@ -111,6 +111,9 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			return nil, nil
 		}
 		arr := wrapArray(arrVal)
+		if len(arr) <= 1 {
+			return arr, nil
+		}
 
 		if fn == nil && len(arr) > 0 {
 			allNum := true
@@ -197,6 +200,9 @@ func fnReverse(args []any, _ any) (any, error) {
 		return nil, nil
 	}
 	arr := wrapArray(args[0])
+	if len(arr) <= 1 {
+		return arr, nil
+	}
 	result := slices.Clone(arr)
 	slices.Reverse(result)
 	return result, nil
@@ -209,6 +215,9 @@ func fnShuffle(args []any, _ any) (any, error) {
 		return nil, nil
 	}
 	arr := wrapArray(args[0])
+	if len(arr) <= 1 {
+		return arr, nil
+	}
 	result := slices.Clone(arr)
 	rand.Shuffle(len(result), func(i, j int) {
 		result[i], result[j] = result[j], result[i]

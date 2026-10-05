@@ -148,7 +148,7 @@ func validateOneCallArg(spec parser.ParamSpec, arg any, pos int) error {
 
 	// If there is a content type and the arg is an array, validate every element.
 	if hasContent {
-		if arr, ok := arg.([]any); ok {
+		if arr, ok := AsArray(arg); ok {
 			contentTypes := []byte{spec.ContentType}
 			for _, elem := range arr {
 				if !sigArgMatchesTypes(elem, contentTypes) {
@@ -200,7 +200,7 @@ func sigTypeMatches(arg any, t byte) bool {
 	case 'l':
 		return arg == nil || IsNull(arg)
 	case 'a':
-		_, ok := arg.([]any)
+		_, ok := AsArray(arg)
 		return ok
 	case 'o':
 		return IsMap(arg)
