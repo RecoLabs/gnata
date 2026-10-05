@@ -58,7 +58,7 @@ func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, er
 		if n <= 0 {
 			return time.Time{}, false, nil
 		}
-		if strings.ContainsRune("fZz", rune(part.marker.component)) {
+		if endsInDigitRun(&part) {
 			if keep := n - digitsNeeded(parts[i+1:]); keep > 0 && keep < n {
 				if value, n = parseMarkerValue(inputRunes[pos:pos+keep], part.marker); n != keep {
 					return time.Time{}, false, nil
@@ -94,10 +94,34 @@ func setParseWidths(parts []datePicturePart) {
 		}
 		mandatory, _ := decimalPictureDigits(prev.presentation)
 		prev.parseWidth = max(mandatory, prev.minWidth)
-		if prev.component == 'Y' && prev.maxWidth != noWidth {
-			prev.parseWidth = prev.maxWidth
+		if prev.component == 'Y' && hasMaxWidth(prev.modifier) {
+			// A maximum that is 0 or not a number leaves jsonata-js no width.
+			prev.parseWidth = max(prev.maxWidth, 0)
 		}
 	}
+}
+
+// hasMaxWidth reports whether a marker's width modifier gives a maximum other
+// than "*", even one jsonata-js's parseInt reads as NaN, like "2-" or "*-x".
+func hasMaxWidth(modifier string) bool {
+	comma := strings.LastIndexByte(modifier, ',')
+	if comma < 0 {
+		return false
+	}
+	_, maxSpec, found := strings.Cut(modifier[comma+1:], "-")
+	return found && maxSpec != "*"
+}
+
+// endsInDigitRun reports whether a marker reads a digit run of any length at
+// its end, which jsonata-js's regex can backtrack into: fractional seconds,
+// offsets, and decimal integers with no fixed width.
+func endsInDigitRun(part *datePicturePart) bool {
+	m := &part.marker
+	if strings.ContainsRune("fZz", rune(m.component)) {
+		return true
+	}
+	mandatory, _ := decimalPictureDigits(m.presentation)
+	return isIntegerMarker(part) && mandatory > 0 && !m.ordinal && m.parseWidth <= 0
 }
 
 // integerComponents are the components a non-name presentation formats as an
@@ -111,9 +135,9 @@ func isIntegerMarker(part *datePicturePart) bool {
 }
 
 // digitsNeeded returns how many digits the run of decimal integer markers
-// starting at parts[0] needs. [f], [Z] and [z] end in a digit run of any
-// length, but jsonata-js's regex backtracks it to leave each marker of the
-// run its fixed width, or one digit.
+// starting at parts[0] needs. A marker before it that ends in a digit run
+// (endsInDigitRun) reads every digit, but jsonata-js's regex backtracks it to
+// leave each marker of the run its fixed width, or one digit.
 func digitsNeeded(parts []datePicturePart) int {
 	needed := 0
 	for i := range parts {
