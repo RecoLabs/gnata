@@ -424,7 +424,6 @@ type Lambda struct {
 	Body          *parser.Node // function body AST node
 	Closure       *Environment // lexical scope at definition site
 	Thunk         bool         // for tail-call optimization
-	Sig           string       // type signature (Wave 5)
-	Signature     *Signature   // compiled Sig, which validates every call; nil without one
+	Signature     *Signature   // validates every call; nil without a signature
 	CapturedFocus any          // focus ($) at definition time, which the body evaluates against
 }

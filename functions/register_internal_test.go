@@ -51,7 +51,7 @@ func TestBuiltinsClassifiedForDecimalPrecision(t *testing.T) {
 	}
 }
 
-// Every builtin in jsSpecs must be registered, with its context signature
+// Every builtin in jsSpecs must be registered, with its signature
 // and validation, so a typo cannot silently drop either.
 func TestJSSpecsAreRegistered(t *testing.T) {
 	env := evaluator.NewEnvironment()

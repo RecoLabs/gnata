@@ -387,10 +387,11 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := ParseSig(sigStr); err != nil {
+		params, err := ParseSig(sigStr)
+		if err != nil {
 			return nil, err
 		}
-		sig = &Signature{Raw: sigStr}
+		sig = &Signature{Raw: sigStr, Params: params}
 	}
 
 	if err := p.consume(lexer.TokenLBrace); err != nil {

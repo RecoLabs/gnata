@@ -101,7 +101,8 @@ type Slot struct {
 // Signature is the parsed type signature of a lambda or built-in function.
 // The full parsing logic lives in functions/signature.go; this type is shared.
 type Signature struct {
-	Raw string // original signature string e.g. "<s-n?:s>"
+	Raw    string      // original signature string e.g. "<s-n?:s>"
+	Params []ParamSpec // Raw's parameters, parsed once
 }
 
 // Node type string constants.
