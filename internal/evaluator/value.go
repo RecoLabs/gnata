@@ -232,79 +232,182 @@ func DeepEqual(a, b any) bool {
 }
 
 // DeepEqualPrec is DeepEqual comparing numbers in decimal to prec significant
-// digits, or in float64 when prec is 0.
-func DeepEqualPrec(a, b any, prec int) bool { //nolint:gocyclo // type-switch fast path adds branches but not real complexity
+// digits, or in float64 when prec is 0. It compares nested arrays and objects
+// from an explicit stack of frames rather than by recursion, so a deeply
+// nested value cannot overflow the goroutine stack.
+func DeepEqualPrec(a, b any, prec int) bool {
+	var frame equalFrame
+	if open, equal := equalShallow(a, b, prec, &frame); !open {
+		return equal
+	}
+	return equalItems(&frame, prec)
+}
+
+// equalItems compares the items of frame, keeping the frames of enclosing
+// arrays and objects on a stack while it compares a nested one.
+func equalItems(frame *equalFrame, prec int) bool {
+	var (
+		buf   [8]equalFrame
+		child equalFrame
+	)
+	stack := buf[:0]
+	for {
+		a, b, more, equal := frame.next(prec)
+		if !equal {
+			return false
+		}
+		if more {
+			open, equal := equalShallow(a, b, prec, &child)
+			if !equal {
+				return false
+			}
+			if open {
+				stack = append(stack, *frame)
+				*frame = child
+			}
+			continue
+		}
+		if len(stack) == 0 {
+			return true
+		}
+		*frame = stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+	}
+}
+
+// equalFrame is an array or object pair DeepEqualPrec is comparing.
+type equalFrame struct {
+	// a and b are the items to compare pairwise: those of two arrays, or the
+	// nested values of two plain maps, whose other values are compared when
+	// the frame opens.
+	a, b []any
+	// ordered, when set, is an ordered object compared with other key by key.
+	ordered *OrderedMap
+	other   any
+	// index is the position of the next item or key.
+	index int
+}
+
+// next compares the frame's items up to its next pair of arrays or objects,
+// which it returns, or reports that the frame has none left. equal is false
+// once an item differs.
+func (f *equalFrame) next(prec int) (a, b any, more, equal bool) {
+	for {
+		if f.ordered != nil {
+			if f.index == len(f.ordered.keys) {
+				return nil, nil, false, true
+			}
+			k := f.ordered.keys[f.index]
+			var exists bool
+			if b, exists = MapGet(f.other, k); !exists {
+				return nil, nil, false, false
+			}
+			a = f.ordered.data[k]
+		} else {
+			if f.index == len(f.a) {
+				return nil, nil, false, true
+			}
+			a, b = f.a[f.index], f.b[f.index]
+		}
+		f.index++
+		if isContainer(a) {
+			return a, b, true, true
+		}
+		if _, equal := equalShallow(a, b, prec, nil); !equal {
+			return nil, nil, false, false
+		}
+	}
+}
+
+func isContainer(v any) bool {
+	switch v.(type) {
+	case []any, ConsArray, map[string]any, *OrderedMap:
+		return true
+	}
+	return false
+}
+
+// openEqualFrame checks that b is an array or object like a with as many
+// items, and sets frame to compare their items. For a plain map, whose
+// iteration cannot be resumed, it compares the values that are not arrays
+// or objects at once and keeps the others to compare pairwise, opening no
+// frame when there are none.
+func openEqualFrame(a, b any, prec int, frame *equalFrame) (open, equal bool) {
+	switch av := a.(type) {
+	case map[string]any:
+		if !IsMap(b) || MapLen(b) != len(av) {
+			return false, false
+		}
+		var nestedA, nestedB []any
+		for k, va := range av {
+			vb, exists := MapGet(b, k)
+			if !exists {
+				return false, false
+			}
+			if isContainer(va) {
+				nestedA, nestedB = append(nestedA, va), append(nestedB, vb)
+			} else if _, equal := equalShallow(va, vb, prec, nil); !equal {
+				return false, false
+			}
+		}
+		*frame = equalFrame{a: nestedA, b: nestedB}
+		return len(nestedA) > 0, true
+	case *OrderedMap:
+		if !IsMap(b) || MapLen(b) != av.Len() {
+			return false, false
+		}
+		*frame = equalFrame{ordered: av, other: b}
+		return true, true
+	}
+	bv, ok := AsArray(b)
+	avSlice, _ := AsArray(a)
+	if !ok || len(avSlice) != len(bv) {
+		return false, false
+	}
+	*frame = equalFrame{a: avSlice, b: bv}
+	return true, true
+}
+
+// equalShallow compares a and b, except that for arrays and objects it sets
+// frame to compare their items and reports open. frame may be nil when a is
+// neither.
+func equalShallow(a, b any, prec int, frame *equalFrame) (open, equal bool) {
 	if prec > 0 {
 		if equal, ok := decimalEqual(a, b, prec); ok {
-			return equal
+			return false, equal
 		}
 	}
 	switch av := a.(type) {
 	case float64:
 		if bv, ok := b.(float64); ok {
-			return av == bv
+			return false, av == bv
 		}
 	case string:
 		bv, ok := b.(string)
-		return ok && av == bv
+		return false, ok && av == bv
 	case bool:
 		bv, ok := b.(bool)
-		return ok && av == bv
+		return false, ok && av == bv
 	}
 
 	a, b = normalizeNumber(a), normalizeNumber(b)
 	if a == nil || b == nil || IsNull(a) || IsNull(b) {
-		return a == nil && b == nil || IsNull(a) && IsNull(b)
+		return false, a == nil && b == nil || IsNull(a) && IsNull(b)
 	}
 	switch av := a.(type) {
 	case bool:
 		bv, ok := b.(bool)
-		return ok && av == bv
+		return false, ok && av == bv
 	case float64:
 		bv, ok := b.(float64)
-		return ok && av == bv
+		return false, ok && av == bv
 	case string:
 		bv, ok := b.(string)
-		return ok && av == bv
-	case []any, ConsArray:
-		bv, ok := AsArray(b)
-		avSlice, _ := AsArray(av)
-		if !ok || len(avSlice) != len(bv) {
-			return false
-		}
-		for i := range avSlice {
-			if !DeepEqualPrec(avSlice[i], bv[i], prec) {
-				return false
-			}
-		}
-		return true
-	case map[string]any:
-		if !IsMap(b) || MapLen(b) != len(av) {
-			return false
-		}
-		for k, va := range av {
-			vb, exists := MapGet(b, k)
-			if !exists || !DeepEqualPrec(va, vb, prec) {
-				return false
-			}
-		}
-		return true
-	case *OrderedMap:
-		if !IsMap(b) || MapLen(b) != av.Len() {
-			return false
-		}
-		equal := true
-		av.Range(func(k string, va any) bool {
-			vb, exists := MapGet(b, k)
-			if !exists || !DeepEqualPrec(va, vb, prec) {
-				equal = false
-				return false
-			}
-			return true
-		})
-		return equal
+		return false, ok && av == bv
+	case []any, ConsArray, map[string]any, *OrderedMap:
+		return openEqualFrame(av, b, prec, frame)
 	}
-	return false
+	return false, false
 }
 
 // JSONataError is the structured error type used throughout evaluation.
