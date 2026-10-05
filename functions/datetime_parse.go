@@ -441,14 +441,15 @@ func parseOrdinalNumber(runes []rune, width int) (value, consumed int) {
 	if err != nil {
 		return -1, -1
 	}
-	// Consume optional ordinal suffix (st/nd/rd/th).
-	if i+2 <= len(runes) {
-		suffix := strings.ToLower(string(runes[i : i+2]))
-		if suffix == "st" || suffix == "nd" || suffix == "rd" || suffix == "th" {
-			i += 2
-		}
+	// jsonata-js requires the suffix, though not the one matching the number.
+	if i+2 > len(runes) {
+		return -1, -1
 	}
-	return n, i
+	switch strings.ToLower(string(runes[i : i+2])) {
+	case "st", "nd", "rd", "th":
+		return n, i + 2
+	}
+	return -1, -1
 }
 
 func parseRoman(runes []rune) (value, consumed int) {
