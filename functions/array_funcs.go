@@ -328,15 +328,32 @@ func fnFlatten(args []any, _ any) (any, error) {
 	return flattenArray(arr, depth), nil
 }
 
+// flattenArray flattens arrays nested in arr up to depth levels, or all of
+// them when depth is negative. It walks nested arrays from an explicit stack
+// rather than by recursion, so deep nesting cannot overflow the goroutine
+// stack.
 func flattenArray(arr []any, depth int) []any {
+	type level struct {
+		items []any
+		depth int
+	}
 	result := make([]any, 0, len(arr))
-	for _, v := range arr {
-		if nested, ok := v.([]any); ok && depth != 0 {
-			nextDepth := depth - 1
-			if depth < 0 {
+	var buf [8]level
+	stack := append(buf[:0], level{arr, depth})
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		if len(top.items) == 0 {
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		v := top.items[0]
+		top.items = top.items[1:]
+		if nested, ok := v.([]any); ok && top.depth != 0 {
+			nextDepth := top.depth - 1
+			if top.depth < 0 {
 				nextDepth = -1
 			}
-			result = append(result, flattenArray(nested, nextDepth)...)
+			stack = append(stack, level{nested, nextDepth})
 		} else {
 			result = append(result, v)
 		}

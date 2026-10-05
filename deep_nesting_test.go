@@ -86,6 +86,7 @@ func TestDeepNesting(t *testing.T) {
 			want: float64(len(objectJSON) + len(`,"b":1`)),
 		},
 		{desc: "boolean of an array", expr: "$boolean($)", data: deepArrayOf(0.0), want: false},
+		{desc: "flatten an array", expr: "$count($flatten($))", data: deepArray(), want: 1.0},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
