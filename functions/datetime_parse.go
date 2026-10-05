@@ -12,13 +12,14 @@ import (
 	"github.com/recolabs/gnata/internal/evaluator"
 )
 
-// parseWithPicture parses input against a picture string. It reports false when
-// the input does not match the picture; defaults for unspecified components
-// come from now, the evaluation's timestamp.
-func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, error) {
+// parseWithPicture parses input against a picture string into epoch
+// milliseconds, NaN outside the range of a JavaScript Date as in jsonata-js.
+// It reports false when the input does not match the picture; defaults for
+// unspecified components come from now, the evaluation's timestamp.
+func parseWithPicture(input, picture string, now time.Time) (millis float64, matched bool, err error) {
 	parts, err := parseDatePicture(picture)
 	if err != nil {
-		return time.Time{}, false, err
+		return 0, false, err
 	}
 	for _, part := range parts {
 		m := part.marker
@@ -26,13 +27,13 @@ func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, er
 			continue
 		}
 		if isNamePresentation(m.presentation) && !strings.ContainsRune("MxFPZzf", rune(m.component)) {
-			return time.Time{}, false, &evaluator.JSONataError{
+			return 0, false, &evaluator.JSONataError{
 				Code:    "D3133",
 				Message: fmt.Sprintf("$toMillis: the 'name' modifier can only be applied to months and days, not %c", m.component),
 			}
 		}
 		if strings.ContainsRune(integerComponents, rune(m.component)) && lacksIntegerFormat(m) {
-			return time.Time{}, false, &evaluator.JSONataError{
+			return 0, false, &evaluator.JSONataError{
 				Code:    "D3130",
 				Message: fmt.Sprintf("$toMillis: unsupported picture %q", m.presentation),
 			}
@@ -40,47 +41,86 @@ func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, er
 	}
 	setParseWidths(parts)
 
+	match := pictureMatch{parts: parts, input: []rune(input), values: make([]int, len(parts)), failed: map[[2]int]bool{}}
+	if !match.from(0, 0) {
+		return 0, false, nil
+	}
 	components := map[byte]int{}
-	inputRunes := []rune(input)
-	pos := 0
 	for i, part := range parts {
-		if !part.isMarker {
-			if !hasFoldPrefix(inputRunes[pos:], part.literal) {
-				return time.Time{}, false, nil
-			}
-			pos += utf8.RuneCountInString(part.literal)
-			continue
+		if c := part.marker.component; part.isMarker && c != 'C' && c != 'E' {
+			components[c] = match.values[i]
 		}
-		if c := part.marker.component; c == 'C' || c == 'E' {
-			continue
-		}
-		value, n := parseMarkerValue(inputRunes[pos:], part.marker)
-		if n <= 0 {
-			return time.Time{}, false, nil
-		}
-		if endsInDigitRun(&part) {
-			if keep := n - digitsNeeded(parts[i+1:]); keep > 0 && keep < n {
-				keep = yieldDigitsToNext(inputRunes[pos:], keep, &parts[i+1])
-				if value, n = parseMarkerValue(inputRunes[pos:pos+keep], part.marker); n != keep {
-					return time.Time{}, false, nil
-				}
-			}
-		}
-		if isNamePresentation(part.marker.presentation) && i+1 < len(parts) {
-			if yielded := yieldToNext(inputRunes[pos:], n, &parts[i+1]); yielded != n {
-				if value, n = parseMarkerValue(inputRunes[pos:pos+yielded], part.marker); n != yielded {
-					return time.Time{}, false, nil
-				}
-			}
-		}
-		components[part.marker.component] = value
-		pos += n
 	}
-	if pos != len(inputRunes) || len(components) == 0 {
-		return time.Time{}, false, nil
+	if len(components) == 0 {
+		return 0, false, nil
 	}
-	t, err := resolveParsedDate(components, now)
-	return t, err == nil, err
+	millis, err = resolveParsedDate(components, now)
+	return millis, err == nil, err
+}
+
+// maxYieldRunes caps how many runes a marker gives back to the parts after
+// it. It covers any literal, word or numeral that can follow a marker while
+// keeping the search linear in the input: each retry re-parses the rest.
+const maxYieldRunes = 64
+
+// pictureMatch matches input against a picture's parts as jsonata-js's
+// anchored regex does: each marker reads as much as it can, then gives back
+// one rune at a time, up to maxYieldRunes, until the parts after it match.
+// failed memoizes the (part, position) pairs that cannot match.
+type pictureMatch struct {
+	parts  []datePicturePart
+	input  []rune
+	values []int
+	failed map[[2]int]bool
+}
+
+// from reports whether parts[i:] match input[pos:] exactly, recording each
+// marker's value in values.
+func (pm *pictureMatch) from(i, pos int) bool {
+	if i == len(pm.parts) {
+		return pos == len(pm.input)
+	}
+	key := [2]int{i, pos}
+	if pm.failed[key] {
+		return false
+	}
+	part, rest := &pm.parts[i], pm.input[pos:]
+	switch c := part.marker.component; {
+	case !part.isMarker:
+		if hasFoldPrefix(rest, part.literal) && pm.from(i+1, pos+utf8.RuneCountInString(part.literal)) {
+			return true
+		}
+	case c == 'C' || c == 'E':
+		if pm.from(i+1, pos) {
+			return true
+		}
+	default:
+		longest := longestMatch(rest, part.marker)
+		for k := longest; k >= max(1, longest-maxYieldRunes); k-- {
+			if value, n := parseMarkerValue(rest[:k], part.marker); n == k && pm.from(i+1, pos+k) {
+				pm.values[i] = value
+				return true
+			}
+		}
+	}
+	pm.failed[key] = true
+	return false
+}
+
+// longestMatch returns the most runes a marker can read at the start of
+// runes, before its value is range-checked, so that an offset or number
+// too large as a whole can still give back digits and match.
+func longestMatch(runes []rune, m dateMarker) int {
+	switch mandatory, _ := decimalPictureDigits(m.presentation); {
+	case m.component == 'Z' || m.component == 'z':
+		_, _, _, n := scanTZ(runes, m)
+		return n
+	case m.component == 'f',
+		mandatory > 0 && !m.ordinal && m.parseWidth <= 0 && !isNamePresentation(m.presentation):
+		return leadingDigits(runes, 0)
+	}
+	_, n := parseMarkerValue(runes, m)
+	return n
 }
 
 // setParseWidths fixes the digit count of an integer marker directly followed
@@ -113,18 +153,6 @@ func hasMaxWidth(modifier string) bool {
 	return found && maxSpec != "*"
 }
 
-// endsInDigitRun reports whether a marker reads a digit run of any length at
-// its end, which jsonata-js's regex can backtrack into: fractional seconds,
-// offsets, and decimal integers with no fixed width.
-func endsInDigitRun(part *datePicturePart) bool {
-	m := &part.marker
-	if strings.ContainsRune("fZz", rune(m.component)) {
-		return true
-	}
-	mandatory, _ := decimalPictureDigits(m.presentation)
-	return isIntegerMarker(part) && mandatory > 0 && !m.ordinal && m.parseWidth <= 0
-}
-
 // integerComponents are the components a non-name presentation formats as an
 // integer; fractional seconds also take an integer picture but parse apart.
 const integerComponents = "YMDdFWwXxHhms"
@@ -133,46 +161,6 @@ func isIntegerMarker(part *datePicturePart) bool {
 	c := rune(part.marker.component)
 	return part.isMarker && (c == 'f' || strings.ContainsRune(integerComponents, c)) &&
 		!isNamePresentation(part.marker.presentation)
-}
-
-// digitsNeeded returns the fewest digits the parts starting at parts[0] read
-// before the first non-digit they require. A marker before them that ends in
-// a digit run (endsInDigitRun) reads every digit, but jsonata-js's regex
-// backtracks it to leave them those: a fixed width each, one digit for a
-// marker of any width, and a literal's leading digits. An ordinal's suffix or
-// a literal's first non-digit ends the run.
-func digitsNeeded(parts []datePicturePart) int {
-	needed := 0
-	for i := range parts {
-		next := &parts[i]
-		if !next.isMarker {
-			digits := 0
-			for _, c := range next.literal {
-				if !isASCIIDigit(c) {
-					return needed + digits
-				}
-				digits++
-			}
-			needed += digits
-			continue
-		}
-		m := &next.marker
-		if m.component == 'f' {
-			needed++
-			continue
-		}
-		if !isIntegerMarker(next) {
-			return needed
-		}
-		if mandatory, _ := decimalPictureDigits(m.presentation); mandatory == 0 {
-			return needed
-		}
-		needed += max(m.parseWidth, 1)
-		if m.ordinal {
-			return needed
-		}
-	}
-	return needed
 }
 
 func isNamePresentation(presentation string) bool {
@@ -199,53 +187,6 @@ func isASCIILetter(c rune) bool {
 // isASCIIDigit matches the digits jsonata-js accepts in a number, [0-9].
 func isASCIIDigit(c rune) bool {
 	return c >= '0' && c <= '9'
-}
-
-// maxYieldLetters caps how many letters yieldToNext gives back. It covers any
-// literal, word or numeral that can follow a name while keeping the search
-// linear in the input: each retry re-parses the rest of it.
-const maxYieldLetters = 64
-
-// yieldToNext gives back trailing letters of the n runes consumed for a name
-// when the picture part after it would otherwise not match, as jsonata-js's
-// backtracking regex does: "MayT" against [MNn,3-3]T reads "May".
-func yieldToNext(runes []rune, n int, next *datePicturePart) int {
-	if next.isMarker && (next.marker.component == 'C' || next.marker.component == 'E') {
-		return n
-	}
-	if partMatches(runes[n:], next) {
-		return n
-	}
-	for k := n - 1; k >= max(1, n-maxYieldLetters) && isASCIILetter(runes[k]); k-- {
-		if partMatches(runes[k:], next) {
-			return k
-		}
-	}
-	return n
-}
-
-// yieldDigitsToNext gives back further trailing digits of the keep runes a
-// digit run kept when the picture part after it does not match there, as
-// jsonata-js's backtracking regex does: "12535" against [f]5[m] keeps "12".
-func yieldDigitsToNext(runes []rune, keep int, next *datePicturePart) int {
-	if partMatches(runes[keep:], next) {
-		return keep
-	}
-	for k := keep - 1; k >= max(1, keep-maxYieldLetters) && isASCIIDigit(runes[k]); k-- {
-		if partMatches(runes[k:], next) {
-			return k
-		}
-	}
-	return keep
-}
-
-// partMatches reports whether a picture part matches at the start of runes.
-func partMatches(runes []rune, part *datePicturePart) bool {
-	if !part.isMarker {
-		return hasFoldPrefix(runes, part.literal)
-	}
-	_, consumed := parseMarkerValue(runes, part.marker)
-	return consumed > 0
 }
 
 func hasFoldPrefix(runes []rune, literal string) bool {
@@ -316,11 +257,12 @@ func specifiedOnly(components map[byte]int, candidates, allowed string) bool {
 // resolveParsedDate fills in the components the picture left out the way
 // jsonata-js does: those more significant than the first specified one come
 // from now, less significant ones are zero (one for month and day), and a
-// specified component after an unspecified one is an error.
-func resolveParsedDate(components map[byte]int, now time.Time) (time.Time, error) {
+// specified component after an unspecified one is an error. It returns epoch
+// milliseconds, NaN when they fall outside a JavaScript Date's range.
+func resolveParsedDate(components map[byte]int, now time.Time) (float64, error) {
 	const dateCandidates, timeCandidates = "YXMxWwdD", "PHhmsf"
 	if specifiedOnly(components, dateCandidates, "Xxw") || specifiedOnly(components, dateCandidates, "XW") {
-		return time.Time{}, &evaluator.JSONataError{
+		return 0, &evaluator.JSONataError{
 			Code:    "D3136",
 			Message: "$toMillis: parsing an ISO week date is not supported",
 		}
@@ -342,7 +284,7 @@ func resolveParsedDate(components map[byte]int, now time.Time) (time.Time, error
 		part := order[i]
 		if _, ok := components[part]; ok {
 			if endSpecified {
-				return time.Time{}, &evaluator.JSONataError{
+				return 0, &evaluator.JSONataError{
 					Code:    "D3136",
 					Message: "$toMillis: the date/time picture string is missing specifiers required to parse the timestamp",
 				}
@@ -379,14 +321,36 @@ func resolveParsedDate(components map[byte]int, now time.Time) (time.Time, error
 	if dayOfYear {
 		month, day = 1, components['d']
 	}
+	if !nearDateRange(components['Y'], month, day, hour, components['m'], components['s']) {
+		return math.NaN(), nil
+	}
 	t := time.Date(components['Y'], time.Month(month), day, hour, components['m'], components['s'],
 		components['f']*int(time.Millisecond), time.UTC)
-	if offset, ok := components['Z']; ok {
-		t = t.Add(-time.Duration(offset) * time.Second)
-	} else if offset, ok := components['z']; ok {
-		t = t.Add(-time.Duration(offset) * time.Second)
+	millis := t.UnixMilli()
+	if millis < -maxDateMillis || millis > maxDateMillis {
+		return math.NaN(), nil
 	}
-	return t, nil
+	// jsonata-js applies the offset after Date.UTC's range check.
+	if offset, ok := components['Z']; ok {
+		millis -= int64(offset) * 1000
+	} else if offset, ok := components['z']; ok {
+		millis -= int64(offset) * 1000
+	}
+	return float64(millis), nil
+}
+
+// maxDateMillis is the largest epoch millisecond count a JavaScript Date
+// holds, 10⁸ days; Date.UTC gives NaN beyond it.
+const maxDateMillis = 8.64e15
+
+// nearDateRange reports whether the non-negative date components land within
+// about a day of a JavaScript Date's range, estimated in float64 so that
+// components too large for time.Date's int arithmetic are rejected first.
+func nearDateRange(year, month, day, hour, minute, second int) bool {
+	const msPerDay, daysPerYear, slackDays = 86_400_000, 365.2425, 2
+	days := (float64(year)-1970)*daysPerYear + float64(month-1)*daysPerYear/12 + float64(day-1) +
+		(float64(hour)*3600+float64(minute)*60+float64(second))/86_400
+	return math.Abs(days) <= maxDateMillis/msPerDay+slackDays
 }
 
 // consumeNameOrNumber returns how many runes of a name (any run of letters, as
@@ -423,35 +387,49 @@ func leadingDigits(runes []rune, width int) int {
 // every platform gnata builds for, 32-bit TinyGo included: about 68 years.
 const maxTZOffsetSeconds = math.MaxInt32
 
-// parseTZFromInput reads a [Z] or [z] offset in seconds as jsonata-js's regex
-// does: "GMT" first for [z], then a sign and hours, then the minutes after
-// the picture's regular grouping separator if it has one. Without one, the
-// first two digits are hours and any others minutes. [Z] also reads "Z", and
-// ±HHMM when its picture has a separator (README known difference #4).
+// parseTZFromInput reads a [Z] or [z] offset in seconds, matched by scanTZ.
 func parseTZFromInput(runes []rune, m dateMarker) (offset, consumed int) {
+	sign, hours, mins, n := scanTZ(runes, m)
+	if n == 0 || sign == 0 {
+		return 0, n
+	}
+	seconds, ok := offsetSeconds(hours, mins)
+	if !ok {
+		return 0, 0
+	}
+	return sign * seconds, n
+}
+
+// scanTZ matches a [Z] or [z] offset as jsonata-js's regex does: "GMT" first
+// for [z], then a sign and hours, then the minutes after the picture's regular
+// grouping separator if it has one. Without one, the first two digits are
+// hours and any others minutes. [Z] also reads "Z", with sign 0, and ±HHMM
+// when its picture has a separator (README known difference #4). It returns
+// the runes matched, 0 when the offset does not match.
+func scanTZ(runes []rune, m dateMarker) (sign int, hours, mins []rune, consumed int) {
 	i := 0
 	switch {
 	case m.component == 'z':
 		if !hasFoldPrefix(runes, "GMT") {
-			return 0, 0
+			return 0, nil, nil, 0
 		}
 		i = 3
 	case len(runes) > 0 && runes[0] == 'Z':
-		return 0, 1
+		return 0, nil, nil, 1
 	}
 	if i >= len(runes) || (runes[i] != '+' && runes[i] != '-') {
-		return 0, 0
+		return 0, nil, nil, 0
 	}
-	sign := 1
+	sign = 1
 	if runes[i] == '-' {
 		sign = -1
 	}
 	i++
 	n := leadingDigits(runes[i:], 0)
 	if n == 0 {
-		return 0, 0
+		return 0, nil, nil, 0
 	}
-	hours, mins := runes[i:i+n], []rune(nil)
+	hours = runes[i : i+n]
 	i += n
 	separator := rune(0)
 	if mandatory, _ := decimalPictureDigits(m.presentation); mandatory > 0 {
@@ -466,15 +444,11 @@ func parseTZFromInput(runes []rune, m dateMarker) (offset, consumed int) {
 		mins = runes[i+1 : i+1+minuteDigits]
 		i += 1 + minuteDigits
 	case separator != 0 && (m.component == 'z' || len(hours) != 4):
-		return 0, 0
+		return 0, nil, nil, 0
 	case len(hours) > 2:
 		hours, mins = hours[:2], hours[2:]
 	}
-	seconds, ok := offsetSeconds(hours, mins)
-	if !ok {
-		return 0, 0
-	}
-	return sign * seconds, i
+	return sign, hours, mins, i
 }
 
 // offsetSeconds converts an offset's hour and minute digits to seconds,
@@ -523,11 +497,19 @@ func parseNumericValue(runes []rune, width int) (value, consumed int) {
 	if i == 0 {
 		return -1, -1
 	}
-	n, err := strconv.Atoi(string(runes[:i]))
-	if err != nil {
+	n, ok := atoiSaturating(runes[:i])
+	if !ok {
 		return -1, -1
 	}
 	return n, i
+}
+
+// atoiSaturating reads ASCII digits, saturating at math.MaxInt so that a huge
+// component puts the date out of range, as it does in jsonata-js. A 32-bit
+// int saturates low enough to be a valid date, so there it reports false.
+func atoiSaturating(digits []rune) (int, bool) {
+	n, err := strconv.Atoi(string(digits))
+	return n, err == nil || strconv.IntSize == 64
 }
 
 func parseOrdinalNumber(runes []rune, width int) (value, consumed int) {
@@ -535,8 +517,8 @@ func parseOrdinalNumber(runes []rune, width int) (value, consumed int) {
 	if i == 0 {
 		return -1, -1
 	}
-	n, err := strconv.Atoi(string(runes[:i]))
-	if err != nil {
+	n, ok := atoiSaturating(runes[:i])
+	if !ok {
 		return -1, -1
 	}
 	// jsonata-js requires the suffix, though not the one matching the number.

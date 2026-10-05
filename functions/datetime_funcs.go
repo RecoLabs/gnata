@@ -2,6 +2,7 @@ package functions
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/recolabs/gnata/internal/evaluator"
@@ -114,11 +115,15 @@ func fnToMillis(args []any, _ any, env *evaluator.Environment) (any, error) {
 		if !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$toMillis: picture argument must be a string"}
 		}
-		t, matched, err := parseWithPicture(s, picture, env.Now())
-		if err != nil || !matched {
+		millis, matched, err := parseWithPicture(s, picture, env.Now())
+		switch {
+		case err != nil || !matched:
 			return nil, err
+		case math.IsNaN(millis):
+			// jsonata-js returns NaN, which serializes as null.
+			return evaluator.Null, nil
 		}
-		return float64(t.UnixMilli()), nil
+		return millis, nil
 	}
 
 	// Try RFC 3339 / ISO 8601 formats (with and without colon in timezone offset).
