@@ -165,19 +165,28 @@ func fnSubstring(args []any, _ any) (any, error) {
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$substring: argument 1 must be a string"}
 	}
-	startF, startOk := evaluator.ToFloat64(args[1])
-	if !startOk {
-		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$substring: argument 2 must be a number"}
-	}
-
-	var lengthF float64
+	var startF, lengthF float64
+	hasStart := args[1] != nil
 	hasLength := len(args) >= 3 && args[2] != nil
+	if hasStart {
+		var ok bool
+		if startF, ok = evaluator.ToFloat64(args[1]); !ok {
+			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$substring: argument 2 must be a number"}
+		}
+	}
 	if hasLength {
-		var ok2 bool
-		lengthF, ok2 = evaluator.ToFloat64(args[2])
-		if !ok2 {
+		var ok bool
+		if lengthF, ok = evaluator.ToFloat64(args[2]); !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$substring: argument 3 must be a number"}
 		}
+	}
+	if !hasStart {
+		// jsonata-js slices from an undefined start, so there is no end
+		// position for a length to count from.
+		if hasLength {
+			return "", nil
+		}
+		return s, nil
 	}
 
 	runes := []rune(s)

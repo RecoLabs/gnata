@@ -9,26 +9,15 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-// hofArity returns the callback argument count for the given HOF function.
-// For lambdas, uses the declared parameter count (capped at 3).
-// For built-in functions, defaults to 1 (value only).
-func hofArity(fn any) int {
-	if lambda, ok := fn.(*evaluator.Lambda); ok {
-		n := len(lambda.Params)
-		if n > 3 {
-			return 3
-		}
-		return n
+// hofArity returns how many of (value, index, array) a HOF passes fn, or
+// unknown when FunctionArity does not know. Like jsonata-js's hofFuncArgs, the
+// value is always passed.
+func hofArity(fn any, unknown int) int {
+	arity, known := evaluator.FunctionArity(fn)
+	if !known {
+		return unknown
 	}
-	return 1
-}
-
-// hofArgsBuf allocates a reusable buffer for HOF callback arguments.
-func hofArgsBuf(arity int) []any {
-	if arity == 0 {
-		return nil
-	}
-	return make([]any, arity)
+	return min(max(arity, 1), 3)
 }
 
 // fillHofArgs populates a pre-allocated argument buffer for a HOF callback.
@@ -73,10 +62,10 @@ func makeFnMap(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 		seq := evaluator.CreateSequence()
 		arrAny := slices.Clone(arr)
-		callArgs := hofArgsBuf(hofArity(fn))
+		callArgs := make([]any, hofArity(fn, 1))
 		for i, item := range arr {
 			fillHofArgs(callArgs, item, float64(i), arrAny)
-			val, err := evalFn(fn, callArgs, focus, env)
+			val, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
@@ -115,10 +104,10 @@ func makeFnFilter(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 		seq := evaluator.CreateSequence()
 		arrAny := slices.Clone(arr)
-		callArgs := hofArgsBuf(hofArity(fn))
+		callArgs := make([]any, hofArity(fn, 1))
 		for i, item := range arr {
 			fillHofArgs(callArgs, item, float64(i), arrAny)
-			val, err := evalFn(fn, callArgs, focus, env)
+			val, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
@@ -176,10 +165,10 @@ func makeFnSingle(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		fn := args[1]
 		var matched []any
 		arrAny := slices.Clone(arr)
-		callArgs := hofArgsBuf(hofArity(fn))
+		callArgs := make([]any, hofArity(fn, 1))
 		for i, item := range arr {
 			fillHofArgs(callArgs, item, float64(i), arrAny)
-			val, err := evalFn(fn, callArgs, focus, env)
+			val, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
@@ -222,7 +211,12 @@ func makeFnReduce(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		if arrVal == nil {
 			return nil, nil
 		}
-		if lambda, ok := fn.(*evaluator.Lambda); ok && len(lambda.Params) < 2 {
+		reduceArity, known := evaluator.FunctionArity(fn)
+		if !known {
+			reduceArity = 2
+		}
+		reduceArity = min(reduceArity, 4)
+		if reduceArity < 2 {
 			return nil, &evaluator.JSONataError{Code: "D3050", Message: "$reduce: function must have arity of at least 2"}
 		}
 		arr := wrapArray(arrVal)
@@ -244,25 +238,17 @@ func makeFnReduce(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		}
 
 		arrAny := slices.Clone(arr)
-		var reduceArity int
-		if lambda, ok := fn.(*evaluator.Lambda); ok {
-			reduceArity = max(min(len(lambda.Params), 4), 1)
-		} else {
-			reduceArity = 2
-		}
 		callArgs := make([]any, reduceArity)
 		for i := startIdx; i < len(arr); i++ {
 			callArgs[0] = acc
-			if reduceArity > 1 {
-				callArgs[1] = arr[i]
-			}
+			callArgs[1] = arr[i]
 			if reduceArity > 2 {
 				callArgs[2] = float64(i)
 			}
 			if reduceArity > 3 {
 				callArgs[3] = arrAny
 			}
-			val, err := evalFn(fn, callArgs, focus, env)
+			val, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}

@@ -120,3 +120,47 @@ func TestCustomFuncArgs_CallerDecodedValuesAreNotCached(t *testing.T) {
 		t.Fatalf("result after mutation = %v, want grace-a (stale cached argument)", res[0])
 	}
 }
+
+// A custom function's arity is unknown, so HOFs pass it the value, or two
+// arguments for $reduce and $each. Like any function argument, it is called
+// with a null context.
+func TestCustomFuncInHigherOrderFunctions(t *testing.T) {
+	var focuses []any
+	funcs := map[string]gnata.CustomFunc{
+		"add": func(args []any, _ any) (any, error) { return args[0].(float64) + args[1].(float64), nil },
+		"argc": func(args []any, focus any) (any, error) {
+			focuses = append(focuses, focus)
+			return float64(len(args)), nil
+		},
+	}
+	testCases := []struct {
+		expr string
+		want any
+	}{
+		{expr: `$reduce([1,2,3], $add)`, want: 6.0},
+		{expr: `$each({"a":1}, $argc)`, want: 2.0},
+		{expr: `$map([1], $argc)`, want: 1.0},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) {
+			se := gnata.NewStreamEvaluator(nil, gnata.WithCustomFunctions(funcs))
+			idx, err := se.Compile(tC.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			focuses = nil
+			got, err := se.EvalOne(context.Background(), json.RawMessage(`{"x":1}`), "", idx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tC.want) {
+				t.Fatalf("got %#v, want %#v", got, tC.want)
+			}
+			for _, focus := range focuses {
+				if focus != nil {
+					t.Fatalf("focus = %#v, want nil", focus)
+				}
+			}
+		})
+	}
+}

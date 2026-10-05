@@ -3,6 +3,7 @@ package evaluator
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/recolabs/gnata/internal/parser"
@@ -13,7 +14,7 @@ func compileContextSig(sig string) (*ContextSig, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newContextSig(specs)
+	return newContextSig(specs), nil
 }
 
 func TestNewContextSig(t *testing.T) {
@@ -30,7 +31,7 @@ func TestNewContextSig(t *testing.T) {
 		{desc: "variadic", sig: "a+"},
 		{desc: "gnata union type", sig: "u-:s", wantContext: true},
 		{desc: "malformed signature", sig: "(sn-", expectError: true},
-		{desc: "too many parameters", sig: "s-nnnnnnnn", expectError: true},
+		{desc: "more parameters than the stack buffers", sig: "s-nnnnnnnnn", wantContext: true},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
@@ -72,6 +73,21 @@ func TestContextSigInject(t *testing.T) {
 		{desc: "variadic", sig: "s-n+", args: []any{1.0, 2.0}, focus: "ab", want: []any{"ab", 1.0, 2.0}},
 		{desc: "mismatch is left to the builtin", sig: "s-n", args: []any{"a", "b"}, focus: "ab", want: []any{"a", "b"}},
 		{desc: "focus of the wrong type", sig: "s-", focus: 1.0, code: "T0411"},
+		{desc: "every missing context parameter", sig: "s-s-", focus: "q", want: []any{"q", "q"}},
+		{desc: "a variadic context parameter is lazy, not optional", sig: "s+-", focus: "q", want: []any{}},
+		{
+			desc: "more arguments than the stack buffers", sig: "s-nnnnnnnnn",
+			args: []any{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0}, focus: "q",
+			want: []any{"q", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0},
+		},
+		{
+			desc: "a wide signature missing one argument", sig: "s-" + strings.Repeat("n", 5000),
+			args: slices.Repeat([]any{1.0}, 5000), focus: "q", want: append([]any{"q"}, slices.Repeat([]any{1.0}, 5000)...),
+		},
+		{
+			desc: "many '+' parameters do not backtrack", sig: "s+s+s+s+s+s+s-n",
+			args: slices.Repeat([]any{"a"}, 200), focus: "q", want: slices.Repeat([]any{"a"}, 200),
+		},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
@@ -79,7 +95,7 @@ func TestContextSigInject(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compileContextSig(%q): %v", tC.sig, err)
 			}
-			got, err := sig.Inject(tC.args, tC.focus)
+			got, _, err := sig.Inject(tC.args, tC.focus)
 			if tC.code != "" {
 				var je *JSONataError
 				if !errors.As(err, &je) || je.Code != tC.code {

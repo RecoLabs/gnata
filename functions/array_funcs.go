@@ -140,7 +140,7 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			cmpFn = func(a, b any) (int, error) {
 				sortArgs[0] = b
 				sortArgs[1] = a
-				result, err := evalFn(fn, sortArgs, focus, env)
+				result, err := evalFn(fn, sortArgs, env)
 				if err != nil {
 					return 0, err
 				}

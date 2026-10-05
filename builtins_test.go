@@ -496,3 +496,121 @@ var builtinContextCases = []exprCase{
 func TestBuiltinContextArgument(t *testing.T) {
 	runExprCases(t, builtinContextCases)
 }
+
+// functionContextCases cover the context of calls in and to functions, which
+// jsonata-js's apply sets: a lambda body sees its definition's context, a
+// function argument is applied with a null context and as many arguments as
+// it declares, and a tail call takes the context of the call that entered
+// the lambda.
+var functionContextCases = []exprCase{
+	// A lambda body evaluates against its definition's context.
+	{expr: `($f := function($x){$keys($)}; a.$f(1))`, data: `{"a":{"b":1}}`, want: `"a"`},
+	{expr: `($f := function($x){[$keys()]}; a.$f(1))`, data: `{"a":{"b":1}}`, want: `["a"]`},
+	{expr: `a.(function($x){$x})()`, data: `{"a":5}`, want: undefined},
+	{expr: `a.(function($x,$y){[$x,$y]})(6)`, data: `{"a":5}`, want: `[6]`},
+	{expr: `a.(function(){$})()`, data: `{"a":5}`, want: `5`},
+	{expr: `($f := function(){$}; a.$f())`, data: `{"a":5}`, want: `{"a":5}`},
+	{expr: `($f := function($x){$}; a.$f(1))`, data: `{"a":5}`, want: `{"a":5}`},
+	{expr: `a.uppercase()`, data: `{"a":"x"}`, code: "T1005"},
+	// A lambda's '-' parameter takes the call's context.
+	{expr: `(function($x)<s->{$uppercase($x)})()`, data: `"ab"`, want: `"AB"`},
+	{expr: `FirstName.function($str, $prefix)<s-s>{$prefix & $str}("Hello ")`, data: `{"FirstName":"Fred"}`, want: `"Hello Fred"`},
+	{expr: `$map([1], function($x)<s->{$x})`, data: `"zz"`, code: "T0410"},
+	{expr: `($f := function($s)<s->{$s}; $map([1], function($v){$f()}))`, data: `"zz"`, code: "T0411"},
+	{expr: `($f := function($s)<s->{$s}; $map([1], function($v){[$f()]}))`, data: `"zz"`, want: `["zz"]`},
+	{expr: `(function($x,$y)<s-s->{$x&$y})()`, data: `"q"`, want: `"qq"`},
+	{expr: `(function($a,$b,$c,$d,$e,$f,$g,$h,$i)<nnnnnnnns->{$i})(1,2,3,4,5,6,7,8)`, data: `"q"`, want: `"q"`},
+	{expr: `(function($x)<s+->{$x})()`, data: `"q"`, code: "T0410"},
+	{expr: `(function($x)<s+>{$x})()`, code: "T0410"},
+	{expr: `(function($x,$y)<n+s>{$y})(1,2,"a")`, want: `2`},
+	{expr: `(function($a,$b)<n+s>{[$a,$b]})(1)`, code: "T0410"},
+	{expr: `(function($a,$b)<n+n>{$b})(1)`, code: "T0410"},
+	// The context fills a '-' parameter as it is, without coercion.
+	{expr: `(function($a)<a<n>->{$a})()`, data: `5`, want: `5`},
+	{expr: `(function($s)<s->{"x"})()`, want: `"x"`},
+	// A tail call in a callback has a null context; other calls have $.
+	{expr: `$map([0], function($v){$v ?: $string()})`, data: `"zz"`, want: `"null"`},
+	{expr: `$map(["a"], function($v){nothing ?? $string()})`, data: `"zz"`, want: `"null"`},
+	{expr: `$map(["a"], function($v){$string()})`, data: `"zz"`, want: `"null"`},
+	{expr: `$map(["a"], function($v){$string() & ""})`, data: `"zz"`, want: `"zz"`},
+	{expr: `$map(["a"], function($v){($string())})`, data: `"zz"`, want: `"null"`},
+	{expr: `$map(["a"], function($v){$v ? $string() : 1})`, data: `"zz"`, want: `"null"`},
+	{expr: `$filter([1], function($v){$boolean()})`, data: `"zz"`, want: undefined},
+	{expr: `$map(["a"], function($v){$uppercase()})`, data: `"zz"`, code: "T0411"},
+	{expr: `($f := function(){$uppercase()}; $f())`, data: `"zz"`, want: `"ZZ"`},
+	{expr: `($f := function($n){$n > 0 ? $f($n-1) : $string()}; $f(3))`, data: `"zz"`, want: `"zz"`},
+	{expr: `($f := function($n){$n > 0 ? $f($n-1) : $string()}; $map([3], $f))`, data: `"zz"`, want: `"null"`},
+	{expr: `$map([1], function($v){$string()#$i})`, data: `"zz"`, want: `"zz"`},
+	{expr: `$map([1], function($v){$string()@$x})`, data: `"zz"`, want: `"null"`},
+	{expr: `$map([1], function($v){$string()[0]})`, data: `"zz"`, want: `"zz"`},
+	// A bind is not a tail call, though gnata still trampolines it.
+	{expr: `($f := function($n){$n = 0 ? 0 : ($x := $f($n-1))}; $f(300))`, want: `0`},
+	{expr: `$map([1], function($v){($x := $string(); $x)})`, data: `"zz"`, want: `"zz"`},
+	{expr: `($f := function(){$x := $string()}; $map([1], $f))`, data: `"zz"`, want: `"zz"`},
+	{
+		expr: `s.($g := function(){$string()}; $f := function(){($x := $g())}; $$.a.$f())`,
+		data: `{"s":"outer","a":"entering"}`, want: `"outer"`,
+	},
+	{expr: `($g := function(){$string()}; $map([1], function($v){($x := $g())}))`, data: `"zz"`, want: `"zz"`},
+	{expr: `($g := function($v)<s->{$v}; $map([1], function($v){($x := $g())}))`, data: `"zz"`, want: `"zz"`},
+	{expr: `($g := function($s)<x->{$s}; $f := function(){($x := $g())}; a.$f())`, data: `{"a":"A"}`, want: `{"a":"A"}`},
+	// A function passed to a lambda is applied with a null context.
+	{expr: `($g := function($f){$f()}; $g($string))`, data: `"zz"`, want: `"null"`},
+	{expr: `($g := function($f){$f() & ""}; $g($string))`, data: `"zz"`, want: `"null"`},
+	{expr: `($g := function($f){a.$f()}; $g($string))`, data: `{"a":"in"}`, want: `"null"`},
+	{expr: `($g := function($f){$f()}; $g(function($x)<s->{$x}))`, data: `"zz"`, code: "T0411"},
+	{expr: `($loop := function($f, $n){$n = 0 ? 0 : $f($f, $n-1)}; $loop($loop, 300))`, want: `0`},
+	{expr: `($g := function($f){$map([1,2], $f)}; $g($power))`, want: `[1,2]`},
+	{expr: `($g := function($f){$type($f)}; $g($string))`, want: `"function"`},
+	{expr: `($g := function($f){$f}; $g($string)("x"))`, want: `"x"`},
+	// A regex argument is not a function.
+	{expr: `($g := function($re){$match("abc", $re).match}; $g(/b/))`, want: `"b"`},
+	{expr: `($g := function($re){$contains("abc", $re)}; $g(/b/))`, want: `true`},
+	{expr: `($g := function($re){$split("abc", $re)}; $g(/b/))`, want: `["a","c"]`},
+	// A tail call passes function arguments as they are.
+	{expr: `($g := function($f){$f() & ""}; $k := function(){$g($string)}; $k())`, data: `"zz"`, want: `"zz"`},
+	{expr: `($g := function($f){$f()}; $k := function(){$g($string)}; $k())`, data: `"zz"`, want: `"zz"`},
+	{expr: `($g := function($f){$f() & ""}; $k := function($x){$x ? $g($string) : 0}; $k(1))`, data: `"zz"`, want: `"zz"`},
+	// Partial applications, compositions and function arguments wrap them too.
+	{expr: `($g := function($f){$f() & ""}; $p := $g(?); $p($string))`, data: `"zz"`, want: `"null"`},
+	{expr: `($g := function($f){$f() & ""}; $c := $g ~> $uppercase; $c($string))`, data: `"zz"`, want: `"NULL"`},
+	{expr: `($g := function($f){$f() & ""}; $w := function($x){$x}; $h := $w($g); $h($string) & "")`, data: `"zz"`, want: `"null"`},
+	{expr: `($h := function($g){ [$g()] }; $map([1], function($v){ $h($uppercase) }))`, data: `"in"`, want: `["IN"]`},
+	{expr: `($h := function($g){ [$g()] }; [$h($uppercase)])`, data: `"in"`, code: "T0411"},
+	// So does x ~> f(...), but not for the piped value.
+	{expr: `($h := function($x,$g){$g()}; "x" ~> $h($uppercase))`, data: `"abc"`, code: "T0411"},
+	{expr: `($h := function($x,$g){[$g()]}; "x" ~> $h($uppercase))`, data: `"abc"`, code: "T0411"},
+	{expr: `($l := function($x,$g){[$x,$g()]}; "abc" ~> $l($string))`, data: `"zz"`, want: `["abc","null"]`},
+	{expr: `($h := function($x,$g){$g()}; "x" ~> $h($string))`, data: `{"a":1}`, want: `"null"`},
+	{expr: `($l := function($x,$g){[$x,$g()]}; $string ~> $l("abc"))`, data: `"zz"`, code: "T1006"},
+	// A builtin callback takes as many arguments as it declares.
+	{expr: `$map([1,2], $power)`, want: `[1,2]`},
+	{expr: `$map(["ab","cd"], $substringBefore)`, code: "T0410"},
+	{expr: `$map([1], $string)`, want: `"1"`},
+	{expr: `$map(["a","b"], $uppercase)`, want: `["A","B"]`},
+	{expr: `$reduce([1,2], $sum)`, code: "D3050"},
+	{expr: `$reduce([1,2,3], $append)`, want: `[1,2,3]`},
+	{expr: `$each({"a":1}, $string)`, want: `"1"`},
+	{expr: `$sift({"a":1,"b":2}, function($v){$v>1})`, want: `{"b":2}`},
+	{expr: `$filter([0,1,2], $boolean)`, want: `[1,2]`},
+	// Partial application and composition.
+	{expr: `$reduce([1,2,3], $append(?, ?))`, want: `[1,2,3]`},
+	{expr: `($f := function($a,$b){$a+$b}; $reduce([1,2,3], $f(?, ?)))`, want: `6`},
+	{expr: `$each({"a":1}, $append(?, ?))`, want: `[1,"a"]`},
+	{expr: `$reduce([1,2], $uppercase ~> $lowercase)`, code: "D3050"},
+	{expr: `($string ~> $uppercase)()`, want: undefined},
+	{expr: `($trim ~> $uppercase)()`, want: undefined},
+	{expr: `($p := $substring(?, 1); $p("abc"))`, want: `"bc"`},
+	{expr: `($trim ~> $uppercase)(" a ")`, want: `"A"`},
+	{expr: `$map([1,22], $string ~> $length)`, want: `[1,2]`},
+	// $substring with an undefined start.
+	{expr: `$substring("abc", nothing)`, want: `"abc"`},
+	{expr: `$substring("abc", nothing, 2)`, want: `""`},
+	{expr: `$substring("abc", 1, nothing)`, want: `"bc"`},
+	{expr: `x.$substring(nothing)`, data: `{"x":"abc"}`, want: `"abc"`},
+	{expr: `$substring("abc", nothing, "x")`, code: "T0410"},
+}
+
+func TestFunctionContext(t *testing.T) {
+	runExprCases(t, functionContextCases)
+}

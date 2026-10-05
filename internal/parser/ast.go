@@ -47,7 +47,8 @@ type Node struct {
 	KeepArray          bool // step has [] suffix → force array output
 	KeepSingletonArray bool // path has at least one keepArray step
 	ConsArray          bool // step is an array constructor used as a path step
-	Thunk              bool // lambda is a TCO thunk
+	Thunk              bool // call is trampolined as a tail call
+	TailContext        bool // call is a jsonata-js tail call, taking the entering call's context
 	Tuple              bool // step participates in a tuple stream
 
 	// Focus / index variable names (set by @ and # operators)

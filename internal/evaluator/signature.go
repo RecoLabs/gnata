@@ -8,41 +8,52 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-// NewSignedBuiltin wraps fn with its jsonata-js signature. validate turns on
-// the arity and type checks of processCallArgs at direct call sites.
-func NewSignedBuiltin(fn EnvAwareBuiltin, sig string, validate bool) (*SignedBuiltin, error) {
+// NewSignedBuiltin wraps the builtin name with its jsonata-js signature and
+// arity, the number of parameters its jsonata-js implementation declares.
+// validate turns on the arity and type checks of processCallArgs.
+func NewSignedBuiltin(name string, fn EnvAwareBuiltin, sig string, arity int, validate bool) (*SignedBuiltin, error) {
+	sb := &SignedBuiltin{Name: name, Fn: fn, Sig: sig, Arity: arity}
+	if sig == "" {
+		return sb, nil
+	}
 	specs, err := parser.ParseSig(sig)
 	if err != nil {
 		return nil, err
 	}
-	contextSig, err := newContextSig(specs)
-	if err != nil {
-		return nil, err
-	}
-	sb := &SignedBuiltin{Fn: fn, Sig: sig, Context: contextSig}
+	sb.Context = newContextSig(specs)
 	if validate {
 		sb.ParsedSig = specs
 	}
 	return sb, nil
 }
 
-// directCallArgs prepares the arguments of a direct call to fn. For a
-// SignedBuiltin it fills a missing context argument from the focus and
-// applies processCallArgs when the builtin is validated.
-func directCallArgs(fn any, args []any, focus any) (coercedArgs []any, returnUndefined bool, err error) {
-	sb, ok := fn.(*SignedBuiltin)
-	if !ok {
+// checkCallArgs prepares the arguments of a call to fn as jsonata-js's
+// validateArguments does: it fills a missing context argument from focus,
+// then applies processCallArgs to a validated builtin or a typed lambda.
+func checkCallArgs(fn any, args []any, focus any) (coercedArgs []any, returnUndefined bool, err error) {
+	var (
+		contextSig *ContextSig
+		specs      []parser.ParamSpec
+		validate   bool
+	)
+	switch f := fn.(type) {
+	case *SignedBuiltin:
+		contextSig, specs, validate = f.Context, f.ParsedSig, f.ParsedSig != nil
+	case *Lambda:
+		contextSig, specs, validate = f.Context, f.ParsedSig, f.Sig != ""
+	default:
 		return args, false, nil
 	}
-	if sb.Context != nil {
-		if args, err = sb.Context.Inject(args, focus); err != nil {
+	var isContext []bool
+	if contextSig != nil {
+		if args, isContext, err = contextSig.Inject(args, focus); err != nil {
 			return nil, false, err
 		}
 	}
-	if sb.ParsedSig == nil {
+	if !validate {
 		return args, false, nil
 	}
-	return processCallArgs(sb.ParsedSig, args, focus)
+	return processCallArgs(specs, args, isContext)
 }
 
 // processCallArgs handles three pre-call concerns for typed lambdas:
@@ -56,20 +67,23 @@ func directCallArgs(fn any, args []any, focus any) (coercedArgs []any, returnUnd
 //
 //  3. Argument type validation: delegates to validateCallArgs, which returns
 //     T0410 on base-type mismatch or arity errors, and T0412 on array
-//     content-type violations.  Context specs ('-') that are missing receive
-//     the focus value instead of triggering T0410.
+//     content-type violations. ContextSig has already filled a missing
+//     context argument ('-'); isContext marks those, which jsonata-js passes
+//     as they are, so they are neither propagated nor coerced.
 //
 // It returns (coercedArgs, returnUndefined, err).
 // When returnUndefined is true the caller must return (nil, nil) immediately.
-func processCallArgs(specs []parser.ParamSpec, args []any, focus any) (coercedArgs []any, returnUndefined bool, err error) {
-	coerced := slices.Clone(args)
-
+func processCallArgs(specs []parser.ParamSpec, args []any, isContext []bool) (coercedArgs []any, returnUndefined bool, err error) {
+	coerced, cloned := args, false
 	for i, spec := range specs {
 		if spec.Variadic {
 			break // variadic args are not nil-propagated or individually coerced here
 		}
 		if i >= len(coerced) {
 			break
+		}
+		if isContextArg(isContext, i) {
+			continue
 		}
 		arg := coerced[i]
 
@@ -83,25 +97,31 @@ func processCallArgs(specs []parser.ParamSpec, args []any, focus any) (coercedAr
 		// For plain a: coerce any non-nil, non-array value.
 		if sigContainsType(spec.Types, 'a') && arg != nil && !sigArgMatchesTypes(arg, []byte{'a'}) {
 			if spec.ContentType == 0 || sigArgMatchesTypes(arg, []byte{spec.ContentType}) {
+				if !cloned {
+					coerced, cloned = slices.Clone(args), true
+				}
 				coerced[i] = []any{arg}
 			}
 		}
 	}
 
-	expanded, err := validateCallArgs(specs, coerced, focus)
-	if err != nil {
+	if err := validateCallArgs(specs, coerced, isContext); err != nil {
 		return nil, false, err
 	}
-	return expanded, false, nil
+	return coerced, false, nil
 }
 
 // validateCallArgs checks that args satisfy the compiled parameter specs.
 // It returns T0410 on a base-type mismatch or arity error, and T0412 when
-// an array content-type constraint is violated.
-// For context specs ('-') that have no corresponding argument, the focus
-// value is injected and appended to the returned slice.
-func validateCallArgs(specs []parser.ParamSpec, args []any, focus any) ([]any, error) {
-	result := slices.Clone(args)
+// an array content-type constraint is violated. An argument isContext marks
+// is the context value, which ContextSig has already checked.
+func validateCallArgs(specs []parser.ParamSpec, args []any, isContext []bool) error {
+	checkArg := func(spec parser.ParamSpec, ai int) error {
+		if isContextArg(isContext, ai) {
+			return nil
+		}
+		return validateOneCallArg(spec, args[ai], ai+1)
+	}
 	si := 0 // spec index
 	ai := 0 // arg index
 
@@ -117,51 +137,63 @@ func validateCallArgs(specs []parser.ParamSpec, args []any, focus any) ([]any, e
 					mandatoryAfter++
 				}
 			}
-			maxConsume := len(result) - mandatoryAfter
-			for ai < maxConsume {
-				if err := validateOneCallArg(spec, result[ai], ai+1); err != nil {
+			maxConsume := len(args) - mandatoryAfter
+			first := ai
+			for ai < maxConsume && !isContextArg(isContext, ai) {
+				if err := checkArg(spec, ai); err != nil {
 					break
 				}
 				ai++
 			}
-			si++
-			continue
-		}
-
-		if ai >= len(result) {
-			if spec.Context {
-				result = append(result, focus)
-				ai++
-			} else if !spec.Optional {
-				return nil, &JSONataError{
-					Code:    "T0410",
-					Message: fmt.Sprintf("argument %d does not match function signature: too few arguments", ai+1),
+			// '+' means one or more, as in the jsonata-js regex.
+			if ai == first && !spec.Optional {
+				if ai < len(args) {
+					if err := checkArg(spec, ai); err != nil {
+						return err
+					}
 				}
+				return arityError(ai+1, "too few arguments")
 			}
 			si++
 			continue
 		}
 
-		if err := validateOneCallArg(spec, result[ai], ai+1); err != nil {
+		if ai >= len(args) {
+			if !spec.Optional {
+				return arityError(ai+1, "too few arguments")
+			}
+			si++
+			continue
+		}
+
+		if err := checkArg(spec, ai); err != nil {
 			if spec.Optional {
 				si++
 				continue
 			}
-			return nil, err
+			return err
 		}
 		ai++
 		si++
 	}
 
 	// Extra args beyond all specs → T0410 (too many arguments).
-	if ai < len(result) {
-		return nil, &JSONataError{
-			Code:    "T0410",
-			Message: fmt.Sprintf("argument %d does not match function signature: too many arguments", ai+1),
-		}
+	if ai < len(args) {
+		return arityError(ai+1, "too many arguments")
 	}
 
-	return result, nil
+	return nil
+}
+
+func isContextArg(isContext []bool, i int) bool {
+	return i < len(isContext) && isContext[i]
+}
+
+func arityError(pos int, reason string) error {
+	return &JSONataError{
+		Code:    "T0410",
+		Message: fmt.Sprintf("argument %d does not match function signature: %s", pos, reason),
+	}
 }
 
 // validateOneCallArg checks a single argument against one parameter spec.

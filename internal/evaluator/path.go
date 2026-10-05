@@ -205,7 +205,7 @@ func keepSingletonArray(result any, singleConsArray bool) any {
 func evalConsArrayStep(step *parser.Node, input any, env *Environment, keepSingleton bool) (any, error) {
 	switch {
 	case step.Type == parser.NodeFunction:
-		return evalPathFunctionStep(step, input, env)
+		return evalFunction(step, input, env)
 	case step.Type == parser.NodeUnary && step.Value == "{":
 		return consArrayGroup(step, input, env)
 	case step.Type == parser.NodeWildcard:
@@ -1094,7 +1094,7 @@ func evalPathStep(
 	arr, ok := pathStepArray(input)
 	if !ok {
 		if step.Type == parser.NodeFunction {
-			return evalPathFunctionStep(step, input, env)
+			return evalFunction(step, input, env)
 		}
 		return Eval(step, input, env)
 	}
@@ -1104,7 +1104,7 @@ func evalPathStep(
 	// each per-element result is kept as a nested array in the output sequence.
 	isGroupStep, seq, evalItem := step.Type == parser.NodeUnary && step.Value == "[", CreateSequence(), Eval
 	if step.Type == parser.NodeFunction {
-		evalItem = evalPathFunctionStep
+		evalItem = evalFunction
 	}
 	for _, item := range arr {
 		val, err := evalItem(step, item, env)
@@ -1420,47 +1420,6 @@ func evalPathStepDescendant(input any, env *Environment) (any, error) {
 		return nil, nil
 	}
 	return seq, nil
-}
-
-// evalPathFunctionStep evaluates a NodeFunction step in path context.
-// In JSONata, when a function is called as a path step (e.g. arr.λ($x,$y){...}(6)),
-// the path element is PREPENDED as the first argument to the lambda. For builtins,
-// the path element is the focus that fills a missing context argument
-// (e.g., str.$contains("x") searches str).
-func evalPathFunctionStep(step *parser.Node, item any, env *Environment) (any, error) {
-	// Resolve the function.
-	var fn any
-	if step.Procedure != nil {
-		var err error
-		fn, err = Eval(step.Procedure, item, env)
-		if err != nil {
-			return nil, err
-		}
-	}
-	// Evaluate the declared arguments.
-	args := make([]any, 0, len(step.Arguments))
-	for _, argNode := range step.Arguments {
-		if argNode.Type == parser.NodePlaceholder {
-			args = append(args, nil)
-			continue
-		}
-		val, err := Eval(argNode, item, env)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, val)
-	}
-	// For user-defined lambdas, prepend the path element as the first argument
-	// only when there are fewer explicit args than lambda parameters.
-	// (If args already fill all params, the path element is only available as $.)
-	if lam, isLambda := fn.(*Lambda); isLambda && len(args) < len(lam.Params) {
-		args = append([]any{item}, args...)
-	}
-	args, returnUndefined, err := directCallArgs(fn, args, item)
-	if err != nil || returnUndefined {
-		return nil, err
-	}
-	return callFunction(fn, args, item, env)
 }
 
 // descendantLookup recursively collects all values at all depths from maps and arrays.

@@ -198,11 +198,11 @@ func makeFnSift(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 		result := evaluator.NewOrderedMap()
 		keys := evaluator.MapKeys(objVal)
-		callArgs := hofArgsBuf(hofArity(fn))
+		callArgs := make([]any, hofArity(fn, 1))
 		for _, ks := range keys {
 			val, _ := evaluator.MapGet(objVal, ks)
 			fillSiftArgs(callArgs, val, ks, objVal)
-			res, err := evalFn(fn, callArgs, focus, env)
+			res, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
@@ -242,11 +242,11 @@ func makeFnEach(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 		keys := evaluator.MapKeys(objVal)
 		seq := evaluator.CreateSequence()
-		callArgs := hofArgsBuf(max(hofArity(fn), 2))
+		callArgs := make([]any, hofArity(fn, 2))
 		for _, ks := range keys {
 			val, _ := evaluator.MapGet(objVal, ks)
 			fillSiftArgs(callArgs, val, ks, objVal)
-			res, err := evalFn(fn, callArgs, focus, env)
+			res, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}

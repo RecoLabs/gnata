@@ -11,7 +11,7 @@ import (
 // builtin function value without creating an import cycle. The env parameter
 // carries the per-evaluation call counter, ensuring concurrent Eval calls
 // don't share stack-depth state.
-type EvalFn func(fn any, args []any, focus any, env *evaluator.Environment) (any, error)
+type EvalFn func(fn any, args []any, env *evaluator.Environment) (any, error)
 
 // builtinFuncs lists all plain BuiltinFunction registrations (name → func).
 var builtinFuncs = []struct {
@@ -85,62 +85,97 @@ var decimalFuncs = []struct {
 	{"distinct", fnDistinct, decDistinct},
 }
 
-// contextSigs holds the jsonata-js signatures of the builtins with a
-// parameter that defaults to the context value ('-'), as bound in
-// https://github.com/jsonata-js/jsonata/blob/v2.1.0/src/jsonata.js
-var contextSigs = map[string]string{
-	"string":             "x-b?:s",
-	"substring":          "s-nn?:s",
-	"substringBefore":    "s-s:s",
-	"substringAfter":     "s-s:s",
-	"lowercase":          "s-:s",
-	"uppercase":          "s-:s",
-	"length":             "s-:n",
-	"trim":               "s-:s",
-	"pad":                "s-ns?:s",
-	"match":              "s-f<s:o>n?:a<o>",
-	"contains":           "s-(sf):b",
-	"replace":            "s-(sf)(sf)n?:s",
-	"split":              "s-(sf)n?:a<s>",
-	"formatNumber":       "n-so?:s",
-	"formatBase":         "n-n?:s",
-	"formatInteger":      "n-s:s",
-	"parseInteger":       "s-s:n",
-	"number":             "(nsb)-:n",
-	"floor":              "n-:n",
-	"ceil":               "n-:n",
-	"round":              "n-n?:n",
-	"abs":                "n-:n",
-	"sqrt":               "n-:n",
-	"power":              "n-n:n",
-	"boolean":            "x-:b",
-	"not":                "x-:b",
-	"sift":               "o-f?:o",
-	"keys":               "x-:a<s>",
-	"lookup":             "x-s:x",
-	"spread":             "x-:a<o>",
-	"each":               "o-f:a",
-	"base64encode":       "s-:s",
-	"base64decode":       "s-:s",
-	"encodeUrlComponent": "s-:s",
-	"encodeUrl":          "s-:s",
-	"decodeUrlComponent": "s-:s",
-	"decodeUrl":          "s-:s",
-	"toMillis":           "s-s?:n",
-	"fromMillis":         "n-s?s?:s",
+// jsSpec is how jsonata-js declares a builtin, as bound in
+// https://github.com/jsonata-js/jsonata/blob/v2.2.2/src/jsonata.js
+type jsSpec struct {
+	// arity is the number of parameters the jsonata-js implementation
+	// declares, which is how many arguments a HOF passes it as a callback.
+	arity int
+	// sig is the jsonata-js signature when a parameter defaults to the
+	// context value ('-').
+	sig string
+	// validate checks the arguments against sig, as jsonata-js's
+	// validateArguments does.
+	validate bool
 }
 
-// validatedBuiltins are checked against their signature at direct call sites.
-var validatedBuiltins = map[string]bool{"uppercase": true, "lowercase": true}
+// jsSpecs declares every registered builtin.
+var jsSpecs = map[string]jsSpec{
+	"sum":                {arity: 1},
+	"count":              {arity: 1},
+	"max":                {arity: 1},
+	"min":                {arity: 1},
+	"average":            {arity: 1},
+	"string":             {arity: 1, sig: "x-b?:s"},
+	"substring":          {arity: 3, sig: "s-nn?:s"},
+	"substringBefore":    {arity: 2, sig: "s-s:s"},
+	"substringAfter":     {arity: 2, sig: "s-s:s"},
+	"lowercase":          {arity: 1, sig: "s-:s", validate: true},
+	"uppercase":          {arity: 1, sig: "s-:s", validate: true},
+	"length":             {arity: 1, sig: "s-:n"},
+	"trim":               {arity: 1, sig: "s-:s"},
+	"pad":                {arity: 3, sig: "s-ns?:s"},
+	"match":              {arity: 3, sig: "s-f<s:o>n?:a<o>"},
+	"contains":           {arity: 2, sig: "s-(sf):b"},
+	"replace":            {arity: 4, sig: "s-(sf)(sf)n?:s"},
+	"split":              {arity: 3, sig: "s-(sf)n?:a<s>"},
+	"join":               {arity: 2},
+	"formatNumber":       {arity: 3, sig: "n-so?:s"},
+	"formatBase":         {arity: 2, sig: "n-n?:s"},
+	"formatInteger":      {arity: 2, sig: "n-s:s"},
+	"parseInteger":       {arity: 2, sig: "s-s:n"},
+	"number":             {arity: 1, sig: "(nsb)-:n"},
+	"floor":              {arity: 1, sig: "n-:n"},
+	"ceil":               {arity: 1, sig: "n-:n"},
+	"round":              {arity: 2, sig: "n-n?:n"},
+	"abs":                {arity: 1, sig: "n-:n"},
+	"sqrt":               {arity: 1, sig: "n-:n"},
+	"power":              {arity: 2, sig: "n-n:n"},
+	"random":             {arity: 0},
+	"boolean":            {arity: 1, sig: "x-:b"},
+	"not":                {arity: 1, sig: "x-:b"},
+	"map":                {arity: 2},
+	"zip":                {arity: 0},
+	"filter":             {arity: 2},
+	"single":             {arity: 2},
+	"reduce":             {arity: 3},
+	"sift":               {arity: 2, sig: "o-f?:o"},
+	"keys":               {arity: 1, sig: "x-:a<s>"},
+	"lookup":             {arity: 2, sig: "x-s:x"},
+	"append":             {arity: 2},
+	"exists":             {arity: 1},
+	"spread":             {arity: 1, sig: "x-:a<o>"},
+	"merge":              {arity: 1},
+	"reverse":            {arity: 1},
+	"each":               {arity: 2, sig: "o-f:a"},
+	"error":              {arity: 1},
+	"assert":             {arity: 2},
+	"type":               {arity: 1},
+	"sort":               {arity: 2},
+	"shuffle":            {arity: 1},
+	"distinct":           {arity: 1},
+	"base64encode":       {arity: 1, sig: "s-:s"},
+	"base64decode":       {arity: 1, sig: "s-:s"},
+	"encodeUrlComponent": {arity: 1, sig: "s-:s"},
+	"encodeUrl":          {arity: 1, sig: "s-:s"},
+	"decodeUrlComponent": {arity: 1, sig: "s-:s"},
+	"decodeUrl":          {arity: 1, sig: "s-:s"},
+	"eval":               {arity: 2},
+	"toMillis":           {arity: 2, sig: "s-s?:n"},
+	"fromMillis":         {arity: 3, sig: "n-s?s?:s"},
+	"now":                {arity: 2},
+	"millis":             {arity: 0},
+	"values":             {arity: 1}, // gnata extension
+	"flatten":            {arity: 1}, // gnata extension
+}
 
-// bind binds fn into env, wrapped with its signature when it has one.
+// bind binds fn into env with its jsonata-js signature and arity.
 func bind(env *evaluator.Environment, name string, fn evaluator.EnvAwareBuiltin) {
-	sig, signed := contextSigs[name]
-	if !signed {
-		env.Bind(name, fn)
-		return
+	spec, declared := jsSpecs[name]
+	if !declared {
+		panic(fmt.Sprintf("$%s is not declared in jsSpecs", name))
 	}
-	sb, err := evaluator.NewSignedBuiltin(fn, sig, validatedBuiltins[name])
+	sb, err := evaluator.NewSignedBuiltin(name, fn, spec.sig, spec.arity, spec.validate)
 	if err != nil {
 		panic(fmt.Sprintf("$%s: %v", name, err))
 	}
@@ -149,10 +184,6 @@ func bind(env *evaluator.Environment, name string, fn evaluator.EnvAwareBuiltin)
 
 // bindPlain is bind for a builtin that does not need the environment.
 func bindPlain(env *evaluator.Environment, name string, fn func([]any, any) (any, error)) {
-	if _, signed := contextSigs[name]; !signed {
-		env.Bind(name, evaluator.BuiltinFunction(fn))
-		return
-	}
 	bind(env, name, func(args []any, focus any, _ *evaluator.Environment) (any, error) {
 		return fn(args, focus)
 	})

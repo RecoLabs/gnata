@@ -87,8 +87,10 @@ func evalDescendant(input any, env *Environment) (any, error) {
 	return seq, nil
 }
 
-// ApplyFunction is the public API used by the standard library to call
-// any function value (BuiltinFunction or *Lambda) with the given args.
-func ApplyFunction(fn any, args []any, focus any, env *Environment) (any, error) {
-	return callFunction(fn, args, focus, env)
+// ApplyFunction is the public API used by the standard library to call a
+// function argument with the given args. Like jsonata-js, which wraps a
+// function argument in a closure that applies it with a null context, it
+// calls fn with a null context.
+func ApplyFunction(fn any, args []any, env *Environment) (any, error) {
+	return callFunction(fn, args, Null, env)
 }

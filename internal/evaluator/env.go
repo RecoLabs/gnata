@@ -44,6 +44,10 @@ type callCounter struct {
 	// ctx is the evaluation's context, shared by every environment using this
 	// counter (see SetContext).
 	ctx context.Context
+
+	// applyFocus is the context of the call that entered the lambda being
+	// evaluated, which a call in tail position of its body takes.
+	applyFocus any
 }
 
 type deadlineState struct {
@@ -397,16 +401,21 @@ type BuiltinFunction func(args []any, focus any) (any, error)
 // that create child scopes ($eval).
 type EnvAwareBuiltin func(args []any, focus any, env *Environment) (any, error)
 
-// SignedBuiltin wraps a built-in with its jsonata-js signature. A direct call
-// (f(...) or x ~> f(...)) fills a missing context argument from the focus and,
-// when ParsedSig is set, validates arity and types. HOF callbacks that invoke
-// the function via ApplyFunction bypass both, as in jsonata-js, allowing extra
-// arguments (key, index, array) to be passed silently.
+// SignedBuiltin is a native function value: a builtin with its name,
+// jsonata-js signature and arity; or, with no name or signature, a partial
+// application or composition with its arity, or a wrapper that applies a
+// function argument (Argument, never itself a wrapper) with a null context.
+// Every call except a partial application fills a missing context argument
+// from the call's context and, when ParsedSig is set, validates arity and
+// types, as jsonata-js's apply does.
 type SignedBuiltin struct {
+	Name      string // the builtin's name; "" for a partial application, composition or argument wrapper
 	Fn        EnvAwareBuiltin
 	Sig       string
 	ParsedSig []parser.ParamSpec // nil: arguments are not validated
 	Context   *ContextSig        // nil: no parameter defaults to the context
+	Arity     int                // parameters of the jsonata-js implementation, for HOF callbacks; -1 if unknown
+	Argument  any                // a function argument this applies with a null context, or nil
 }
 
 // Lambda represents a user-defined function (lambda expression).
@@ -417,5 +426,6 @@ type Lambda struct {
 	Thunk         bool               // for tail-call optimization
 	Sig           string             // type signature (Wave 5)
 	ParsedSig     []parser.ParamSpec // pre-parsed signature; avoids re-parsing per call
-	CapturedFocus any                // focus ($) captured at definition time for zero-param closures
+	Context       *ContextSig        // nil: no parameter defaults to the context
+	CapturedFocus any                // focus ($) at definition time, which the body evaluates against
 }

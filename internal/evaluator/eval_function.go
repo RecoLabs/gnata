@@ -49,24 +49,35 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 		args = append(args, val)
 	}
 
-	args, returnUndefined, err := directCallArgs(fn, args, input)
-	if err != nil {
-		return nil, err
+	// jsonata-js runs a tail call from the trampoline of the call that
+	// entered the lambda, so it takes that call's context.
+	callFocus := input
+	if node.TailContext {
+		callFocus = env.callCounter().applyFocus
 	}
-	if returnUndefined {
-		return nil, nil
+
+	// jsonata-js applies a function argument with a null context, except in
+	// a tail call, whose arguments its trampoline passes as they are. Named
+	// builtins already apply function arguments with a null context.
+	if !node.TailContext && reachesLambda(fn) {
+		for i, arg := range args {
+			args[i] = wrapFunctionArg(arg, env)
+		}
 	}
 
 	// Tail-call optimization: if this call is in tail position within a
 	// lambda body, return a TailCall sentinel instead of recursing.
-	// The trampoline loop in callFunction will catch it.
+	// The trampoline loop in invokeFunction will catch it.
 	if node.Thunk {
+		if lambda, applied := wrappedLambda(fn); applied {
+			return &TailCall{Fn: lambda, Args: args, Focus: Null}, nil
+		}
 		if _, isLambda := fn.(*Lambda); isLambda {
-			return &TailCall{Fn: fn, Args: args}, nil
+			return &TailCall{Fn: fn, Args: args, Focus: callFocus}, nil
 		}
 	}
 
-	result, err := callFunction(fn, args, input, env)
+	result, err := callFunction(fn, args, callFocus, env)
 	if err != nil {
 		return nil, err
 	}
@@ -80,9 +91,11 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 	}
 	sig := ""
 	var parsedSig []parser.ParamSpec
+	var contextSig *ContextSig
 	if node.Signature != nil {
 		sig = node.Signature.Raw
 		parsedSig, _ = parser.ParseSig(sig)
+		contextSig = newContextSig(parsedSig)
 	}
 	return &Lambda{
 		Params:        params,
@@ -91,6 +104,7 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 		Thunk:         node.Thunk,
 		Sig:           sig,
 		ParsedSig:     parsedSig,
+		Context:       contextSig,
 		CapturedFocus: input,
 	}, nil
 }
@@ -119,9 +133,11 @@ func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
 
 	boundArgs := make([]any, len(node.Arguments))
 	isPlaceholder := make([]bool, len(node.Arguments))
+	placeholders := 0
 	for i, argNode := range node.Arguments {
 		if argNode.Type == parser.NodePlaceholder {
 			isPlaceholder[i] = true
+			placeholders++
 		} else {
 			val, err := Eval(argNode, input, env)
 			if err != nil {
@@ -131,18 +147,94 @@ func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
 		}
 	}
 
-	partial := BuiltinFunction(func(args []any, focus any) (any, error) {
-		fullArgs := slices.Clone(boundArgs)
-		argIdx := 0
-		for i, placeholder := range isPlaceholder {
-			if placeholder && argIdx < len(args) {
-				fullArgs[i] = args[argIdx]
-				argIdx++
+	// jsonata-js makes a partial application a lambda with one parameter per
+	// placeholder, and applies the function it wraps without validating its
+	// arguments.
+	partial := &SignedBuiltin{
+		Fn: func(args []any, focus any, _ *Environment) (any, error) {
+			fullArgs := slices.Clone(boundArgs)
+			argIdx := 0
+			for i, placeholder := range isPlaceholder {
+				if placeholder && argIdx < len(args) {
+					fullArgs[i] = args[argIdx]
+					argIdx++
+				}
 			}
-		}
-		return callFunction(fn, fullArgs, focus, env)
-	})
+			return invokeFunction(fn, fullArgs, focus, env, false)
+		},
+		Arity: placeholders,
+	}
 	return partial, nil
+}
+
+// wrapFunctionArg wraps a function passed as an argument to a lambda so it
+// is applied with a null context, as jsonata-js applies the closure it wraps
+// function arguments in.
+func wrapFunctionArg(arg any, env *Environment) any {
+	if !isCallable(arg) {
+		return arg
+	}
+	if sb, isSigned := arg.(*SignedBuiltin); isSigned && sb.Argument != nil {
+		return arg
+	}
+	arity, known := FunctionArity(arg)
+	if !known {
+		arity = -1
+	}
+	return &SignedBuiltin{
+		Fn: func(args []any, _ any, _ *Environment) (any, error) {
+			return callFunction(arg, args, Null, env)
+		},
+		Arity:    arity,
+		Argument: arg,
+	}
+}
+
+// FunctionArity returns the number of parameters fn declares: a lambda's
+// parameters, or a builtin's, partial application's or composition's
+// jsonata-js arity. known is false for a custom function, whose arity gnata
+// cannot see.
+func FunctionArity(fn any) (arity int, known bool) {
+	switch f := fn.(type) {
+	case *Lambda:
+		return len(f.Params), true
+	case *SignedBuiltin:
+		return f.Arity, f.Arity >= 0
+	}
+	return 0, false
+}
+
+// reachesLambda reports whether calling fn can evaluate a lambda body with
+// its arguments: fn is a lambda, or a partial application, composition or
+// function argument (a SignedBuiltin without a name).
+func reachesLambda(fn any) bool {
+	switch f := fn.(type) {
+	case *Lambda:
+		return true
+	case *SignedBuiltin:
+		return f.Name == ""
+	}
+	return false
+}
+
+// isCallable reports whether v is a function value. Unlike sigSymbol, it
+// does not count a regex.
+func isCallable(v any) bool {
+	switch v.(type) {
+	case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin:
+		return true
+	}
+	return false
+}
+
+// wrappedLambda returns the lambda that fn wraps as a function argument.
+func wrappedLambda(fn any) (*Lambda, bool) {
+	sb, isSigned := fn.(*SignedBuiltin)
+	if !isSigned {
+		return nil, false
+	}
+	lambda, isLambda := sb.Argument.(*Lambda)
+	return lambda, isLambda
 }
 
 // stackOverflowError reports the recursion-depth error for the given counter,
@@ -158,10 +250,16 @@ func stackOverflowError(counter *callCounter) error {
 	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 }
 
+// callFunction applies fn as jsonata-js's apply does: focus is the call's
+// context, which fills a missing context argument before the arguments are
+// validated.
 func callFunction(fn any, args []any, focus any, env *Environment) (any, error) {
-	if fn == nil {
-		return nil, &JSONataError{Code: "T1006", Message: "attempted to invoke undefined function"}
-	}
+	return invokeFunction(fn, args, focus, env, true)
+}
+
+// invokeFunction is callFunction, checking the first call's arguments only
+// when checked is set. Tail calls are always checked.
+func invokeFunction(fn any, args []any, focus any, env *Environment, checked bool) (any, error) {
 	counter := env.callCounter()
 
 	// Trampoline loop: if the body returns a TailCall, re-invoke without
@@ -173,6 +271,17 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 		if err := env.errNow(); err != nil {
 			return nil, err
 		}
+		if fn == nil {
+			return nil, &JSONataError{Code: "T1006", Message: "attempted to invoke undefined function"}
+		}
+		if checked {
+			var returnUndefined bool
+			var err error
+			if args, returnUndefined, err = checkCallArgs(fn, args, focus); err != nil || returnUndefined {
+				return nil, err
+			}
+		}
+		checked = true
 		switch f := fn.(type) {
 		case *SignedBuiltin:
 			return f.Fn(args, focus, env)
@@ -181,16 +290,6 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 		case EnvAwareBuiltin:
 			return f(args, focus, env)
 		case *Lambda:
-			if f.Sig != "" {
-				coerced, returnUndefined, err := processCallArgs(f.ParsedSig, args, focus)
-				if err != nil {
-					return nil, err
-				}
-				if returnUndefined {
-					return nil, nil
-				}
-				args = coerced
-			}
 			counter.depth++
 			if counter.depth > counter.max {
 				counter.depth--
@@ -205,11 +304,10 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 					childEnv.Bind(param, nil)
 				}
 			}
-			bodyFocus := focus
-			if len(f.Params) == 0 && len(args) == 0 {
-				bodyFocus = f.CapturedFocus
-			}
-			result, err := Eval(f.Body, bodyFocus, childEnv)
+			outerFocus := counter.applyFocus
+			counter.applyFocus = focus
+			result, err := Eval(f.Body, f.CapturedFocus, childEnv)
+			counter.applyFocus = outerFocus
 			counter.depth--
 			if err != nil {
 				return nil, err
@@ -219,8 +317,7 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 				if iter > maxIter {
 					return nil, &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 				}
-				fn = tc.Fn
-				args = tc.Args
+				fn, args, focus = tc.Fn, tc.Args, tc.Focus
 				continue
 			}
 			return result, nil

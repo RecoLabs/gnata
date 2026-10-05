@@ -51,25 +51,22 @@ func TestBuiltinsClassifiedForDecimalPrecision(t *testing.T) {
 	}
 }
 
-// Every signature in contextSigs must name a registered builtin, and every
-// validated builtin must have a signature, so a typo cannot silently drop
-// a builtin's context argument or validation.
-func TestContextSigsAreRegistered(t *testing.T) {
+// Every builtin in jsSpecs must be registered, with its context signature
+// and validation, so a typo cannot silently drop either.
+func TestJSSpecsAreRegistered(t *testing.T) {
 	env := evaluator.NewEnvironment()
 	RegisterAll(env, evaluator.ApplyFunction)
-	for name := range contextSigs {
+	for name, spec := range jsSpecs {
 		fn, _ := env.Lookup(name)
 		sb, ok := fn.(*evaluator.SignedBuiltin)
-		if !ok || sb.Context == nil {
-			t.Fatalf("$%s is not bound with its context signature: %T", name, fn)
+		if !ok {
+			t.Fatalf("$%s is not registered: %T", name, fn)
 		}
-		if validatedBuiltins[name] != (sb.ParsedSig != nil) {
-			t.Fatalf("$%s: validated is %v, want %v", name, sb.ParsedSig != nil, validatedBuiltins[name])
+		if (spec.sig != "") != (sb.Context != nil) {
+			t.Fatalf("$%s: context signature %q, bound context %v", name, spec.sig, sb.Context)
 		}
-	}
-	for name := range validatedBuiltins {
-		if _, signed := contextSigs[name]; !signed {
-			t.Fatalf("$%s is validated but has no signature in contextSigs", name)
+		if spec.validate != (sb.ParsedSig != nil) {
+			t.Fatalf("$%s: validated is %v, want %v", name, sb.ParsedSig != nil, spec.validate)
 		}
 	}
 }

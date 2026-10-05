@@ -34,9 +34,12 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 			}
 			args = append(args, val)
 		}
-		args, returnUndefined, err := directCallArgs(fn, args, input)
-		if err != nil || returnUndefined {
-			return nil, err
+		// Like a direct call, wrap the function arguments, but not the piped
+		// value, which jsonata-js passes as it is.
+		if reachesLambda(fn) {
+			for i, arg := range args[1:] {
+				args[i+1] = wrapFunctionArg(arg, env)
+			}
 		}
 		result, err := callFunction(fn, args, input, env)
 		if err != nil {
@@ -71,27 +74,32 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 	}
 	// If piped value is itself a function, create a function composition rather
 	// than calling fn(piped). e.g. $trim ~> $uppercase creates a composed function.
+	// As in jsonata-js's λ($x){ $g($f($x)) }, $f gets one argument and a null
+	// context, and $g, a tail call, the context of the call to the composition.
 	switch piped.(type) {
 	case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin:
-		return BuiltinFunction(func(args []any, focus any) (any, error) {
-			intermediate, err := callFunction(piped, args, focus, env)
-			if err != nil {
-				return nil, err
-			}
-			intermediate = CollapseAndKeep(intermediate, false)
-			res, err := callFunction(fn, []any{intermediate}, focus, env)
-			if err != nil {
-				return nil, err
-			}
-			return CollapseAndKeep(res, false), nil
-		}), nil
+		return &SignedBuiltin{
+			Fn: func(args []any, focus any, _ *Environment) (any, error) {
+				var x any
+				if len(args) > 0 {
+					x = args[0]
+				}
+				intermediate, err := callFunction(piped, []any{x}, Null, env)
+				if err != nil {
+					return nil, err
+				}
+				intermediate = CollapseAndKeep(intermediate, false)
+				res, err := callFunction(fn, []any{intermediate}, focus, env)
+				if err != nil {
+					return nil, err
+				}
+				return CollapseAndKeep(res, false), nil
+			},
+			Arity: 1,
+		}, nil
 	}
 	// jsonata-js applies a bare function reference with a null context.
-	args, returnUndefined, err := directCallArgs(fn, []any{piped}, Null)
-	if err != nil || returnUndefined {
-		return nil, err
-	}
-	result, err := callFunction(fn, args, input, env)
+	result, err := callFunction(fn, []any{piped}, Null, env)
 	if err != nil {
 		return nil, err
 	}

@@ -185,7 +185,10 @@ Custom functions implement the `CustomFunc` signature:
 type CustomFunc func(args []any, focus any) (any, error)
 ```
 
-Where `args` are the evaluated arguments passed by the JSONata expression and `focus` is the current context value.
+Where `args` are the evaluated arguments passed by the JSONata expression and `focus` is the current context value. `focus` follows jsonata-js:
+
+- it is `nil` when the function is passed as an argument, to `$map` or to a lambda, or applied by a bare `x ~> $f`;
+- a call in tail position of a lambda body gets the context of the call that entered the lambda.
 
 ### Registration
 

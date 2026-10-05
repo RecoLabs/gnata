@@ -174,7 +174,7 @@ func matchWithCustomMatcher(s string, matcherFn any, limit int, evalFn EvalFn, e
 // the result as jsonata-js's evaluateMatcher does: a falsy result means no
 // match, and anything else must be a match structure.
 func callMatcher(fn any, args []any, evalFn EvalFn, env *evaluator.Environment) (any, error) {
-	res, err := evalFn(fn, args, nil, env)
+	res, err := evalFn(fn, args, env)
 	if err != nil || isFalsyJS(res) {
 		return nil, err
 	}
@@ -187,7 +187,7 @@ func callMatcher(fn any, args []any, evalFn EvalFn, env *evaluator.Environment) 
 // ── $replace ──────────────────────────────────────────────────────────────────
 
 func makeFnReplace(evalFn EvalFn) evaluator.EnvAwareBuiltin {
-	return func(args []any, focus any, env *evaluator.Environment) (any, error) {
+	return func(args []any, _ any, env *evaluator.Environment) (any, error) {
 		if len(args) < 1 {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$replace: argument 1 must be a string"}
 		}
@@ -227,7 +227,7 @@ func makeFnReplace(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 				if compErr != nil {
 					return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("regex error: %v", compErr)}
 				}
-				return replaceWithFn(s, literalRe, args[2], limit, evalFn, focus, env)
+				return replaceWithFn(s, literalRe, args[2], limit, evalFn, env)
 			}
 
 		case map[string]any:
@@ -238,7 +238,7 @@ func makeFnReplace(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			if repl, ok := args[2].(string); ok {
 				return replaceRegexString(s, re, repl, limit)
 			}
-			return replaceWithFn(s, re, args[2], limit, evalFn, focus, env)
+			return replaceWithFn(s, re, args[2], limit, evalFn, env)
 
 		default:
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$replace: argument 2 must be a string or regex"}
@@ -349,9 +349,9 @@ func replaceRegexString(s string, re *evaluator.Regex, repl string, limit int) (
 	})
 }
 
-func replaceWithFn(s string, re *evaluator.Regex, fn any, limit int, evalFn EvalFn, focus any, env *evaluator.Environment) (any, error) {
+func replaceWithFn(s string, re *evaluator.Regex, fn any, limit int, evalFn EvalFn, env *evaluator.Environment) (any, error) {
 	return replaceRegex(s, re, limit, func(m *evaluator.Match) (string, error) {
-		val, err := evalFn(fn, []any{replacerMatchObject(s, m)}, focus, env)
+		val, err := evalFn(fn, []any{replacerMatchObject(s, m)}, env)
 		if err != nil {
 			return "", err
 		}
