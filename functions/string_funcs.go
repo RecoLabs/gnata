@@ -53,6 +53,7 @@ func stringify(args []any, focus any, prec int) (any, error) {
 }
 
 func valueToString(v any, prettify bool, prec int) (string, error) {
+	v = evaluator.CollapseSequences(v)
 	if evaluator.IsNull(v) {
 		return parser.NullJSON, nil
 	}
@@ -81,8 +82,6 @@ func valueToString(v any, prettify bool, prec int) (string, error) {
 		return "", nil // undefined → caller returns nil
 	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
 		return "", nil // functions serialize as empty string in JSONata
-	case *evaluator.Sequence:
-		return valueToString(evaluator.CollapseSequence(val), prettify, prec)
 	default:
 		out, err := evaluator.AppendJSON(nil, sanitizeForJSON(v, prec))
 		if err != nil {
@@ -140,12 +139,11 @@ func (s sanitizeSlot) fill(v any) {
 // sanitizeValue sanitizes v. Of a copied object or array it fills in the
 // values that are neither, and appends slots for the rest to pending.
 func sanitizeValue(v any, prec int, pending []sanitizeSlot) (any, []sanitizeSlot) {
+	v = evaluator.CollapseSequences(v)
 	if out, ok := sanitizeLeaf(v, prec); ok {
 		return out, pending
 	}
 	switch val := v.(type) {
-	case *evaluator.Sequence:
-		return sanitizeValue(evaluator.CollapseSequence(val), prec, pending)
 	case *evaluator.OrderedMap:
 		out := evaluator.NewOrderedMapWithCapacity(val.Len())
 		for _, k := range val.Keys() {
