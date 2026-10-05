@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 
 	"github.com/recolabs/gnata/internal/decimal"
 	"github.com/recolabs/gnata/internal/parser"
@@ -187,18 +187,6 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 		return nil, nil
 	}
 
-	// Try numeric indexing: evaluate the right-hand side with a representative
-	// context (the first item, if available) to avoid null-context errors.
-	rightCtx := items[0]
-	rightVal, err := Eval(node.Right, rightCtx, env)
-	if err != nil {
-		// If the predicate errors with item context, try with original input.
-		rightVal, err = Eval(node.Right, input, env)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	wrapResult := func(v any) any {
 		if !keepArray {
 			return v
@@ -212,26 +200,13 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 		return []any{v}
 	}
 
-	if i, ok, err := subscriptIndex(rightVal, len(items)); err != nil {
-		return nil, err
-	} else if ok {
-		if i < 0 || i >= len(items) {
-			return nil, nil
-		}
-		item := items[i]
-		if item == nil {
-			item = Null
+	if node.Right.Type == parser.NodeNumber {
+		item, err := pickItem(node.Right, items, env)
+		if err != nil || item == nil {
+			return nil, err
 		}
 		return wrapResult(item), nil
 	}
-
-	// Array index: when subscript evaluates to an array of all-numeric indices,
-	// select multiple elements. Non-numeric arrays fall through to predicate filter.
-	if result, ok, err := selectByIndices(rightVal, items); err != nil || ok {
-		return result, err
-	}
-
-	// Predicate filter: keep items where right evaluates to truthy.
 	indexVar := ""
 	if node.Left != nil {
 		indexVar = node.Left.Index
@@ -240,15 +215,36 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	return wrapResult(filtered), nil
+	return wrapResult(CollapseSequence(filtered)), nil
 }
 
-// filterByPredicate keeps items where predicate evaluates to truthy, binding
-// %% → parent (for the % operator) and optionally indexVar to the loop position.
-func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar string, env *Environment) (any, error) {
+// pickItem applies a number-literal subscript, which jsonata-js resolves
+// without evaluating it per item.
+func pickItem(index *parser.Node, items []any, env *Environment) (any, error) {
+	i, _, err := subscriptIndex(evalNumber(index, env), len(items))
+	if err != nil || i < 0 || i >= len(items) {
+		return nil, err
+	}
+	if item := items[i]; item != nil {
+		return item, nil
+	}
+	return Null, nil
+}
+
+// filterByPredicate evaluates predicate against each item and keeps it as
+// filterMatches says. It binds %% → parent (for the % operator) and
+// optionally indexVar to the item's position.
+func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar string, env *Environment) (*Sequence, error) {
 	seq := CreateSequence()
 	filterEnv := NewChildEnvironment(env)
 	filterEnv.Bind(parentKey, parent)
+	if contextFree(predicate, indexVar) {
+		res, err := Eval(predicate, items[0], filterEnv)
+		if err != nil {
+			return nil, err
+		}
+		return filterConstant(res, items, env)
+	}
 	for i, item := range items {
 		if err := env.Err(); err != nil {
 			return nil, err
@@ -256,13 +252,78 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 		if indexVar != "" {
 			filterEnv.Bind(indexVar, float64(i))
 		}
-		if val, err := Eval(predicate, item, filterEnv); err != nil {
+		res, err := Eval(predicate, item, filterEnv)
+		if err != nil {
 			return nil, err
-		} else if ToBoolean(val) {
+		}
+		matches, err := filterMatches(res, i, len(items), len(seq.Values), env)
+		if err != nil {
+			return nil, err
+		}
+		for range matches {
 			seq.Values = append(seq.Values, item)
 		}
 	}
-	return CollapseSequence(seq), nil
+	return seq, nil
+}
+
+// filterConstant applies a predicate result that is the same for every
+// item, selecting the same items filterByPredicate would.
+func filterConstant(res any, items []any, env *Environment) (*Sequence, error) {
+	resolved, positional, err := selectedPositions(res, len(items))
+	switch {
+	case err != nil:
+		return nil, err
+	case !positional:
+		if ToBoolean(res) {
+			return &Sequence{Values: slices.Clone(items)}, nil
+		}
+		return CreateSequence(), nil
+	}
+	if len(resolved) > len(items) {
+		if err := env.CheckSequence(len(resolved)); err != nil {
+			return nil, err
+		}
+	}
+	slices.Sort(resolved)
+	seq := CreateSequence()
+	for _, i := range resolved {
+		if i >= 0 && i < len(items) {
+			seq.Values = append(seq.Values, items[i])
+		}
+	}
+	return seq, nil
+}
+
+// contextFree reports whether predicate reads neither its item nor its
+// position, so it has the same value for every item: filterByPredicate then
+// evaluates it once, and a computed index such as $a[$i] takes O(1).
+func contextFree(predicate *parser.Node, indexVar string) bool {
+	if predicate == nil {
+		return true
+	}
+	if predicate.Group != nil || predicate.Focus != "" || predicate.Index != "" {
+		return false
+	}
+	switch predicate.Type {
+	case parser.NodeNumber, parser.NodeString, parser.NodeValue:
+		return true
+	case parser.NodeVariable:
+		return predicate.Value != "" && predicate.Value != indexVar
+	case parser.NodeBinary:
+		return contextFree(predicate.Left, indexVar) && contextFree(predicate.Right, indexVar)
+	case parser.NodeCondition:
+		return contextFree(predicate.Condition, indexVar) && contextFree(predicate.Then, indexVar) &&
+			contextFree(predicate.Else, indexVar)
+	case parser.NodeUnary:
+		switch predicate.Value {
+		case "-":
+			return contextFree(predicate.Expression, indexVar)
+		case "[":
+			return !slices.ContainsFunc(predicate.Expressions, func(e *parser.Node) bool { return !contextFree(e, indexVar) })
+		}
+	}
+	return false
 }
 
 // evalSubscriptLeft evaluates the left side of a subscript and normalizes
@@ -299,32 +360,6 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 		items = []any{left}
 	}
 	return left, items, nil
-}
-
-// selectByIndices handles array-of-indices subscript: when rightVal is []any
-// of all-numeric values, it selects the corresponding elements from items.
-// ok is false when an index is not a number, so the caller falls through to
-// the predicate filter; an infinite index raises D1001.
-func selectByIndices(rightVal any, items []any) (selected any, ok bool, err error) {
-	indexArr, isArr := rightVal.([]any)
-	if !isArr {
-		return nil, false, nil
-	}
-	indices, ok, err := resolveIndices(indexArr, len(items))
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	sort.Ints(indices)
-	result := make([]any, 0, len(indices))
-	for _, i := range indices {
-		if i >= 0 && i < len(items) {
-			result = append(result, items[i])
-		}
-	}
-	if len(result) == 0 {
-		return nil, true, nil
-	}
-	return result, true, nil
 }
 
 // resolveIndices resolves every value of an index array with subscriptIndex.

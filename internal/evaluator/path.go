@@ -1482,17 +1482,9 @@ func filterTupleStream(predicate *parser.Node, stream []pathCtx, contextOf tuple
 		if err != nil {
 			return nil, err
 		}
-		matches, positional, err := positionMatches(res, pos, len(stream))
+		matches, err := filterMatches(res, pos, len(stream), len(kept), ctx.env)
 		if err != nil {
 			return nil, err
-		}
-		if !positional && ToBoolean(res) {
-			matches = 1
-		}
-		if len(kept)+matches > len(stream) {
-			if err := ctx.env.CheckSequence(len(kept) + matches); err != nil {
-				return nil, err
-			}
 		}
 		for range matches {
 			kept = append(kept, ctx)
@@ -1501,26 +1493,54 @@ func filterTupleStream(predicate *parser.Node, stream []pathCtx, contextOf tuple
 	return kept, nil
 }
 
+// filterMatches returns how many times a filter keeps the item at pos for
+// predicate result res, as jsonata-js evaluateFilter does: once per
+// position a number or array of numbers selects, or else once if res is
+// truthy. kept is the number of items already kept, checked against the
+// sequence limit when repeated positions grow the result past length.
+func filterMatches(res any, pos, length, kept int, env *Environment) (int, error) {
+	matches, positional, err := positionMatches(res, pos, length)
+	if err != nil {
+		return 0, err
+	}
+	if !positional && ToBoolean(res) {
+		matches = 1
+	}
+	if kept+matches > length {
+		if err := env.CheckSequence(kept + matches); err != nil {
+			return 0, err
+		}
+	}
+	return matches, nil
+}
+
 // positionMatches counts how many of the positions a predicate result
 // selects equal pos; positional is false unless the result is a number or a
 // non-empty array of numbers.
 func positionMatches(res any, pos, length int) (matches int, positional bool, _ error) {
-	indices, isArr := res.([]any)
-	if !isArr {
-		indices = []any{res}
-	} else if len(indices) == 0 {
-		return 0, false, nil
-	}
-	resolved, ok, err := resolveIndices(indices, length)
-	if err != nil || !ok {
-		return 0, false, err
-	}
+	resolved, positional, err := selectedPositions(res, length)
 	for _, i := range resolved {
 		if i == pos {
 			matches++
 		}
 	}
-	return matches, true, nil
+	return matches, positional, err
+}
+
+// selectedPositions resolves the positions a predicate result selects (see
+// positionMatches) with subscriptIndex.
+func selectedPositions(res any, length int) (resolved []int, positional bool, _ error) {
+	indices, isArr := AsArray(res)
+	if !isArr {
+		indices = []any{res}
+	} else if len(indices) == 0 {
+		return nil, false, nil
+	}
+	resolved, ok, err := resolveIndices(indices, length)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return resolved, true, nil
 }
 
 // blockPathSteps returns the path steps of a block holding a single path,

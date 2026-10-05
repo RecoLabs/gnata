@@ -353,6 +353,12 @@ var subscriptCases = []exprCase{
 	{expr: `a#$i[[0,"x",1/0]]`, data: `{"a":[1,2,3]}`, code: "D1001"},
 	{expr: `a#$i[[0,"x"]]`, data: `{"a":[1,2,3]}`, want: `[1,2,3]`},
 	{expr: `$boolean(0/0)`, want: `false`},
+	{expr: `[[1,2],[3]][[0]]`, want: `[1,2]`},
+	{expr: `n[[0]]`, data: `{"n":[[2,1],[3,4]]}`, want: `[2,1]`},
+	{expr: `a[b]`, data: `{"a":[{"b":1},{"b":0}]}`, want: undefined},
+	{expr: `a[b-1]`, data: `{"a":[{"b":1},{"b":0}]}`, want: `[{"b":1},{"b":0}]`},
+	{expr: `[1,2,3][$ > 1 ? 0 : 1]`, want: undefined},
+	{expr: `[1,2,3][[2,0,0]]`, want: `[1,1,3]`},
 }
 
 var operatorCases = []exprCase{
