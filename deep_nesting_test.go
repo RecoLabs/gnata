@@ -85,6 +85,7 @@ func TestDeepNesting(t *testing.T) {
 			desc: "transform an object", expr: `$length($string($ ~> |$|{"b": 1}|))`, data: deepObject(),
 			want: float64(len(objectJSON) + len(`,"b":1`)),
 		},
+		{desc: "boolean of an array", expr: "$boolean($)", data: deepArrayOf(0.0), want: false},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {

@@ -189,42 +189,82 @@ func IsNumeric(v any) bool {
 
 // ToBoolean implements JSONata boolean casting rules.
 func ToBoolean(v any) bool {
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	truthy, items := booleanOf(v)
+	if items == nil {
+		return truthy
+	}
+	return anyTruthy(items)
+}
+
+// booleanOf returns v's boolean, or the items of an array, which is true when
+// any of them is.
+func booleanOf(v any) (truthy bool, items []any) {
+	v = CollapseSequences(v)
 	if v == nil || IsNull(v) {
-		return false
+		return false, nil
 	}
 	switch val := v.(type) {
 	case bool:
-		return val
+		return val, nil
 	case string:
-		return val != ""
+		return val != "", nil
 	case float64:
-		return val != 0 && !math.IsNaN(val)
+		return val != 0 && !math.IsNaN(val), nil
 	case json.Number:
 		f, err := val.Float64()
-		return err == nil && f != 0
+		return err == nil && f != 0, nil
 	case *OrderedMap:
-		return val.Len() > 0
+		return val.Len() > 0, nil
 	case map[string]any:
-		return len(val) > 0
+		return len(val) > 0, nil
 	case []any:
-		return arrayToBoolean(val)
+		return false, val
 	case ConsArray:
-		return arrayToBoolean(val)
-	case *Sequence:
-		return ToBoolean(CollapseSequence(val))
+		return false, val
+	}
+	return false, nil
+}
+
+// anyTruthy reports whether any of items, or of the items of an array among
+// them, is truthy.
+func anyTruthy(items []any) bool {
+	for i, v := range items {
+		truthy, nested := booleanOf(v)
+		if nested != nil {
+			return anyTruthyNested(items[i+1:], nested)
+		}
+		if truthy {
+			return true
+		}
 	}
 	return false
 }
 
-func arrayToBoolean(val []any) bool {
-	switch len(val) {
-	case 0:
-		return false
-	case 1:
-		return ToBoolean(val[0])
-	default:
-		return slices.ContainsFunc(val, ToBoolean)
+// anyTruthyNested continues anyTruthy with the items of a nested array and
+// then the rest. It walks nested arrays from an explicit stack rather than
+// by recursion, so deep nesting cannot overflow the goroutine stack.
+func anyTruthyNested(rest, nested []any) bool {
+	var buf [8][]any
+	stack := append(buf[:0], rest, nested)
+	for len(stack) > 0 {
+		top := &stack[len(stack)-1]
+		if len(*top) == 0 {
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		v := (*top)[0]
+		*top = (*top)[1:]
+		truthy, nested := booleanOf(v)
+		if nested != nil {
+			stack = append(stack, nested)
+		} else if truthy {
+			return true
+		}
 	}
+	return false
 }
 
 func normalizeNumber(v any) any {
