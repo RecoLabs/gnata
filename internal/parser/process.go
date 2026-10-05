@@ -1,7 +1,8 @@
 package parser
 
 // ProcessAST runs the post-processing pass over the raw Pratt-parsed tree,
-// transforming it into a form suitable for evaluation.
+// transforming it into a form suitable for evaluation, then sets every
+// transform's Depth.
 //
 // Current transformations:
 //   - Flattens nested binary(".") nodes into path nodes with Steps slices.
@@ -10,6 +11,15 @@ package parser
 //   - Attaches group expressions from path-step binary("{") to the path.
 //   - Recursively processes all child nodes.
 func ProcessAST(node *Node) (*Node, error) {
+	node, err := processNode(node)
+	if err != nil {
+		return nil, err
+	}
+	markTransformDepths(node)
+	return node, nil
+}
+
+func processNode(node *Node) (*Node, error) {
 	if node == nil {
 		return nil, nil
 	}
@@ -54,11 +64,11 @@ func ProcessAST(node *Node) (*Node, error) {
 		if node.Group != nil {
 			var err error
 			for i, pair := range node.Group.Pairs {
-				node.Group.Pairs[i][0], err = ProcessAST(pair[0])
+				node.Group.Pairs[i][0], err = processNode(pair[0])
 				if err != nil {
 					return nil, err
 				}
-				node.Group.Pairs[i][1], err = ProcessAST(pair[1])
+				node.Group.Pairs[i][1], err = processNode(pair[1])
 				if err != nil {
 					return nil, err
 				}
@@ -102,11 +112,11 @@ func processDotBinary(node *Node) (*Node, error) {
 	// Process group-by key/value pairs so nested dot expressions within them are resolved.
 	if path.Group != nil {
 		for i, pair := range path.Group.Pairs {
-			path.Group.Pairs[i][0], err = ProcessAST(pair[0])
+			path.Group.Pairs[i][0], err = processNode(pair[0])
 			if err != nil {
 				return nil, err
 			}
-			path.Group.Pairs[i][1], err = ProcessAST(pair[1])
+			path.Group.Pairs[i][1], err = processNode(pair[1])
 			if err != nil {
 				return nil, err
 			}
@@ -120,7 +130,7 @@ func processDotBinary(node *Node) (*Node, error) {
 func collectPathSteps(node *Node) ([]*Node, error) {
 	if node.Type != NodeBinary || node.Value != "." {
 		// Leaf step — process it.
-		processed, err := ProcessAST(node)
+		processed, err := processNode(node)
 		if err != nil {
 			return nil, err
 		}
@@ -182,11 +192,11 @@ func promoteQuotedPathNames(n *Node) {
 // processBinaryChildren recursively processes a non-dot binary node.
 func processBinaryChildren(node *Node) (*Node, error) {
 	var err error
-	node.Left, err = ProcessAST(node.Left)
+	node.Left, err = processNode(node.Left)
 	if err != nil {
 		return nil, err
 	}
-	node.Right, err = ProcessAST(node.Right)
+	node.Right, err = processNode(node.Right)
 	if err != nil {
 		return nil, err
 	}
@@ -197,19 +207,19 @@ func processBinaryChildren(node *Node) (*Node, error) {
 func processUnaryChildren(node *Node) (*Node, error) {
 	var err error
 	if node.Expression != nil {
-		node.Expression, err = ProcessAST(node.Expression)
+		node.Expression, err = processNode(node.Expression)
 		if err != nil {
 			return nil, err
 		}
 	}
 	for i, expr := range node.Expressions {
-		node.Expressions[i], err = ProcessAST(expr)
+		node.Expressions[i], err = processNode(expr)
 		if err != nil {
 			return nil, err
 		}
 	}
 	for i, n := range node.LHS {
-		node.LHS[i], err = ProcessAST(n)
+		node.LHS[i], err = processNode(n)
 		if err != nil {
 			return nil, err
 		}
@@ -221,7 +231,7 @@ func processUnaryChildren(node *Node) (*Node, error) {
 func processBlockChildren(node *Node) (*Node, error) {
 	var err error
 	for i, expr := range node.Expressions {
-		node.Expressions[i], err = ProcessAST(expr)
+		node.Expressions[i], err = processNode(expr)
 		if err != nil {
 			return nil, err
 		}
@@ -252,12 +262,12 @@ func isUnaryArrayCtor(n *Node) bool {
 // processFunctionChildren recursively processes a function/partial node.
 func processFunctionChildren(node *Node) (*Node, error) {
 	var err error
-	node.Procedure, err = ProcessAST(node.Procedure)
+	node.Procedure, err = processNode(node.Procedure)
 	if err != nil {
 		return nil, err
 	}
 	for i, arg := range node.Arguments {
-		node.Arguments[i], err = ProcessAST(arg)
+		node.Arguments[i], err = processNode(arg)
 		if err != nil {
 			return nil, err
 		}
@@ -268,7 +278,7 @@ func processFunctionChildren(node *Node) (*Node, error) {
 // processLambdaChildren recursively processes a lambda node.
 func processLambdaChildren(node *Node) (*Node, error) {
 	var err error
-	node.Body, err = ProcessAST(node.Body)
+	node.Body, err = processNode(node.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -279,16 +289,16 @@ func processLambdaChildren(node *Node) (*Node, error) {
 // processConditionChildren recursively processes a condition node.
 func processConditionChildren(node *Node) (*Node, error) {
 	var err error
-	node.Condition, err = ProcessAST(node.Condition)
+	node.Condition, err = processNode(node.Condition)
 	if err != nil {
 		return nil, err
 	}
-	node.Then, err = ProcessAST(node.Then)
+	node.Then, err = processNode(node.Then)
 	if err != nil {
 		return nil, err
 	}
 	if node.Else != nil {
-		node.Else, err = ProcessAST(node.Else)
+		node.Else, err = processNode(node.Else)
 		if err != nil {
 			return nil, err
 		}
@@ -299,11 +309,11 @@ func processConditionChildren(node *Node) (*Node, error) {
 // processBindChildren recursively processes a bind node.
 func processBindChildren(node *Node) (*Node, error) {
 	var err error
-	node.Left, err = ProcessAST(node.Left)
+	node.Left, err = processNode(node.Left)
 	if err != nil {
 		return nil, err
 	}
-	node.Right, err = ProcessAST(node.Right)
+	node.Right, err = processNode(node.Right)
 	if err != nil {
 		return nil, err
 	}
@@ -313,16 +323,16 @@ func processBindChildren(node *Node) (*Node, error) {
 // processTransformChildren recursively processes a transform node.
 func processTransformChildren(node *Node) (*Node, error) {
 	var err error
-	node.Pattern, err = ProcessAST(node.Pattern)
+	node.Pattern, err = processNode(node.Pattern)
 	if err != nil {
 		return nil, err
 	}
-	node.Update, err = ProcessAST(node.Update)
+	node.Update, err = processNode(node.Update)
 	if err != nil {
 		return nil, err
 	}
 	if node.Delete != nil {
-		node.Delete, err = ProcessAST(node.Delete)
+		node.Delete, err = processNode(node.Delete)
 		if err != nil {
 			return nil, err
 		}
@@ -333,12 +343,12 @@ func processTransformChildren(node *Node) (*Node, error) {
 // processSortChildren recursively processes a sort node.
 func processSortChildren(node *Node) (*Node, error) {
 	var err error
-	node.Left, err = ProcessAST(node.Left)
+	node.Left, err = processNode(node.Left)
 	if err != nil {
 		return nil, err
 	}
 	for i, term := range node.Terms {
-		node.Terms[i].Expression, err = ProcessAST(term.Expression)
+		node.Terms[i].Expression, err = processNode(term.Expression)
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +360,7 @@ func processSortChildren(node *Node) (*Node, error) {
 func processPathChildren(node *Node) (*Node, error) {
 	var err error
 	for i, step := range node.Steps {
-		node.Steps[i], err = ProcessAST(step)
+		node.Steps[i], err = processNode(step)
 		if err != nil {
 			return nil, err
 		}
@@ -362,11 +372,11 @@ func processPathChildren(node *Node) (*Node, error) {
 	// Process group-by key/value pairs.
 	if node.Group != nil {
 		for i, pair := range node.Group.Pairs {
-			node.Group.Pairs[i][0], err = ProcessAST(pair[0])
+			node.Group.Pairs[i][0], err = processNode(pair[0])
 			if err != nil {
 				return nil, err
 			}
-			node.Group.Pairs[i][1], err = ProcessAST(pair[1])
+			node.Group.Pairs[i][1], err = processNode(pair[1])
 			if err != nil {
 				return nil, err
 			}

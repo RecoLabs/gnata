@@ -23,14 +23,14 @@ const inlineBindingCap = 2
 // callCounter tracks the current recursive call depth across all child environments.
 // A pointer is shared so all nested envs increment/decrement the same counter.
 type callCounter struct {
-	// int32 keeps the struct in the same allocation size class as before the
-	// deadline and context fields were added; it is allocated per evaluation.
-	depth        int32
-	max          int32
-	maxSequence  int32 // 0 = unlimited; guardrail set via WithSequence (error D2015)
-	evalDepth    int16 // $eval nesting, capped at a small constant by IncrEvalDepth's caller
-	stackIsLimit bool  // true when max was set via the WithStack guardrail (error D1011 instead of U1001)
-	hasNow       bool  // nowMillis has been captured
+	// The field widths and the packed flags keep the struct at 64 bytes, an
+	// allocation size class; it is allocated per evaluation.
+	depth       int32
+	max         int32
+	maxSequence int32  // 0 = unlimited; guardrail set via WithSequence (error D2015)
+	nested      uint16 // nesting budget spent by calls in progress, see enterNested
+	evalDepth   int8   // $eval nesting, capped by IncrEvalDepth
+	flags       counterFlags
 
 	// nowMillis is the evaluation's timestamp, captured on first use so every
 	// $now, $millis and $toMillis call in one evaluation sees the same instant.
@@ -48,6 +48,39 @@ type callCounter struct {
 	// applyFocus is the context of the call that entered the lambda being
 	// evaluated, which a call in tail position of its body takes.
 	applyFocus any
+}
+
+// counterFlags are a callCounter's booleans, packed into one byte.
+type counterFlags uint8
+
+const (
+	stackIsLimit counterFlags = 1 << iota // max was set via the WithStack guardrail (error D1011 instead of U1001)
+	hasNow                                // nowMillis has been captured
+)
+
+// maxNestedCalls bounds the nesting budget of calls in progress into partial
+// applications, compositions, function-argument wrappers and transforms.
+// Each calls further functions on the Go stack and the call depth does not
+// count it, so a long chain of them would overflow the Go stack, which cannot
+// be recovered. It is fixed, unlike the call depth WithStack sets.
+const maxNestedCalls = 50_000
+
+// enterNested spends cost of the nesting budget on a call; leaveNested
+// returns it when the call ends.
+func (c *callCounter) enterNested(cost int) error {
+	if int(c.nested)+cost > maxNestedCalls {
+		return &JSONataError{
+			Code:    "U1001",
+			Message: fmt.Sprintf("stack overflow error: function values nested more than %d deep", maxNestedCalls),
+		}
+	}
+	c.nested += uint16(cost)
+	return nil
+}
+
+// leaveNested ends a call counted by enterNested with the same cost.
+func (c *callCounter) leaveNested(cost int) {
+	c.nested -= uint16(cost)
 }
 
 type deadlineState struct {
@@ -195,11 +228,12 @@ func (e *Environment) ResetCallCounter() {
 }
 
 // IncrEvalDepth increments the $eval nesting counter and returns an error if
-// the maximum depth is exceeded. Must be paired with DecrEvalDepth via defer.
+// the maximum depth is exceeded; a maximum above 126 counts as 126. Must be
+// paired with DecrEvalDepth via defer.
 func (e *Environment) IncrEvalDepth(maxDepth int) error {
 	c := e.callCounter()
 	c.evalDepth++
-	if int(c.evalDepth) > maxDepth {
+	if int(c.evalDepth) > min(maxDepth, math.MaxInt8-1) {
 		c.evalDepth--
 		return &JSONataError{Code: "D3121", Message: "$eval: maximum nesting depth exceeded"}
 	}
@@ -210,8 +244,9 @@ func (e *Environment) IncrEvalDepth(maxDepth int) error {
 // for every call within one evaluation as jsonata-js requires.
 func (e *Environment) Now() time.Time {
 	c := e.callCounter()
-	if !c.hasNow {
-		c.nowMillis, c.hasNow = time.Now().UnixMilli(), true
+	if c.flags&hasNow == 0 {
+		c.nowMillis = time.Now().UnixMilli()
+		c.flags |= hasNow
 	}
 	return time.UnixMilli(c.nowMillis).UTC()
 }
@@ -227,7 +262,7 @@ func (e *Environment) DecrEvalDepth() {
 func (e *Environment) SetMaxStackDepth(n int) {
 	c := e.callCounter()
 	c.max = clampInt32(n)
-	c.stackIsLimit = true
+	c.flags |= stackIsLimit
 }
 
 // SetMaxSequence sets the guardrail sequence-length limit (0 = unlimited).
@@ -416,6 +451,12 @@ type SignedBuiltin struct {
 	Context   *ContextSig        // nil: no parameter defaults to the context
 	Arity     int                // parameters of the jsonata-js implementation, for HOF callbacks; -1 if unknown
 	Argument  any                // a function argument this applies with a null context, or nil
+}
+
+// isWrapper reports whether sb is a partial application, composition or
+// function-argument wrapper, which calls the function it wraps.
+func (sb *SignedBuiltin) isWrapper() bool {
+	return sb.Name == ""
 }
 
 // Lambda represents a user-defined function (lambda expression).

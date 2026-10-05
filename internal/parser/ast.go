@@ -44,12 +44,13 @@ type Node struct {
 	Signature *Signature // parsed signature; nil if absent
 
 	// Metadata flags set by processAST
-	KeepArray          bool // step has [] suffix → force array output
-	KeepSingletonArray bool // path has at least one keepArray step
-	ConsArray          bool // step is an array constructor used as a path step
-	Thunk              bool // call is trampolined as a tail call
-	TailContext        bool // call is a jsonata-js tail call, taking the entering call's context
-	Tuple              bool // step participates in a tuple stream
+	KeepArray          bool   // step has [] suffix → force array output
+	KeepSingletonArray bool   // path has at least one keepArray step
+	ConsArray          bool   // step is an array constructor used as a path step
+	Thunk              bool   // call is trampolined as a tail call
+	TailContext        bool   // call is a jsonata-js tail call, taking the entering call's context
+	Tuple              bool   // step participates in a tuple stream
+	Depth              uint16 // type="transform": how deeply evaluating its clauses recurses, saturating
 
 	// Focus / index variable names (set by @ and # operators)
 	Focus string // variable name bound by @

@@ -212,7 +212,7 @@ func reachesLambda(fn any) bool {
 	case *Lambda:
 		return true
 	case *SignedBuiltin:
-		return f.Name == ""
+		return f.isWrapper()
 	}
 	return false
 }
@@ -241,13 +241,24 @@ func wrappedLambda(fn any) (*Lambda, bool) {
 // using D1011 when the limit came from the WithStack guardrail and the
 // built-in U1001 otherwise.
 func stackOverflowError(counter *callCounter) error {
-	if counter.stackIsLimit {
+	if counter.flags&stackIsLimit != 0 {
 		return &JSONataError{
 			Code:    "D1011",
 			Message: fmt.Sprintf("Stack overflow error: stack depth exceeded %d. Check for non-terminating recursive function", counter.max),
 		}
 	}
 	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
+}
+
+// callWrapper calls a partial application, composition or argument wrapper,
+// which calls the function it wraps on the Go stack.
+func callWrapper(f *SignedBuiltin, args []any, focus any, env *Environment, counter *callCounter) (any, error) {
+	if err := counter.enterNested(1); err != nil {
+		return nil, err
+	}
+	result, err := f.Fn(args, focus, env)
+	counter.leaveNested(1)
+	return result, err
 }
 
 // callFunction applies fn as jsonata-js's apply does: focus is the call's
@@ -284,7 +295,10 @@ func invokeFunction(fn any, args []any, focus any, env *Environment, checked boo
 		checked = true
 		switch f := fn.(type) {
 		case *SignedBuiltin:
-			return f.Fn(args, focus, env)
+			if !f.isWrapper() {
+				return f.Fn(args, focus, env)
+			}
+			return callWrapper(f, args, focus, env, counter)
 		case BuiltinFunction:
 			return f(args, focus)
 		case EnvAwareBuiltin:
