@@ -16,8 +16,9 @@ import (
 // parseWithPicture parses input against a picture string into epoch
 // milliseconds, NaN outside the range of a JavaScript Date as in jsonata-js.
 // It reports false when the input does not match the picture; defaults for
-// unspecified components come from now, the evaluation's timestamp.
-func parseWithPicture(input, picture string, now time.Time) (millis float64, matched bool, err error) {
+// unspecified components come from now, the evaluation's timestamp. stop
+// reports why evaluation must end, such as a cancelled context.
+func parseWithPicture(input, picture string, now time.Time, stop func() error) (millis float64, matched bool, err error) {
 	parts, err := parseDatePicture(picture)
 	if err != nil {
 		return 0, false, err
@@ -27,7 +28,9 @@ func parseWithPicture(input, picture string, now time.Time) (millis float64, mat
 		if !part.isMarker {
 			continue
 		}
-		if isNamePresentation(m.presentation) && !strings.ContainsRune("MxFPZzf", rune(m.component)) {
+		// jsonata-js matches [C] and [E] as names whatever their presentation.
+		if (isNamePresentation(m.presentation) && !strings.ContainsRune("MxFPZzf", rune(m.component))) ||
+			m.component == 'C' || m.component == 'E' {
 			return 0, false, &evaluator.JSONataError{
 				Code:    "D3133",
 				Message: fmt.Sprintf("$toMillis: the 'name' modifier can only be applied to months and days, not %c", m.component),
@@ -42,14 +45,14 @@ func parseWithPicture(input, picture string, now time.Time) (millis float64, mat
 	}
 	setParseWidths(parts)
 
-	match := newPictureMatch(parts, input)
+	match := newPictureMatch(parts, input, stop)
 	if !match.from(0, 0) {
-		return 0, false, nil
+		return 0, false, match.err
 	}
 	components := map[byte]int{}
 	for i, part := range parts {
-		if c := part.marker.component; part.isMarker && c != 'C' && c != 'E' {
-			components[c] = match.values[i]
+		if part.isMarker {
+			components[part.marker.component] = match.values[i]
 		}
 	}
 	if len(components) == 0 {
@@ -59,42 +62,43 @@ func parseWithPicture(input, picture string, now time.Time) (millis float64, mat
 	return millis, err == nil, err
 }
 
-// maxYieldRunes caps how many runes a marker gives back to the parts after
-// it, beyond their fixed length. It covers any word or numeral that can
-// follow a marker while keeping the search linear in the input: each retry
-// re-parses the rest.
-const maxYieldRunes = 64
+// matchStepsPerRune bounds the runes a match may parse in total, per rune of
+// input and part of picture, so that backtracking stays linear in both; a
+// match that runs out reads as no match (README known difference #16).
+const matchStepsPerRune = 256
 
 // pictureMatch matches input against a picture's parts as jsonata-js's
 // anchored regex does: each marker reads as much as it can, then gives back
-// one rune at a time until the parts after it match, up to maxYieldRunes more
-// than the fixed length of those parts. failed memoizes the (part, position)
-// pairs that cannot match.
+// one rune at a time until the parts after it match. failed memoizes the
+// (part, position) pairs that cannot match.
 type pictureMatch struct {
 	parts  []datePicturePart
 	input  []rune
 	values []int
-	yield  []int // how many runes the marker at each index may give back
 	failed map[[2]int]bool
+	steps  int // runes the match may still parse
+	stop   func() error
+	err    error // why the match stopped early, from stop
 }
 
-// newPictureMatch prepares parts for matching input. A part's fixed length is
-// its literal's runes or its fixed parse width.
-func newPictureMatch(parts []datePicturePart, input string) *pictureMatch {
-	pm := &pictureMatch{
-		parts: parts, input: []rune(input), values: make([]int, len(parts)),
-		yield: make([]int, len(parts)), failed: map[[2]int]bool{},
+func newPictureMatch(parts []datePicturePart, input string, stop func() error) *pictureMatch {
+	runes := []rune(input)
+	return &pictureMatch{
+		parts: parts, input: runes, values: make([]int, len(parts)), failed: map[[2]int]bool{},
+		steps: matchStepsPerRune * (len(runes) + len(parts) + 1), stop: stop,
 	}
-	fixed := 0
-	for i := len(parts) - 1; i >= 0; i-- {
-		pm.yield[i] = maxYieldRunes + fixed
-		width := utf8.RuneCountInString(parts[i].literal)
-		if parts[i].isMarker {
-			width = max(parts[i].marker.parseWidth, 0)
-		}
-		fixed = min(fixed, len(pm.input)) + min(width, len(pm.input))
+}
+
+// spend charges n parsed runes to the match, reporting false once its steps
+// run out or stop reports an error.
+func (pm *pictureMatch) spend(n int) bool {
+	if pm.steps -= n + 1; pm.steps < 0 {
+		return false
 	}
-	return pm
+	if pm.err == nil {
+		pm.err = pm.stop()
+	}
+	return pm.err == nil
 }
 
 // from reports whether parts[i:] match input[pos:] exactly, recording each
@@ -108,18 +112,15 @@ func (pm *pictureMatch) from(i, pos int) bool {
 		return false
 	}
 	part, rest := &pm.parts[i], pm.input[pos:]
-	switch c := part.marker.component; {
+	switch {
 	case !part.isMarker:
-		if hasFoldPrefix(rest, part.literal) && pm.from(i+1, pos+utf8.RuneCountInString(part.literal)) {
-			return true
-		}
-	case c == 'C' || c == 'E':
-		if pm.from(i+1, pos) {
+		if pm.spend(len(part.literal)) && hasFoldPrefix(rest, part.literal) &&
+			pm.from(i+1, pos+utf8.RuneCountInString(part.literal)) {
 			return true
 		}
 	default:
 		longest := longestMatch(rest, part.marker)
-		for k := longest; k >= max(1, longest-pm.yield[i]); k-- {
+		for k := longest; k >= 1 && pm.spend(k); k-- {
 			if value, n := parseMarkerValue(rest[:k], part.marker); n == k && pm.from(i+1, pos+k) {
 				pm.values[i] = value
 				return true
@@ -449,9 +450,14 @@ func scanTZ(runes []rune, m dateMarker) (sign int, hours, mins []rune, consumed 
 	}
 	hours = runes[i : i+n]
 	i += n
+	// jsonata-js drops a ";" format modifier before reading the picture.
+	picture := m.presentation
+	if semicolon := strings.LastIndexByte(picture, ';'); semicolon >= 0 {
+		picture = picture[:semicolon]
+	}
 	separator := rune(0)
-	if mandatory, _ := decimalPictureDigits(m.presentation); mandatory > 0 {
-		separator = regularGroupingSeparator(m.presentation)
+	if mandatory, _ := decimalPictureDigits(picture); mandatory > 0 {
+		separator = regularGroupingSeparator(picture)
 	}
 	minuteDigits := 0
 	if separator != 0 && i < len(runes) && runes[i] == separator {
@@ -585,7 +591,11 @@ func parseAlphabetic(runes []rune, modifier string) (value, consumed int) {
 		}
 		// Make it lowercase-relative to base.
 		digit := int(unicode.ToLower(r) - unicode.ToLower(base) + 1)
-		result = result*26 + digit
+		if result > (math.MaxInt-digit)/26 {
+			result = math.MaxInt // saturates like atoiSaturating
+		} else {
+			result = result*26 + digit
+		}
 		i++
 	}
 	if i == 0 {

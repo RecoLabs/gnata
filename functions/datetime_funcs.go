@@ -115,7 +115,7 @@ func fnToMillis(args []any, _ any, env *evaluator.Environment) (any, error) {
 		if !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$toMillis: picture argument must be a string"}
 		}
-		millis, matched, err := parseWithPicture(s, picture, env.Now())
+		millis, matched, err := parseWithPicture(s, picture, env.Now(), env.Err)
 		switch {
 		case err != nil || !matched:
 			return nil, err

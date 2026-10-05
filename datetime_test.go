@@ -187,6 +187,13 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("2018-04-01 10+54545", "[Y]-[M]-[D] [H][Z0101][m]5[s]")`, want: `1522559085000`},
 	{expr: `$toMillis("2018-04-01T+0151500034", "[Y]-[M]-[D]T[Z0101][H01][d]")`, want: `1519458000000`},
 	{expr: `$toMillis("2018 IVIII", "[Y] [MI][DI]")`, want: `1527811200000`},
+	{expr: `$toMillis("AX` + strings.Repeat("M", 66) + `", "[MA]X[YI]")`, want: `2020591612800000`},
+	// Exhausts the step budget (README known difference #16).
+	{expr: `$toMillis("` + strings.Repeat("I", 1600) + `x", "` + strings.Repeat("[MI]I", 800) + `y")`, want: undefined},
+	{expr: `$toMillis("A` + strings.Repeat("M", 20) + ` 2018", "[MA] [Y]")`, want: `null`},
+	{expr: `$toMillis("2018-04-01T10:00+05:30", "[Y]-[M]-[D]T[H]:[m][Z01:01;c]")`, want: `1522557000000`},
+	{expr: `$toMillis("2018-04-01T10:00+05", "[Y]-[M]-[D]T[H]:[m][Z01;01]")`, want: `1522558800000`},
+	{expr: `$toMillis("2018-04-01T10:00+05;30", "[Y]-[M]-[D]T[H]:[m][Z01;01]")`, want: undefined},
 	{
 		expr: `$toMillis("10:30:05.5` + strings.Repeat("0", 70) + `", "[H01]:[m01]:[s01].[f]` + strings.Repeat("0", 70) + `") % 86400000`,
 		want: `37805500`,
@@ -333,6 +340,8 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("2018", "[YN]")`, code: "D3133"},
 	{expr: `$toMillis("2018 x", "[Y] [HN]")`, code: "D3133"},
 	{expr: `$toMillis("2018 ISO", "[Y] [C]")`, code: "D3133"},
+	{expr: `$toMillis("2018 ", "[Y] [C1]")`, code: "D3133"},
+	{expr: `$toMillis("2018 x", "[Y] [E1]")`, code: "D3133"},
 	{expr: `$toMillis("2018 x", "[Y] [Wo]")`, code: "D3130"},
 	{expr: `$toMillis(5)`, code: "T0410"},
 	{expr: `$toMillis("2018", 5)`, code: "T0410"},
