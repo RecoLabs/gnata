@@ -9,9 +9,13 @@ package parser
 //   - Marks last-step array constructors as ConsArray (jsonata-js consarray).
 //   - Attaches group expressions from path-step binary("{") to the path.
 //   - Recursively processes all child nodes.
-func ProcessAST(node *Node) (*Node, error) {
+//
+// It cannot fail: of the static errors jsonata-js raises during its
+// processAST, the parser reports S0208-S0212 and S0214-S0216, and the
+// evaluator reports S0213 and S0217.
+func ProcessAST(node *Node) *Node {
 	if node == nil {
-		return nil, nil
+		return nil
 	}
 
 	switch node.Type {
@@ -19,62 +23,77 @@ func ProcessAST(node *Node) (*Node, error) {
 		if node.Value == "." {
 			return processDotBinary(node)
 		}
-		return processBinaryChildren(node)
+		node.Left = ProcessAST(node.Left)
+		node.Right = ProcessAST(node.Right)
 
 	case NodeUnary:
-		return processUnaryChildren(node)
+		node.Expression = ProcessAST(node.Expression)
+		processAll(node.Expressions)
+		processAll(node.LHS)
 
 	case NodeBlock:
-		return processBlockChildren(node)
+		processBlockChildren(node)
 
 	case NodeFunction, NodePartial:
-		return processFunctionChildren(node)
+		node.Procedure = ProcessAST(node.Procedure)
+		processAll(node.Arguments)
 
 	case NodeLambda:
-		return processLambdaChildren(node)
+		node.Body = ProcessAST(node.Body)
+		markTailCalls(node.Body)
 
 	case NodeCondition:
-		return processConditionChildren(node)
+		node.Condition = ProcessAST(node.Condition)
+		node.Then = ProcessAST(node.Then)
+		node.Else = ProcessAST(node.Else)
 
 	case NodeBind:
-		return processBindChildren(node)
+		node.Left = ProcessAST(node.Left)
+		node.Right = ProcessAST(node.Right)
 
 	case NodeTransform:
-		return processTransformChildren(node)
+		node.Pattern = ProcessAST(node.Pattern)
+		node.Update = ProcessAST(node.Update)
+		node.Delete = ProcessAST(node.Delete)
 
 	case NodeSort:
-		return processSortChildren(node)
+		node.Left = ProcessAST(node.Left)
+		for i := range node.Terms {
+			node.Terms[i].Expression = ProcessAST(node.Terms[i].Expression)
+		}
 
 	case NodePath:
-		return processPathChildren(node)
+		processPathChildren(node)
 
 	default:
 		// Leaf nodes (name, string, number, value, variable, wildcard, descendant, parent, regex).
 		// Still need to process any attached Group expression.
-		if node.Group != nil {
-			var err error
-			for i, pair := range node.Group.Pairs {
-				node.Group.Pairs[i][0], err = ProcessAST(pair[0])
-				if err != nil {
-					return nil, err
-				}
-				node.Group.Pairs[i][1], err = ProcessAST(pair[1])
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-		return node, nil
+		processGroup(node.Group)
+	}
+	return node
+}
+
+func processAll(nodes []*Node) {
+	for i, n := range nodes {
+		nodes[i] = ProcessAST(n)
+	}
+}
+
+// processGroup processes group-by key/value pairs so nested dot expressions
+// within them are resolved.
+func processGroup(group *GroupExpr) {
+	if group == nil {
+		return
+	}
+	for i, pair := range group.Pairs {
+		group.Pairs[i][0] = ProcessAST(pair[0])
+		group.Pairs[i][1] = ProcessAST(pair[1])
 	}
 }
 
 // processDotBinary flattens a binary(".") node into a path node.
-func processDotBinary(node *Node) (*Node, error) {
-	// Collect all steps from nested dots.
-	steps, err := collectPathSteps(node)
-	if err != nil {
-		return nil, err
-	}
+func processDotBinary(node *Node) *Node {
+	steps := collectPathSteps(node)
 
 	path := &Node{
 		Type:  NodePath,
@@ -99,50 +118,28 @@ func processDotBinary(node *Node) (*Node, error) {
 		}
 	}
 
-	// Process group-by key/value pairs so nested dot expressions within them are resolved.
-	if path.Group != nil {
-		for i, pair := range path.Group.Pairs {
-			path.Group.Pairs[i][0], err = ProcessAST(pair[0])
-			if err != nil {
-				return nil, err
-			}
-			path.Group.Pairs[i][1], err = ProcessAST(pair[1])
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	return path, nil
+	processGroup(path.Group)
+	return path
 }
 
 // collectPathSteps recursively collects steps from binary(".") nodes.
-func collectPathSteps(node *Node) ([]*Node, error) {
+func collectPathSteps(node *Node) []*Node {
 	if node.Type != NodeBinary || node.Value != "." {
 		// Leaf step — process it.
-		processed, err := ProcessAST(node)
-		if err != nil {
-			return nil, err
-		}
+		processed := ProcessAST(node)
 		// If the processed node is itself a path, splice its steps.
 		if processed.Type == NodePath {
-			return processed.Steps, nil
+			return processed.Steps
 		}
 		promoteQuotedPathNames(processed)
 		if processed.Type == NodeString {
 			processed = &Node{Type: NodeName, Value: processed.Value, Pos: processed.Pos}
 		}
-		return []*Node{processed}, nil
+		return []*Node{processed}
 	}
 
-	leftSteps, err := collectPathSteps(node.Left)
-	if err != nil {
-		return nil, err
-	}
-	rightSteps, err := collectPathSteps(node.Right)
-	if err != nil {
-		return nil, err
-	}
+	leftSteps := collectPathSteps(node.Left)
+	rightSteps := collectPathSteps(node.Right)
 
 	// The # and @ infix operators set Index/Focus on the binary "." node
 	// itself (e.g. (Account.Order)#$o). Propagate these to the last left
@@ -157,7 +154,7 @@ func collectPathSteps(node *Node) ([]*Node, error) {
 		}
 	}
 
-	return append(leftSteps, rightSteps...), nil
+	return append(leftSteps, rightSteps...)
 }
 
 func promoteQuotedPathNames(n *Node) {
@@ -179,58 +176,15 @@ func promoteQuotedPathNames(n *Node) {
 	}
 }
 
-// processBinaryChildren recursively processes a non-dot binary node.
-func processBinaryChildren(node *Node) (*Node, error) {
-	var err error
-	node.Left, err = ProcessAST(node.Left)
-	if err != nil {
-		return nil, err
-	}
-	node.Right, err = ProcessAST(node.Right)
-	if err != nil {
-		return nil, err
-	}
-	return node, nil
-}
-
-// processUnaryChildren recursively processes a unary node.
-func processUnaryChildren(node *Node) (*Node, error) {
-	var err error
-	if node.Expression != nil {
-		node.Expression, err = ProcessAST(node.Expression)
-		if err != nil {
-			return nil, err
-		}
-	}
-	for i, expr := range node.Expressions {
-		node.Expressions[i], err = ProcessAST(expr)
-		if err != nil {
-			return nil, err
-		}
-	}
-	for i, n := range node.LHS {
-		node.LHS[i], err = ProcessAST(n)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return node, nil
-}
-
 // processBlockChildren recursively processes a block node.
-func processBlockChildren(node *Node) (*Node, error) {
-	var err error
+func processBlockChildren(node *Node) {
 	for i, expr := range node.Expressions {
-		node.Expressions[i], err = ProcessAST(expr)
-		if err != nil {
-			return nil, err
-		}
-		part := node.Expressions[i]
+		part := ProcessAST(expr)
+		node.Expressions[i] = part
 		if part.ConsArray || (part.Type == NodePath && len(part.Steps) > 0 && part.Steps[0].ConsArray) {
 			node.ConsArray = true
 		}
 	}
-	return node, nil
 }
 
 // markUnaryArraySteps flags first/last path steps that are array constructors
@@ -249,128 +203,14 @@ func isUnaryArrayCtor(n *Node) bool {
 	return n != nil && n.Type == NodeUnary && n.Value == "["
 }
 
-// processFunctionChildren recursively processes a function/partial node.
-func processFunctionChildren(node *Node) (*Node, error) {
-	var err error
-	node.Procedure, err = ProcessAST(node.Procedure)
-	if err != nil {
-		return nil, err
-	}
-	for i, arg := range node.Arguments {
-		node.Arguments[i], err = ProcessAST(arg)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return node, nil
-}
-
-// processLambdaChildren recursively processes a lambda node.
-func processLambdaChildren(node *Node) (*Node, error) {
-	var err error
-	node.Body, err = ProcessAST(node.Body)
-	if err != nil {
-		return nil, err
-	}
-	markTailCalls(node.Body)
-	return node, nil
-}
-
-// processConditionChildren recursively processes a condition node.
-func processConditionChildren(node *Node) (*Node, error) {
-	var err error
-	node.Condition, err = ProcessAST(node.Condition)
-	if err != nil {
-		return nil, err
-	}
-	node.Then, err = ProcessAST(node.Then)
-	if err != nil {
-		return nil, err
-	}
-	if node.Else != nil {
-		node.Else, err = ProcessAST(node.Else)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return node, nil
-}
-
-// processBindChildren recursively processes a bind node.
-func processBindChildren(node *Node) (*Node, error) {
-	var err error
-	node.Left, err = ProcessAST(node.Left)
-	if err != nil {
-		return nil, err
-	}
-	node.Right, err = ProcessAST(node.Right)
-	if err != nil {
-		return nil, err
-	}
-	return node, nil
-}
-
-// processTransformChildren recursively processes a transform node.
-func processTransformChildren(node *Node) (*Node, error) {
-	var err error
-	node.Pattern, err = ProcessAST(node.Pattern)
-	if err != nil {
-		return nil, err
-	}
-	node.Update, err = ProcessAST(node.Update)
-	if err != nil {
-		return nil, err
-	}
-	if node.Delete != nil {
-		node.Delete, err = ProcessAST(node.Delete)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return node, nil
-}
-
-// processSortChildren recursively processes a sort node.
-func processSortChildren(node *Node) (*Node, error) {
-	var err error
-	node.Left, err = ProcessAST(node.Left)
-	if err != nil {
-		return nil, err
-	}
-	for i, term := range node.Terms {
-		node.Terms[i].Expression, err = ProcessAST(term.Expression)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return node, nil
-}
-
 // processPathChildren recursively processes an existing path node.
-func processPathChildren(node *Node) (*Node, error) {
-	var err error
+func processPathChildren(node *Node) {
 	for i, step := range node.Steps {
-		node.Steps[i], err = ProcessAST(step)
-		if err != nil {
-			return nil, err
-		}
+		node.Steps[i] = ProcessAST(step)
 		if node.Steps[i].KeepArray {
 			node.KeepSingletonArray = true
 		}
 	}
 	markUnaryArraySteps(node.Steps)
-	// Process group-by key/value pairs.
-	if node.Group != nil {
-		for i, pair := range node.Group.Pairs {
-			node.Group.Pairs[i][0], err = ProcessAST(pair[0])
-			if err != nil {
-				return nil, err
-			}
-			node.Group.Pairs[i][1], err = ProcessAST(pair[1])
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	return node, nil
+	processGroup(node.Group)
 }

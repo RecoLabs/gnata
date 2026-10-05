@@ -41,10 +41,7 @@ func makeFnEval() evaluator.EnvAwareBuiltin {
 		if parseErr != nil {
 			return nil, &evaluator.JSONataError{Code: "D3120", Message: fmt.Sprintf("$eval: invalid expression: %v", parseErr)}
 		}
-		ast, processErr := parser.ProcessAST(ast)
-		if processErr != nil {
-			return nil, &evaluator.JSONataError{Code: "D3120", Message: fmt.Sprintf("$eval: invalid expression: %v", processErr)}
-		}
+		ast = parser.ProcessAST(ast)
 		ctx := focus
 		if len(args) >= 2 && args[1] != nil {
 			ctx = args[1]

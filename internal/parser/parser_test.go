@@ -13,11 +13,7 @@ func mustParse(t *testing.T, src string) *parser.Node {
 	if err != nil {
 		t.Fatalf("parse(%q) error: %v", src, err)
 	}
-	node, err = parser.ProcessAST(node)
-	if err != nil {
-		t.Fatalf("processAST(%q) error: %v", src, err)
-	}
-	return node
+	return parser.ProcessAST(node)
 }
 
 func TestParser(t *testing.T) {

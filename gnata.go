@@ -117,10 +117,7 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 	if err != nil {
 		return nil, err
 	}
-	ast, err = parser.ProcessAST(ast)
-	if err != nil {
-		return nil, err
-	}
+	ast = parser.ProcessAST(ast)
 	fp := parser.AnalyzeFastPath(ast)
 	var o *compileOptions
 	if len(opts) > 0 {
