@@ -82,15 +82,14 @@ func WithTimeout(d time.Duration) Option {
 	return func(o *compileOptions) { o.timeout = d }
 }
 
-// WithSequence limits the length of sequences built during evaluation: the
-// range operator (..), $append, $map, $filter, $each, wildcard (*),
-// descendant (**), sorts, filters, every path step and every tuple stream
-// of a #/@ binding. Exceeding it returns error D2015, matching jsonata-js's
-// `sequence` guardrail. As in jsonata-js, a path step mapping over input
-// data counts too, so a.b over more than n items of a exceeds it; a last
-// step against a single context returns its value as is and is exempt.
-// The README lists what is not bounded, such as array constructors and a
-// binding with nothing after it. Expressions compiled with it always use
+// WithSequence limits the length of sequences built during evaluation, as
+// jsonata-js's `sequence` guardrail does: the range operator (..), array
+// constructors, group-by, sorts, filters, $append, $map, $filter, $each,
+// $keys, $spread, $lookup, $match, wildcard (*), descendant (**), every path
+// step and every tuple stream of a #/@ binding. Exceeding it returns error
+// D2015. As in jsonata-js, a path step mapping over input data counts too,
+// so a.b over more than n items of a exceeds it; a last step returning the
+// value of a lone context is exempt. Expressions compiled with it always use
 // the full evaluator. Without this option, only the built-in 10,000,000
 // element hard caps (D2014 / D3010) apply.
 func WithSequence(n int) Option {
