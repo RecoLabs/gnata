@@ -502,7 +502,7 @@ func formatOffset(hours, mins int64, picture string) (string, error) {
 		}
 	}
 	switch {
-	case regularGrouping(picture) || digits == 3 || digits == 4:
+	case regularGroupingSeparator(picture) != 0 || digits == 3 || digits == 4:
 		return formatIntegerDecimal(hours*100+mins, picture)
 	case digits == 1 || digits == 2:
 		formatted, err := formatIntegerDecimal(hours, picture)
@@ -514,9 +514,9 @@ func formatOffset(hours, mins int64, picture string) (string, error) {
 	return "", nil
 }
 
-// regularGrouping reports whether picture's grouping separators are one
-// character placed at equal digit intervals counted from the right.
-func regularGrouping(picture string) bool {
+// regularGroupingSeparator returns picture's grouping separator when it is one
+// character placed at equal digit intervals counted from the right, else 0.
+func regularGroupingSeparator(picture string) rune {
 	var sep rune
 	var positions []int
 	digits := 0
@@ -526,18 +526,18 @@ func regularGrouping(picture string) bool {
 			continue
 		}
 		if sep != 0 && c != sep {
-			return false
+			return 0
 		}
 		sep = c
 		positions = append(positions, digits)
 	}
 	if len(positions) == 0 || positions[0] == 0 {
-		return false
+		return 0
 	}
 	for i, pos := range positions {
 		if pos != (i+1)*positions[0] {
-			return false
+			return 0
 		}
 	}
-	return true
+	return sep
 }

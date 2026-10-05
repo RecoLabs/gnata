@@ -2,6 +2,7 @@ package functions
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -196,7 +197,7 @@ func parseMarkerValue(runes []rune, m dateMarker) (value, consumed int) {
 	case 'F', 'W', 'w', 'x':
 		return 0, consumeNameOrNumber(runes, m)
 	case 'Z', 'z':
-		return parseTZFromInput(runes)
+		return parseTZFromInput(runes, m)
 	default:
 		return parseTokenValue(runes, m)
 	}
@@ -320,60 +321,82 @@ func leadingDigits(runes []rune, width int) int {
 	return i
 }
 
-func parseTZFromInput(runes []rune) (offset, consumed int) {
-	if len(runes) == 0 {
-		return 0, 0
-	}
+// maxTZOffsetSeconds bounds a parsed timezone offset so it fits an int on
+// every platform gnata builds for, 32-bit TinyGo included: about 68 years.
+const maxTZOffsetSeconds = math.MaxInt32
 
-	// Handle "GMT±HH:MM" or "GMT±HH" format (z component).
-	if hasFoldPrefix(runes, "GMT") {
-		offset, n := parseTZFromInput(runes[3:])
-		return offset, 3 + n
-	}
-
-	// Handle ±HH:MM, ±HHMM, Z.
-	if len(runes) > 0 && runes[0] == 'Z' {
-		return 0, 1
-	}
-
-	sign := 1
+// parseTZFromInput reads a [Z] or [z] offset in seconds as jsonata-js's regex
+// does: "GMT" first for [z], then a sign and hours, then the minutes after
+// the picture's regular grouping separator if it has one. Without one, the
+// first two digits are hours and any others minutes. [Z] also reads "Z", and
+// ±HHMM when its picture has a separator (README known difference #4).
+func parseTZFromInput(runes []rune, m dateMarker) (offset, consumed int) {
 	i := 0
 	switch {
-	case i < len(runes) && runes[i] == '+':
-		i++
-	case i < len(runes) && runes[i] == '-':
+	case m.component == 'z':
+		if !hasFoldPrefix(runes, "GMT") {
+			return 0, 0
+		}
+		i = 3
+	case len(runes) > 0 && runes[0] == 'Z':
+		return 0, 1
+	}
+	if i >= len(runes) || (runes[i] != '+' && runes[i] != '-') {
+		return 0, 0
+	}
+	sign := 1
+	if runes[i] == '-' {
 		sign = -1
-		i++
-	default:
+	}
+	i++
+	n := leadingDigits(runes[i:], 0)
+	if n == 0 {
 		return 0, 0
 	}
-
-	// Parse up to 2 digits for hours.
-	hStart := i
-	for i < len(runes) && unicode.IsDigit(runes[i]) && i-hStart < 2 {
-		i++
+	hours, mins := runes[i:i+n], []rune(nil)
+	i += n
+	separator := rune(0)
+	if mandatory, _ := decimalPictureDigits(m.presentation); mandatory > 0 {
+		separator = regularGroupingSeparator(m.presentation)
 	}
-	if i == hStart {
+	minuteDigits := 0
+	if separator != 0 && i < len(runes) && runes[i] == separator {
+		minuteDigits = leadingDigits(runes[i+1:], 0)
+	}
+	switch {
+	case minuteDigits > 0:
+		mins = runes[i+1 : i+1+minuteDigits]
+		i += 1 + minuteDigits
+	case separator != 0 && (m.component == 'z' || len(hours) != 4):
+		return 0, 0
+	case len(hours) > 2:
+		hours, mins = hours[:2], hours[2:]
+	}
+	seconds, ok := offsetSeconds(hours, mins)
+	if !ok {
 		return 0, 0
 	}
-	hours, _ := strconv.Atoi(string(runes[hStart:i]))
-	mins := 0
+	return sign * seconds, i
+}
 
-	// Optional colon.
-	if i < len(runes) && runes[i] == ':' {
-		i++
+// offsetSeconds converts an offset's hour and minute digits to seconds,
+// reporting false when it exceeds maxTZOffsetSeconds.
+func offsetSeconds(hourDigits, minuteDigits []rune) (int, bool) {
+	hours, err := strconv.ParseInt(string(hourDigits), 10, 64)
+	if err != nil || hours > maxTZOffsetSeconds/3600 {
+		return 0, false
 	}
-
-	// Parse up to 2 digits for minutes.
-	mStart := i
-	for i < len(runes) && unicode.IsDigit(runes[i]) && i-mStart < 2 {
-		i++
+	minutes := int64(0)
+	if len(minuteDigits) > 0 {
+		if minutes, err = strconv.ParseInt(string(minuteDigits), 10, 64); err != nil || minutes > maxTZOffsetSeconds/60 {
+			return 0, false
+		}
 	}
-	if i > mStart {
-		mins, _ = strconv.Atoi(string(runes[mStart:i]))
+	seconds := hours*3600 + minutes*60
+	if seconds > maxTZOffsetSeconds {
+		return 0, false
 	}
-
-	return sign * (hours*3600 + mins*60), i
+	return int(seconds), true
 }
 
 // parseTokenValue reads an integer marker's value. Month names read their
