@@ -34,6 +34,10 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 			}
 			args = append(args, val)
 		}
+		args, returnUndefined, err := directCallArgs(fn, args, input)
+		if err != nil || returnUndefined {
+			return nil, err
+		}
 		result, err := callFunction(fn, args, input, env)
 		if err != nil {
 			return nil, err
@@ -82,7 +86,12 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 			return CollapseAndKeep(res, false), nil
 		}), nil
 	}
-	result, err := callFunction(fn, []any{piped}, input, env)
+	// jsonata-js applies a bare function reference with a null context.
+	args, returnUndefined, err := directCallArgs(fn, []any{piped}, Null)
+	if err != nil || returnUndefined {
+		return nil, err
+	}
+	result, err := callFunction(fn, args, input, env)
 	if err != nil {
 		return nil, err
 	}

@@ -30,19 +30,14 @@ func radixPrefix(s string) (base, digitBits int) {
 	return 0, 0
 }
 
-func fnNumber(args []any, focus any) (any, error) {
-	var arg any
-	switch len(args) {
-	case 0:
-		arg = focus
-	case 1:
-		arg = args[0]
-	default:
+func fnNumber(args []any, _ any) (any, error) {
+	if len(args) > 1 {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$number: too many arguments"}
 	}
-	if arg == nil {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
+	arg := args[0]
 	if evaluator.IsNull(arg) {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$number: cannot cast null to number"}
 	}

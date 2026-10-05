@@ -8,6 +8,43 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
+// NewSignedBuiltin wraps fn with its jsonata-js signature. validate turns on
+// the arity and type checks of processCallArgs at direct call sites.
+func NewSignedBuiltin(fn EnvAwareBuiltin, sig string, validate bool) (*SignedBuiltin, error) {
+	specs, err := parser.ParseSig(sig)
+	if err != nil {
+		return nil, err
+	}
+	contextSig, err := newContextSig(specs)
+	if err != nil {
+		return nil, err
+	}
+	sb := &SignedBuiltin{Fn: fn, Sig: sig, Context: contextSig}
+	if validate {
+		sb.ParsedSig = specs
+	}
+	return sb, nil
+}
+
+// directCallArgs prepares the arguments of a direct call to fn. For a
+// SignedBuiltin it fills a missing context argument from the focus and
+// applies processCallArgs when the builtin is validated.
+func directCallArgs(fn any, args []any, focus any) (coercedArgs []any, returnUndefined bool, err error) {
+	sb, ok := fn.(*SignedBuiltin)
+	if !ok {
+		return args, false, nil
+	}
+	if sb.Context != nil {
+		if args, err = sb.Context.Inject(args, focus); err != nil {
+			return nil, false, err
+		}
+	}
+	if sb.ParsedSig == nil {
+		return args, false, nil
+	}
+	return processCallArgs(sb.ParsedSig, args, focus)
+}
+
 // processCallArgs handles three pre-call concerns for typed lambdas:
 //
 //  1. Nil propagation: if any non-optional typed arg is nil (undefined) and

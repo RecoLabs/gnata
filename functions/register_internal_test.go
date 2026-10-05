@@ -1,6 +1,10 @@
 package functions
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/recolabs/gnata/internal/evaluator"
+)
 
 // floatOnlyNumeric lists the numeric builtins that deliberately stay float64
 // under WithDecimalPrecision.
@@ -43,6 +47,29 @@ func TestBuiltinsClassifiedForDecimalPrecision(t *testing.T) {
 			t.Errorf("$%s is in both builtinFuncs and decimalFuncs", b.name)
 		case !classified[b.name]:
 			t.Errorf("$%s is not classified for decimal precision: add a decimal variant or list it here", b.name)
+		}
+	}
+}
+
+// Every signature in contextSigs must name a registered builtin, and every
+// validated builtin must have a signature, so a typo cannot silently drop
+// a builtin's context argument or validation.
+func TestContextSigsAreRegistered(t *testing.T) {
+	env := evaluator.NewEnvironment()
+	RegisterAll(env, evaluator.ApplyFunction)
+	for name := range contextSigs {
+		fn, _ := env.Lookup(name)
+		sb, ok := fn.(*evaluator.SignedBuiltin)
+		if !ok || sb.Context == nil {
+			t.Fatalf("$%s is not bound with its context signature: %T", name, fn)
+		}
+		if validatedBuiltins[name] != (sb.ParsedSig != nil) {
+			t.Fatalf("$%s: validated is %v, want %v", name, sb.ParsedSig != nil, validatedBuiltins[name])
+		}
+	}
+	for name := range validatedBuiltins {
+		if _, signed := contextSigs[name]; !signed {
+			t.Fatalf("$%s is validated but has no signature in contextSigs", name)
 		}
 	}
 }

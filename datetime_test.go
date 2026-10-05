@@ -121,7 +121,6 @@ var fromMillisCases = []exprCase{
 	{expr: `$fromMillis(1522590330123, "[Z]", "+05")`, code: "D3137"},
 	{expr: `$fromMillis(1522590330123, "[Z]", "+ab:cd")`, code: "D3137"},
 	{expr: `$fromMillis(1522590330123, "[Z]", 5)`, code: "T0410"},
-	{expr: `$fromMillis("x")`, code: "T0410"},
 	{expr: `$fromMillis(1, 5)`, code: "T0410"},
 }
 

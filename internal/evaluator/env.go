@@ -397,14 +397,16 @@ type BuiltinFunction func(args []any, focus any) (any, error)
 // that create child scopes ($eval).
 type EnvAwareBuiltin func(args []any, focus any, env *Environment) (any, error)
 
-// SignedBuiltin wraps a BuiltinFunction with a type signature for arity and
-// type validation at the direct call site. HOF callbacks that invoke the
-// function via ApplyFunction bypass signature validation, allowing extra
+// SignedBuiltin wraps a built-in with its jsonata-js signature. A direct call
+// (f(...) or x ~> f(...)) fills a missing context argument from the focus and,
+// when ParsedSig is set, validates arity and types. HOF callbacks that invoke
+// the function via ApplyFunction bypass both, as in jsonata-js, allowing extra
 // arguments (key, index, array) to be passed silently.
 type SignedBuiltin struct {
-	Fn        BuiltinFunction
+	Fn        EnvAwareBuiltin
 	Sig       string
-	ParsedSig []parser.ParamSpec // pre-parsed signature; avoids re-parsing on every call
+	ParsedSig []parser.ParamSpec // nil: arguments are not validated
+	Context   *ContextSig        // nil: no parameter defaults to the context
 }
 
 // Lambda represents a user-defined function (lambda expression).

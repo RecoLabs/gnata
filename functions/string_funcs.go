@@ -14,27 +14,17 @@ import (
 
 // ── $string ──────────────────────────────────────────────────────────────────
 
-func fnString(args []any, focus any) (any, error) {
-	return stringify(args, focus, 0)
+func fnString(args []any, _ any) (any, error) {
+	return stringify(args, 0)
 }
 
 // stringify is $string, laying out numbers in decimal to prec significant
 // digits, or through float64 when prec is 0.
-func stringify(args []any, focus any, prec int) (any, error) {
-	if len(args) == 0 {
-		if focus == nil {
-			return nil, nil
-		}
-		switch focus.(type) {
-		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-			return nil, nil
-		}
-		return valueToString(focus, false, prec)
-	}
-	arg := args[0]
-	if arg == nil {
+func stringify(args []any, prec int) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil // undefined → undefined
 	}
+	arg := args[0]
 	if len(args) > 2 {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$string: takes at most 2 arguments"}
 	}
@@ -264,51 +254,33 @@ var (
 
 // ── $uppercase / $lowercase / $trim ──────────────────────────────────────────
 
-func fnUppercase(args []any, focus any) (any, error) {
-	var val any
-	if len(args) == 0 {
-		val = focus
-	} else {
-		val = args[0]
-	}
-	if val == nil {
+func fnUppercase(args []any, _ any) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	s, ok := val.(string)
+	s, ok := args[0].(string)
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$uppercase: argument must be a string"}
 	}
 	return strings.ToUpper(s), nil
 }
 
-func fnLowercase(args []any, focus any) (any, error) {
-	var val any
-	if len(args) == 0 {
-		val = focus
-	} else {
-		val = args[0]
-	}
-	if val == nil {
+func fnLowercase(args []any, _ any) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	s, ok := val.(string)
+	s, ok := args[0].(string)
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$lowercase: argument must be a string"}
 	}
 	return strings.ToLower(s), nil
 }
 
-func fnTrim(args []any, focus any) (any, error) {
-	var val any
-	if len(args) == 0 {
-		val = focus
-	} else {
-		val = args[0]
-	}
-	if val == nil {
+func fnTrim(args []any, _ any) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	s, ok := val.(string)
+	s, ok := args[0].(string)
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$trim: argument must be a string"}
 	}
@@ -374,9 +346,9 @@ func fnPad(args []any, _ any) (any, error) {
 // ── $contains ─────────────────────────────────────────────────────────────────
 
 func fnContains(args []any, focus any) (any, error) {
-	// When called as a path step (e.g., str.$contains("x")), focus holds the
-	// path context; prepend it as the first argument so the function receives
-	// the string to search in.
+	// Direct calls arrive with the context already filled. A single argument
+	// that does not match the signature, such as $contains(5), is reported
+	// as argument 2 so the code is T0410, as in jsonata-js.
 	if len(args) == 1 && focus != nil {
 		args = []any{focus, args[0]}
 	}

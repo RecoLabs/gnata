@@ -1425,9 +1425,8 @@ func evalPathStepDescendant(input any, env *Environment) (any, error) {
 // evalPathFunctionStep evaluates a NodeFunction step in path context.
 // In JSONata, when a function is called as a path step (e.g. arr.λ($x,$y){...}(6)),
 // the path element is PREPENDED as the first argument to the lambda. For builtins,
-// the path element is passed as focus so functions can use it as a fallback when
-// fewer arguments are provided (e.g., str.$contains("x") → $contains uses focus
-// as the string to search in).
+// the path element is the focus that fills a missing context argument
+// (e.g., str.$contains("x") searches str).
 func evalPathFunctionStep(step *parser.Node, item any, env *Environment) (any, error) {
 	// Resolve the function.
 	var fn any
@@ -1456,6 +1455,10 @@ func evalPathFunctionStep(step *parser.Node, item any, env *Environment) (any, e
 	// (If args already fill all params, the path element is only available as $.)
 	if lam, isLambda := fn.(*Lambda); isLambda && len(args) < len(lam.Params) {
 		args = append([]any{item}, args...)
+	}
+	args, returnUndefined, err := directCallArgs(fn, args, item)
+	if err != nil || returnUndefined {
+		return nil, err
 	}
 	return callFunction(fn, args, item, env)
 }

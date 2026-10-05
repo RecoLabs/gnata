@@ -49,17 +49,12 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 		args = append(args, val)
 	}
 
-	// Validate signature for SignedBuiltins at the direct call site.
-	// HOF callbacks bypass this (they go through ApplyFunction instead).
-	if sb, ok := fn.(*SignedBuiltin); ok {
-		coerced, returnUndefined, sigErr := processCallArgs(sb.ParsedSig, args, input)
-		if sigErr != nil {
-			return nil, sigErr
-		}
-		if returnUndefined {
-			return nil, nil
-		}
-		args = coerced
+	args, returnUndefined, err := directCallArgs(fn, args, input)
+	if err != nil {
+		return nil, err
+	}
+	if returnUndefined {
+		return nil, nil
 	}
 
 	// Tail-call optimization: if this call is in tail position within a
@@ -180,7 +175,7 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 		}
 		switch f := fn.(type) {
 		case *SignedBuiltin:
-			return f.Fn(args, focus)
+			return f.Fn(args, focus, env)
 		case BuiltinFunction:
 			return f(args, focus)
 		case EnvAwareBuiltin:

@@ -53,22 +53,11 @@ func decResult(d decimal.Decimal, err error, prec int, overflowErr func() error)
 	return nil, false, nil
 }
 
-// argOrFocus returns the single optional argument, or the focus without one.
-func argOrFocus(args []any, focus any) (any, bool) {
-	switch len(args) {
-	case 0:
-		return focus, true
-	case 1:
-		return args[0], true
-	}
-	return nil, false
-}
-
-func decNumber(args []any, focus any, prec int) (res any, ok bool, err error) {
-	arg, ok := argOrFocus(args, focus)
-	if !ok {
+func decNumber(args []any, _ any, prec int) (res any, ok bool, err error) {
+	if len(args) != 1 {
 		return nil, false, nil
 	}
+	arg := args[0]
 	var s string
 	switch v := arg.(type) {
 	case json.Number:
@@ -316,7 +305,7 @@ func decSqrt(args []any, _ any, prec int) (res any, ok bool, err error) {
 
 // decString lays out numbers, including those inside arrays and objects, as
 // JavaScript does but with every significant digit.
-func decString(args []any, focus any, prec int) (res any, ok bool, err error) {
-	res, err = stringify(args, focus, prec)
+func decString(args []any, _ any, prec int) (res any, ok bool, err error) {
+	res, err = stringify(args, prec)
 	return res, true, err
 }

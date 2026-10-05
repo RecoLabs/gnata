@@ -35,16 +35,8 @@ func fnMillis(_ []any, _ any, env *evaluator.Environment) (any, error) {
 	return float64(env.Now().UnixMilli()), nil
 }
 
-func fnFromMillis(args []any, focus any) (any, error) {
-	if len(args) == 0 {
-		// Called with no arguments - use the current context ($) if available.
-		if focus != nil {
-			args = []any{focus}
-		} else {
-			return nil, nil
-		}
-	}
-	if args[0] == nil {
+func fnFromMillis(args []any, _ any) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
 	ms, ok := evaluator.ToFloat64(args[0])
