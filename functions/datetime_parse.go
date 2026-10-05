@@ -30,13 +30,14 @@ func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, er
 				Message: fmt.Sprintf("$toMillis: the 'name' modifier can only be applied to months and days, not %c", m.component),
 			}
 		}
-		if strings.ContainsRune("YMDdFWwXxHhms", rune(m.component)) && lacksIntegerFormat(m) {
+		if strings.ContainsRune(integerComponents, rune(m.component)) && lacksIntegerFormat(m) {
 			return time.Time{}, false, &evaluator.JSONataError{
 				Code:    "D3130",
 				Message: fmt.Sprintf("$toMillis: unsupported picture %q", m.presentation),
 			}
 		}
 	}
+	setParseWidths(parts)
 
 	components := map[byte]int{}
 	inputRunes := []rune(input)
@@ -71,6 +72,34 @@ func parseWithPicture(input, picture string, now time.Time) (time.Time, bool, er
 	}
 	t, err := resolveParsedDate(components, now)
 	return t, err == nil, err
+}
+
+// setParseWidths fixes the digit count of an integer marker directly followed
+// by another one, as jsonata-js does: its mandatory digits raised to the
+// minimum width, or a year's maximum width. Other integers read every digit,
+// whatever their width. Fractional seconds always read every digit.
+func setParseWidths(parts []datePicturePart) {
+	for i := 1; i < len(parts); i++ {
+		prev := &parts[i-1].marker
+		if !isIntegerMarker(&parts[i-1]) || !isIntegerMarker(&parts[i]) || prev.component == 'f' {
+			continue
+		}
+		mandatory, _ := decimalPictureDigits(prev.presentation)
+		prev.parseWidth = max(mandatory, prev.minWidth)
+		if prev.component == 'Y' && prev.maxWidth != noWidth {
+			prev.parseWidth = prev.maxWidth
+		}
+	}
+}
+
+// integerComponents are the components a non-name presentation formats as an
+// integer; fractional seconds also take an integer picture but parse apart.
+const integerComponents = "YMDdFWwXxHhms"
+
+func isIntegerMarker(part *datePicturePart) bool {
+	c := rune(part.marker.component)
+	return part.isMarker && (c == 'f' || strings.ContainsRune(integerComponents, c)) &&
+		!isNamePresentation(part.marker.presentation)
 }
 
 func isNamePresentation(presentation string) bool {
@@ -140,12 +169,17 @@ func hasFoldPrefix(runes []rune, literal string) bool {
 func parseMarkerValue(runes []rune, m dateMarker) (value, consumed int) {
 	switch m.component {
 	case 'f':
-		v, n := parseTokenValue(runes, m)
-		for w := n; w < 3 && n > 0; w++ {
-			v *= 10
+		// jsonata-js reads any digits whatever the picture, keeping the first three.
+		n := leadingDigits(runes, 0)
+		if n == 0 {
+			return -1, -1
 		}
-		for w := n; w > 3; w-- {
-			v /= 10
+		v, err := strconv.Atoi(string(runes[:min(n, 3)]))
+		if err != nil {
+			return -1, -1
+		}
+		for w := n; w < 3; w++ {
+			v *= 10
 		}
 		return v, n
 	case 'P':
@@ -160,7 +194,7 @@ func parseMarkerValue(runes []rune, m dateMarker) (value, consumed int) {
 		}
 		return 0, 0
 	case 'F', 'W', 'w', 'x':
-		return 0, consumeNameOrNumber(runes, m.presentation)
+		return 0, consumeNameOrNumber(runes, m)
 	case 'Z', 'z':
 		return parseTZFromInput(runes)
 	default:
@@ -262,11 +296,26 @@ func resolveParsedDate(components map[byte]int, now time.Time) (time.Time, error
 
 // consumeNameOrNumber returns how many runes of a name (any run of letters, as
 // jsonata-js accepts) or number start runes, depending on the presentation.
-func consumeNameOrNumber(runes []rune, presentation string) int {
-	isName := isNamePresentation(presentation)
+func consumeNameOrNumber(runes []rune, m dateMarker) int {
+	if !isNamePresentation(m.presentation) {
+		return leadingDigits(runes, m.parseWidth)
+	}
 	i := 0
-	for i < len(runes) && ((isName && isASCIILetter(runes[i])) || (!isName && unicode.IsDigit(runes[i]))) {
+	for i < len(runes) && isASCIILetter(runes[i]) {
 		i++
+	}
+	return i
+}
+
+// leadingDigits returns how many digits start runes: exactly width of them
+// when width is positive, else all of them; 0 when they do not match.
+func leadingDigits(runes []rune, width int) int {
+	i := 0
+	for i < len(runes) && unicode.IsDigit(runes[i]) && (width <= 0 || i < width) {
+		i++
+	}
+	if width > 0 && i < width {
+		return 0
 	}
 	return i
 }
@@ -327,8 +376,8 @@ func parseTZFromInput(runes []rune) (offset, consumed int) {
 	return sign * (hours*3600 + mins*60), i
 }
 
-// parseTokenValue reads an integer marker's value. Month names and plain
-// numbers read their width from the full modifier.
+// parseTokenValue reads an integer marker's value. Month names read their
+// width from the full modifier, decimal numbers use parseWidth.
 func parseTokenValue(runes []rune, m dateMarker) (value, consumed int) {
 	if len(runes) == 0 {
 		return -1, -1
@@ -343,48 +392,13 @@ func parseTokenValue(runes []rune, m dateMarker) (value, consumed int) {
 	case p == "w" || p == "W" || p == "Ww" || p == "ww":
 		return parseWordNumber(runes, p)
 	case m.ordinal:
-		return parseOrdinalNumber(runes)
+		return parseOrdinalNumber(runes, m.parseWidth)
 	}
-	return parseNumericValue(runes, m.modifier)
+	return parseNumericValue(runes, m.parseWidth)
 }
 
-func modifierFieldWidth(modifier string) int {
-	if modifier == "" {
-		return -1
-	}
-	// Handle grouping/truncation modifier: starts with ","
-	// Pattern: ",[minWidth]-[maxWidth]" or ",*-[maxWidth]"
-	if strings.HasPrefix(modifier, ",") {
-		// Look for "-N" at the end (max width).
-		if idx := strings.LastIndex(modifier, "-"); idx >= 0 {
-			part := modifier[idx+1:]
-			if n, err := strconv.Atoi(part); err == nil && n > 0 {
-				return n
-			}
-		}
-		return -1
-	}
-	// All-digit modifier: length = field width.
-	if len(modifier) < 2 {
-		return -1 // "1" = variable width
-	}
-	for _, r := range modifier {
-		if r != '0' && r != '1' {
-			return -1
-		}
-	}
-	return len(modifier)
-}
-
-func parseNumericValue(runes []rune, modifier string) (value, consumed int) {
-	i := 0 // jsonata-js accepts no sign on a parsed integer
-	maxW := modifierFieldWidth(modifier)
-	for i < len(runes) && unicode.IsDigit(runes[i]) {
-		if maxW > 0 && i >= maxW {
-			break
-		}
-		i++
-	}
+func parseNumericValue(runes []rune, width int) (value, consumed int) {
+	i := leadingDigits(runes, width) // jsonata-js accepts no sign on a parsed integer
 	if i == 0 {
 		return -1, -1
 	}
@@ -395,11 +409,8 @@ func parseNumericValue(runes []rune, modifier string) (value, consumed int) {
 	return n, i
 }
 
-func parseOrdinalNumber(runes []rune) (value, consumed int) {
-	i := 0
-	for i < len(runes) && unicode.IsDigit(runes[i]) {
-		i++
-	}
+func parseOrdinalNumber(runes []rune, width int) (value, consumed int) {
+	i := leadingDigits(runes, width)
 	if i == 0 {
 		return -1, -1
 	}

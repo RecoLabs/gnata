@@ -82,6 +82,7 @@ type dateMarker struct {
 	ordinal      bool
 	minWidth     int
 	maxWidth     int
+	parseWidth   int // exact digits $toMillis reads; 0 reads every digit
 }
 
 // datePicturePart is a literal or, when isMarker is set, a variable marker.
