@@ -25,7 +25,118 @@ import (
 // internally, which aborts the program on runtimes where recover is
 // unavailable (TinyGo on WebAssembly), so it is used only as a last resort for
 // foreign types such as structs.
-func AppendJSON(b []byte, v any) ([]byte, error) { //nolint:gocyclo,funlen // type dispatch
+//
+// Objects and arrays are walked with an explicit stack rather than by
+// recursion, so a deeply nested value cannot overflow the goroutine stack,
+// which Go cannot recover from.
+func AppendJSON(b []byte, v any) ([]byte, error) {
+	var buf [8]encodeFrame
+	stack := buf[:0]
+	for {
+		switch val := v.(type) {
+		case *OrderedMap:
+			if val == nil {
+				b = append(b, "null"...)
+				break
+			}
+			b = append(b, '{')
+			stack = append(stack, encodeFrame{keys: val.keys, ordered: val, closing: '}'})
+		case []any:
+			if val == nil {
+				b = append(b, "null"...)
+				break
+			}
+			b = append(b, '[')
+			stack = append(stack, encodeFrame{items: val, closing: ']'})
+		case map[string]any:
+			if val == nil {
+				b = append(b, "null"...)
+				break
+			}
+			b = append(b, '{')
+			stack = append(stack, encodeFrame{keys: slices.Sorted(maps.Keys(val)), plain: val, closing: '}'})
+		default:
+			var err error
+			if b, err = appendJSONScalar(b, v); err != nil {
+				return nil, err
+			}
+		}
+		for {
+			if len(stack) == 0 {
+				return b, nil
+			}
+			top := &stack[len(stack)-1]
+			var (
+				more bool
+				err  error
+			)
+			if b, v, more, err = top.next(b); err != nil {
+				return nil, err
+			}
+			if more {
+				break
+			}
+			b = append(b, top.closing)
+			stack = stack[:len(stack)-1]
+		}
+	}
+}
+
+// encodeFrame is an object or array AppendJSON has opened: its items, or
+// its keys and the map holding their values, and the index of the next one.
+type encodeFrame struct {
+	items   []any
+	keys    []string
+	ordered *OrderedMap
+	plain   map[string]any
+	index   int
+	closing byte
+}
+
+// next appends the frame's values up to its next object or array, which it
+// returns after the separator and key that precede it, or reports that the
+// frame has none left.
+func (f *encodeFrame) next(b []byte) (_ []byte, v any, more bool, _ error) {
+	for {
+		var n int
+		if f.closing == ']' {
+			n = len(f.items)
+		} else {
+			n = len(f.keys)
+		}
+		if f.index == n {
+			return b, nil, false, nil
+		}
+		if f.index > 0 {
+			b = append(b, ',')
+		}
+		i := f.index
+		f.index++
+		switch {
+		case f.closing == ']':
+			v = f.items[i]
+		case f.ordered != nil:
+			b = appendJSONString(b, f.keys[i])
+			b = append(b, ':')
+			v = f.ordered.data[f.keys[i]]
+		default:
+			b = appendJSONString(b, f.keys[i])
+			b = append(b, ':')
+			v = f.plain[f.keys[i]]
+		}
+		switch v.(type) {
+		case *OrderedMap, []any, map[string]any:
+			return b, v, true, nil
+		}
+		var err error
+		if b, err = appendJSONScalar(b, v); err != nil {
+			return nil, nil, false, err
+		}
+	}
+}
+
+// appendJSONScalar appends v, which is not an object or an array of values.
+func appendJSONScalar(b []byte, v any) ([]byte, error) { //nolint:gocyclo,funlen // type dispatch
 	switch val := v.(type) {
 	case nil:
 		return append(b, "null"...), nil
@@ -61,38 +172,6 @@ func AppendJSON(b []byte, v any) ([]byte, error) { //nolint:gocyclo,funlen // ty
 		return strconv.AppendUint(b, val, 10), nil
 	case json.Number:
 		return appendJSONNumber(b, val)
-	case *OrderedMap:
-		if val == nil {
-			return append(b, "null"...), nil
-		}
-		b = append(b, '{')
-		for i, k := range val.keys {
-			if i > 0 {
-				b = append(b, ',')
-			}
-			b = appendJSONString(b, k)
-			b = append(b, ':')
-			var err error
-			if b, err = AppendJSON(b, val.data[k]); err != nil {
-				return nil, err
-			}
-		}
-		return append(b, '}'), nil
-	case []any:
-		if val == nil {
-			return append(b, "null"...), nil
-		}
-		b = append(b, '[')
-		for i, e := range val {
-			if i > 0 {
-				b = append(b, ',')
-			}
-			var err error
-			if b, err = AppendJSON(b, e); err != nil {
-				return nil, err
-			}
-		}
-		return append(b, ']'), nil
 	case []string:
 		if val == nil {
 			return append(b, "null"...), nil
@@ -105,23 +184,6 @@ func AppendJSON(b []byte, v any) ([]byte, error) { //nolint:gocyclo,funlen // ty
 			b = appendJSONString(b, s)
 		}
 		return append(b, ']'), nil
-	case map[string]any:
-		if val == nil {
-			return append(b, "null"...), nil
-		}
-		b = append(b, '{')
-		for i, k := range slices.Sorted(maps.Keys(val)) {
-			if i > 0 {
-				b = append(b, ',')
-			}
-			b = appendJSONString(b, k)
-			b = append(b, ':')
-			var err error
-			if b, err = AppendJSON(b, val[k]); err != nil {
-				return nil, err
-			}
-		}
-		return append(b, '}'), nil
 	case map[string]string:
 		if val == nil {
 			return append(b, "null"...), nil
