@@ -3,6 +3,8 @@ package evaluator
 import (
 	"fmt"
 	"regexp"
+	"regexp/syntax"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -12,7 +14,8 @@ import (
 // JSONata functions ($match, $replace, $contains, $split, ~> chain operator).
 // RE2 guarantees linear-time matching — no backtracking, no timeouts.
 type Regex struct {
-	re *regexp.Regexp
+	re          *regexp.Regexp
+	leftContext bool // has ^, \A, \b or \B, which a match on a suffix of the input misreads
 }
 
 // Match represents a single regex match.
@@ -21,7 +24,7 @@ type Match struct {
 	Length int
 
 	input    string
-	re       *regexp.Regexp
+	regex    *Regex
 	loc      []int   // submatch index pairs for this match
 	allLocs  [][]int // all matches from FindAllStringSubmatchIndex
 	matchIdx int     // index into allLocs for this match
@@ -47,7 +50,7 @@ func (r *Regex) FindStringMatch(s string) (*Match, error) {
 		Index:    loc[0],
 		Length:   loc[1] - loc[0],
 		input:    s,
-		re:       r.re,
+		regex:    r,
 		loc:      loc,
 		allLocs:  allLocs,
 		matchIdx: 0,
@@ -96,11 +99,62 @@ func (m *Match) FindNextMatch() (*Match, error) {
 		Index:    loc[0],
 		Length:   loc[1] - loc[0],
 		input:    m.input,
-		re:       m.re,
+		regex:    m.regex,
 		loc:      loc,
 		allLocs:  m.allLocs,
 		matchIdx: nextIdx,
 	}, nil
+}
+
+// NextMatch returns the match after m the way jsonata-js's regex matcher
+// finds it: none once m reaches the end of the input, and D1004 when the
+// search from m's end finds an empty match, which jsonata-js reports because
+// it would never progress. After an empty match that is every later search.
+func NextMatch(m *Match) (*Match, error) {
+	end := m.Index + m.Length
+	if end >= len(m.input) {
+		return nil, nil
+	}
+	if m.Length == 0 || m.emptyMatchAt(end) {
+		return nil, errEmptyMatch
+	}
+	next, err := m.FindNextMatch()
+	if next != nil && next.Length == 0 {
+		return nil, errEmptyMatch
+	}
+	return next, err
+}
+
+var errEmptyMatch = &JSONataError{Code: "D1004", Message: "the regular expression matches a zero-length string"}
+
+// emptyMatchAt reports whether the regex's preferred match at pos is empty.
+// FindAll skips such a match when it abuts the previous one, but jsonata-js
+// finds it. A regex that reads left context is assumed not to, since a match
+// on the suffix cannot see that context.
+func (m *Match) emptyMatchAt(pos int) bool {
+	if m.regex.leftContext {
+		return false
+	}
+	loc := m.regex.re.FindStringIndex(m.input[pos:])
+	return len(loc) == 2 && loc[0] == 0 && loc[1] == 0
+}
+
+// readsLeftContext reports whether re has an assertion that depends on the
+// text before the match position.
+func readsLeftContext(re *syntax.Regexp) bool {
+	return slices.Contains(leftContextOps, re.Op) || slices.ContainsFunc(re.Sub, readsLeftContext)
+}
+
+var leftContextOps = []syntax.Op{syntax.OpBeginLine, syntax.OpBeginText, syntax.OpWordBoundary, syntax.OpNoWordBoundary}
+
+// Groups returns the text of each capture group, "" for one that did not
+// take part in the match.
+func (m *Match) Groups() []string {
+	groups := make([]string, 0, m.GroupCount()-1)
+	for g := 1; g < m.GroupCount(); g++ {
+		groups = append(groups, m.GroupByNumber(g).String())
+	}
+	return groups
 }
 
 // ── Group methods ─────────────────────────────────────────────────────────────
@@ -146,7 +200,11 @@ func CachedCompileRegex(pattern, flags string) (*Regex, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Regex{re: re}
+	parsed, err := syntax.Parse(fullPattern, syntax.Perl)
+	if err != nil {
+		return nil, err
+	}
+	r := &Regex{re: re, leftContext: readsLeftContext(parsed)}
 	evalRegexCache.Store(key, r)
 	return r, nil
 }
@@ -179,21 +237,25 @@ func applyRegexTest(input any, regexMap map[string]any) (any, error) {
 	if m == nil {
 		return nil, nil
 	}
+	return NewMatchObject(s, m), nil
+}
+
+// NewMatchObject builds the {match, start, end, groups} object jsonata-js
+// produces for a regex match, with rune offsets into s. A capture group that
+// did not participate in the match is "": jsonata-js leaves it undefined,
+// which gnata cannot hold in an array, and "" behaves the same in string
+// operations whereas nil would read as null.
+func NewMatchObject(s string, m *Match) *OrderedMap {
 	groups := make([]any, 0, m.GroupCount()-1)
-	for g := 1; g < m.GroupCount(); g++ {
-		grp := m.GroupByNumber(g)
-		if !grp.Captured {
-			groups = append(groups, "")
-			continue
-		}
-		groups = append(groups, grp.String())
+	for _, g := range m.Groups() {
+		groups = append(groups, g)
 	}
-	return map[string]any{
-		"match":  m.String(),
-		"start":  float64(utf8.RuneCountInString(s[:m.Index])),
-		"end":    float64(utf8.RuneCountInString(s[:m.Index+m.Length])),
-		"groups": groups,
-	}, nil
+	obj := NewOrderedMapWithCapacity(5)
+	obj.Set("match", m.String())
+	obj.Set("start", float64(utf8.RuneCountInString(s[:m.Index])))
+	obj.Set("end", float64(utf8.RuneCountInString(s[:m.Index+m.Length])))
+	obj.Set("groups", groups)
+	return obj
 }
 
 // ── Regex parsing ─────────────────────────────────────────────────────────────

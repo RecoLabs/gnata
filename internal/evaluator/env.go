@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"time"
 
@@ -27,10 +26,15 @@ type callCounter struct {
 	// int32 keeps the struct in the same allocation size class as before the
 	// deadline and context fields were added; it is allocated per evaluation.
 	depth        int32
-	evalDepth    int32
 	max          int32
 	maxSequence  int32 // 0 = unlimited; guardrail set via WithSequence (error D2015)
+	evalDepth    int16 // $eval nesting, capped at a small constant by IncrEvalDepth's caller
 	stackIsLimit bool  // true when max was set via the WithStack guardrail (error D1011 instead of U1001)
+	hasNow       bool  // nowMillis has been captured
+
+	// nowMillis is the evaluation's timestamp, captured on first use so every
+	// $now, $millis and $toMillis call in one evaluation sees the same instant.
+	nowMillis int64
 
 	// deadline is the WithTimeout guardrail, nil when unset so evaluations
 	// without a timeout pay one pointer. It is polled from Err rather than
@@ -198,6 +202,16 @@ func (e *Environment) IncrEvalDepth(maxDepth int) error {
 	return nil
 }
 
+// Now returns the evaluation's timestamp at millisecond precision, the same
+// for every call within one evaluation as jsonata-js requires.
+func (e *Environment) Now() time.Time {
+	c := e.callCounter()
+	if !c.hasNow {
+		c.nowMillis, c.hasNow = time.Now().UnixMilli(), true
+	}
+	return time.UnixMilli(c.nowMillis).UTC()
+}
+
 // DecrEvalDepth decrements the $eval nesting counter.
 func (e *Environment) DecrEvalDepth() {
 	c := e.callCounter()
@@ -243,26 +257,6 @@ func (e *Environment) CheckSequence(n int) error {
 		return &JSONataError{Code: "D2015", Message: fmt.Sprintf("The maximum sequence length of %d was exceeded", c.maxSequence)}
 	}
 	return nil
-}
-
-// Clone creates a shallow copy of the environment, duplicating its bindings
-// but sharing the same parent and call counter references.
-func (e *Environment) Clone() *Environment {
-	child := &Environment{
-		parent:           e.parent,
-		calls:            e.calls,
-		done:             e.done,
-		hasDeadline:      e.hasDeadline,
-		decimalPrecision: e.decimalPrecision,
-	}
-	if e.bindings != nil {
-		child.bindings = make(map[string]any, len(e.bindings))
-		maps.Copy(child.bindings, e.bindings)
-		return child
-	}
-	child.inline = e.inline
-	child.inlineN = e.inlineN
-	return child
 }
 
 // Context returns the evaluation's context.Context, or context.Background()

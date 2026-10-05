@@ -55,6 +55,9 @@ func applyTransform(node *parser.Node, input any, env *Environment) (any, error)
 	if input == nil {
 		return nil, nil
 	}
+	if !IsMap(input) && !IsArray(input) {
+		return nil, &JSONataError{Code: "T0410", Message: "the transform expression must be applied to an object or an array"}
+	}
 	cloned := deepClone(input)
 
 	matched, err := Eval(node.Pattern, cloned, env)

@@ -101,10 +101,11 @@ func nodeHasParentRef(node *parser.Node) bool {
 			})))
 }
 
-// evalPathSimple is the original step-by-step path evaluation (no index bindings).
+// evalPathSimple is step-by-step path evaluation for paths with no index,
+// focus or parent (%) bindings.
 func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error) {
 	result := input
-	prevWasMapper := false
+	prevWasMapper, prevWasCons, singleConsArray := false, false, false
 	for i, step := range node.Steps {
 		if i > 0 && result == nil {
 			return nil, nil
@@ -116,56 +117,37 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 			}
 		}
 
-		// NodeParent (%) requires special handling: look up the parent
-		// via the env chain and advance env to the binding env's parent
-		// so that chained %.% navigates upward correctly.
-		if step.Type == parser.NodeParent {
-			parentVal, bindingEnv, ok := env.LookupWithEnv(parentKey)
-			if !ok || parentVal == nil {
-				return nil, &JSONataError{Code: "S0217", Message: "% operator used outside of a valid path context"}
-			}
-			result = parentVal
-			if pe := bindingEnv.Parent(); pe != nil {
-				env = pe
-			}
-			if _, isJoin := bindingEnv.LookupDirect(parentJoinFlag); isJoin {
-				for env != nil {
-					if _, joinToo := env.LookupDirect(parentJoinFlag); !joinToo {
-						break
-					}
-					pv, pe, has := env.LookupWithEnv(parentKey)
-					if has && pv == parentVal {
-						if next := pe.Parent(); next != nil {
-							env = next
-						} else {
-							break
-						}
-					} else {
-						break
-					}
-				}
-			}
-			continue
+		singleContext := !prevWasMapper || singleConsArray
+		if arr, ok := result.([]any); ok && len(arr) == 1 {
+			singleContext = true
 		}
-
+		mapped := prevWasMapper && !singleConsArray
 		var err error
-		result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray)
+		switch {
+		case singleConsArray:
+			result, err = evalConsArrayStep(step, result, env, node.KeepSingletonArray)
+		case i > 0 && step.Type == parser.NodeVariable:
+			result, err = evalVariableStep(step, result, env, prevWasCons, i == len(node.Steps)-1)
+		default:
+			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray)
+		}
 		if err != nil {
 			return nil, err
 		}
-		// Empty arrays produced by auto-mapping or variable lookup in a
-		// mapping context mean "nothing found" → undefined. However, when
-		// the previous step was a direct access (not a mapper), the empty
-		// array is a genuine field value (e.g. obj.emptyList) and must be
-		// preserved so that $exists sees it as defined.
-		// For field-lookup steps (NodeName/NodeString), evalName already
-		// distinguishes "nothing found" (returns nil) from "field exists
-		// with empty array value" (returns []any{}), so we skip the
-		// blanket nil-ification for those step types.
-		if arr, ok := AsArray(result); ok && len(arr) == 0 && prevWasMapper {
-			if step.Type != parser.NodeName && step.Type != parser.NodeString {
-				return nil, nil
+		// An array constructed from a single context, as in a.[b, c], is one
+		// context item for the next step rather than a sequence to map over.
+		// A $ step returns each item unchanged, so that state carries over it.
+		if i == 0 || step.Type != parser.NodeVariable || step.Value != "" {
+			prevWasCons = i > 0 && step.Type == parser.NodeUnary && step.Value == "["
+			singleConsArray = prevWasCons && singleContext
+			// Mapping over a one-item array nests the array for []; unnest
+			// it here so later steps see it whole and it is wrapped once.
+			if singleConsArray && mapped && node.KeepSingletonArray {
+				result = unnestSingleton(result)
 			}
+		}
+		if prevWasMapper && !singleConsArray && isNothingFound(step, result) {
+			return nil, nil
 		}
 		_, isArr := result.([]any)
 		_, isSeq := result.(*Sequence)
@@ -173,18 +155,94 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 	}
 
 	if node.KeepSingletonArray {
-		switch v := result.(type) {
-		case []any:
-			return v, nil
-		case ConsArray:
-			return []any(v), nil
-		default:
-			if result != nil {
-				return []any{result}, nil
-			}
-		}
+		return keepSingletonArray(result, singleConsArray), nil
 	}
 	return result, nil
+}
+
+// isNothingFound reports whether a step mapped over a sequence produced an
+// empty array that means "nothing found" (undefined). After a direct access
+// (not a mapper), the empty array is a genuine field value (e.g.
+// obj.emptyList) and must be preserved so that $exists sees it as defined.
+// For field-lookup steps (NodeName/NodeString), evalName already
+// distinguishes "nothing found" (returns nil) from "field exists with empty
+// array value" (returns []any{}), so those step types are skipped.
+func isNothingFound(step *parser.Node, result any) bool {
+	arr, ok := AsArray(result)
+	return ok && len(arr) == 0 && step.Type != parser.NodeName && step.Type != parser.NodeString
+}
+
+// unnestSingleton returns the array inside a one-item array of arrays.
+func unnestSingleton(v any) any {
+	if arr, ok := AsArray(v); ok && len(arr) == 1 {
+		if inner, ok := AsArray(arr[0]); ok {
+			return inner
+		}
+	}
+	return v
+}
+
+// keepSingletonArray applies a path's [] suffix: the result is always an
+// array, and an array constructed from a single context stays one item.
+func keepSingletonArray(result any, singleConsArray bool) any {
+	if arr, ok := AsArray(result); ok && singleConsArray {
+		return []any{arr}
+	}
+	switch v := result.(type) {
+	case []any:
+		return v
+	case ConsArray:
+		return []any(v)
+	case nil:
+		return nil
+	}
+	return []any{result}
+}
+
+// evalConsArrayStep evaluates a step whose input is an array constructed
+// from a single context, as in a.[b, c].$string(): the whole array is one
+// context item rather than a sequence to map over.
+func evalConsArrayStep(step *parser.Node, input any, env *Environment, keepSingleton bool) (any, error) {
+	switch {
+	case step.Type == parser.NodeFunction:
+		return evalPathFunctionStep(step, input, env)
+	case step.Type == parser.NodeUnary && step.Value == "{":
+		return consArrayGroup(step, input, env)
+	case step.Type == parser.NodeWildcard:
+		return consArrayWildcard(input, env)
+	}
+	return evalPathStep(step, input, env, false, keepSingleton)
+}
+
+// consArrayWildcard applies a * step to a constructed array taken as one
+// context item: its values are the array's elements, with arrays flattened.
+func consArrayWildcard(input any, env *Environment) (any, error) {
+	arr, _ := AsArray(input)
+	values := make([]any, 0, len(arr))
+	for _, item := range arr {
+		if nested, ok := item.([]any); ok {
+			values = append(values, nested...)
+		} else {
+			values = append(values, item)
+		}
+	}
+	if err := env.CheckSequence(len(values)); err != nil {
+		return nil, err
+	}
+	switch len(values) {
+	case 0:
+		return nil, nil
+	case 1:
+		return values[0], nil
+	}
+	return values, nil
+}
+
+// consArrayGroup applies a {...} step to a constructed array taken as one
+// context item, grouping its elements by key like ${...} does.
+func consArrayGroup(step *parser.Node, input any, env *Environment) (any, error) {
+	items, _ := AsArray(input)
+	return groupItems(objectPairs(step.LHS), items, env)
 }
 
 // evalPathTuple evaluates a path that contains one or more #$var index bindings.
@@ -199,6 +257,7 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 // (containing $o, $i, …) are used during key/val evaluation.
 func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) { //nolint:gocyclo,funlen // dispatch
 	ctxs := []pathCtx{{value: input, env: env}}
+	tupleStart := firstBindingStep(node.Steps)
 
 	// finalGroup accumulates the first step-level Group expression encountered.
 	// Step-level groups are applied after all contexts have been collected.
@@ -226,81 +285,26 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			if err != nil {
 				return nil, err
 			}
+			if step.Index != "" && stepIdx == tupleStart && !nodeHasIndexBinding(step.Left) {
+				for k := range sorted {
+					sorted[k].env = NewChildEnvironment(sorted[k].env)
+					sorted[k].env.Bind(step.Index, float64(k))
+				}
+			}
 			ctxs = sorted
 			continue
 		}
 
-		// NodeParent (%) steps navigate up the parent chain using the env bindings
-		// set by appendTupleResults. The parent value is retrieved via %%, and the
-		// new env is the immediate parent of the current env (so that chained %.%
-		// can continue walking up the env chain).
-		if evalStep.Type == parser.NodeParent {
-			for _, ctx := range ctxs {
-				// Use LookupWithEnv so we know which env directly holds %%,
-				// and can use THAT env's parent as the new env. This matters
-				// when evalBlock (or other scope creators) add intermediate
-				// environments: childEnv.Parent() = env3a, but env3a still
-				// has %% = Product. We need env3a.Parent() = env2a instead.
-				parentVal, bindingEnv, ok := ctx.env.LookupWithEnv(parentKey)
-				if !ok || parentVal == nil {
-					return nil, &JSONataError{Code: "S0217", Message: "% operator used outside of a valid path context"}
-				}
-				parentEnv := bindingEnv.Parent()
-				// When the current binding was made by a join step, skip
-				// through any ancestor envs that are ALSO join bindings with
-				// the same parent value. Join steps don't change the context
-				// level, so consecutive join bindings represent the same
-				// navigation depth. Regular steps always count as a level.
-				if _, isJoin := bindingEnv.LookupDirect(parentJoinFlag); isJoin {
-					for parentEnv != nil {
-						if _, joinToo := parentEnv.LookupDirect(parentJoinFlag); !joinToo {
-							break
-						}
-						pv, pe, has := parentEnv.LookupWithEnv(parentKey)
-						if has && pv == parentVal {
-							parentEnv = pe.Parent()
-						} else {
-							break
-						}
-					}
-				}
-				if parentEnv == nil {
-					parentEnv = bindingEnv
-				}
-				nextCtxs = append(nextCtxs, pathCtx{value: parentVal, env: parentEnv})
+		// % steps, with any predicates such as %[0], navigate up the parent
+		// chain; the predicates then filter the whole parent stream.
+		if base, stages := splitTupleStages(evalStep); base.Type == parser.NodeParent {
+			stream, err := parentTuples(base, ctxs)
+			if err != nil {
+				return nil, err
 			}
-			ctxs = nextCtxs
-			if len(ctxs) == 0 {
-				break
+			if ctxs, err = applyTupleStages(stages, stream); err != nil {
+				return nil, err
 			}
-			continue
-		}
-
-		// Subscript steps whose LEFT is NodeParent (%[predicate]) require special
-		// handling: navigate % to the parent first, then apply the predicate using
-		// the parent's own env (so that nested % inside the predicate refers to
-		// the grandparent correctly).
-		if evalStep.Type == parser.NodeBinary && evalStep.Value == "[" &&
-			evalStep.Left != nil && evalStep.Left.Type == parser.NodeParent {
-			predicate := evalStep.Right
-			for _, ctx := range ctxs {
-				parentVal, bindingEnv, ok := ctx.env.LookupWithEnv(parentKey)
-				if !ok {
-					return nil, &JSONataError{Code: "S0217", Message: "% operator used outside of a valid path context"}
-				}
-				parentEnv := bindingEnv.Parent()
-				if parentEnv == nil {
-					parentEnv = bindingEnv
-				}
-				predResult, err := Eval(predicate, parentVal, parentEnv)
-				if err != nil {
-					return nil, err
-				}
-				if ToBoolean(predResult) {
-					nextCtxs = append(nextCtxs, pathCtx{value: parentVal, env: parentEnv})
-				}
-			}
-			ctxs = nextCtxs
 			if len(ctxs) == 0 {
 				break
 			}
@@ -320,9 +324,9 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			for _, ctx := range ctxs {
 				var tupleCtxs []pathCtx
 				block := evalStep.Left
-				if len(block.Expressions) == 1 && block.Expressions[0].Type == parser.NodePath {
+				if steps := blockPathSteps(block); steps != nil {
 					var err error
-					tupleCtxs, err = expandPathTuple(block.Expressions[0].Steps, []pathCtx{ctx})
+					tupleCtxs, err = expandPathTuple(steps, []pathCtx{ctx})
 					if err != nil {
 						return nil, err
 					}
@@ -365,13 +369,18 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 		// When the step is a Block containing a single Path expression,
 		// expand the inner path in tuple mode to preserve parent bindings
 		// for the % operator (e.g., Account.(Order.Product).{%.OrderID}).
-		if evalStep.Type == parser.NodeBlock &&
-			len(evalStep.Expressions) == 1 &&
-			evalStep.Expressions[0].Type == parser.NodePath {
-			var err error
-			nextCtxs, err = expandPathTuple(evalStep.Expressions[0].Steps, ctxs)
-			if err != nil {
-				return nil, err
+		if steps := blockPathSteps(evalStep); evalStep.Type == parser.NodeBlock && steps != nil {
+			for _, ctx := range ctxs {
+				expanded, err := expandPathTuple(steps, []pathCtx{ctx})
+				if err != nil {
+					return nil, err
+				}
+				if evalStep.Index != "" {
+					for k := range expanded {
+						expanded[k].env.Bind(evalStep.Index, float64(k))
+					}
+				}
+				nextCtxs = append(nextCtxs, expanded...)
 			}
 			ctxs = nextCtxs
 			if len(ctxs) == 0 {
@@ -446,6 +455,17 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 			}
 
 			ctxs = nextCtxs
+			if len(ctxs) == 0 {
+				break
+			}
+			continue
+		}
+
+		if base, stages := splitTupleStages(evalStep); stepIdx >= tupleStart && len(stages) > 0 && isPlainTupleBase(base) {
+			var err error
+			if ctxs, err = evalTupleStages(base, stages, ctxs, node.KeepSingletonArray); err != nil {
+				return nil, err
+			}
 			if len(ctxs) == 0 {
 				break
 			}
@@ -941,7 +961,7 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 				groupCtx = g.values[0]
 				groupEnv = g.envs[0]
 			} else {
-				groupCtx = g.values
+				groupCtx = groupContext(g.values)
 				groupEnv = mergeGroupEnvs(g.envs)
 			}
 			val, err := Eval(pair[1], groupCtx, groupEnv)
@@ -1115,6 +1135,258 @@ func evalPathStep(
 		// With [] (keepSingletonArray), prevent singleton collapse so that a
 		// path like $.[v,e][] with 1 input element returns [[v,e]] not [v,e].
 		return seq.Values, nil
+	}
+	return CollapseSequence(seq), nil
+}
+
+// tupleStage is one predicate of a step, with the #$var bound after it.
+type tupleStage struct {
+	predicate *parser.Node
+	index     string
+}
+
+// firstBindingStep returns the index of the first step carrying a #$var or
+// @$var binding, or len(steps) when there is none. From that step on,
+// jsonata-js evaluates the path as a tuple stream.
+func firstBindingStep(steps []*parser.Node) int {
+	for i, step := range steps {
+		for n := step; n != nil; n = n.Left {
+			if n.Index != "" || n.Focus != "" {
+				return i
+			}
+			if n.Type != parser.NodeBinary || n.Value != "[" {
+				break
+			}
+		}
+	}
+	return len(steps)
+}
+
+// splitTupleStages splits a step such as X[p1]#$i[p2] into its base step X
+// and its predicate stages in source order.
+func splitTupleStages(step *parser.Node) (*parser.Node, []tupleStage) {
+	var stages []tupleStage
+	for step.Type == parser.NodeBinary && step.Value == "[" && step.Left != nil && step.Right != nil {
+		stages = append(stages, tupleStage{predicate: step.Right, index: step.Index})
+		step = step.Left
+	}
+	slices.Reverse(stages)
+	return step, stages
+}
+
+// isPlainTupleBase reports whether a predicated step's base is one that
+// evalTupleStages can expand per context; joins and % keep their dedicated
+// handling.
+func isPlainTupleBase(base *parser.Node) bool {
+	switch base.Type {
+	case parser.NodeName, parser.NodeString, parser.NodeWildcard, parser.NodeDescendant,
+		parser.NodeBlock, parser.NodeFunction, parser.NodeVariable, parser.NodeUnary:
+		return base.Focus == "" && base.Group == nil && !nodeHasParentRef(base)
+	}
+	return false
+}
+
+// evalTupleStages expands base for every context, then applies each stage
+// to the whole resulting tuple stream rather than per context, as
+// jsonata-js does once a path is a tuple stream: Product[0]#$i keeps only
+// the first product overall, and a stage #$i numbers the filtered stream.
+func evalTupleStages(base *parser.Node, stages []tupleStage, ctxs []pathCtx, keepSingleton bool) ([]pathCtx, error) {
+	var stream []pathCtx
+	for _, ctx := range ctxs {
+		val := ctx.value
+		if seq, ok := val.(*Sequence); ok {
+			val = CollapseSequence(seq)
+		}
+		if val == nil {
+			continue
+		}
+		result, err := evalPathStep(base, val, ctx.env, false, keepSingleton)
+		if err != nil {
+			return nil, err
+		}
+		if result != nil {
+			appendTupleResults(base, result, ctx.value, ctx.env, &stream)
+		}
+	}
+	return applyTupleStages(stages, stream)
+}
+
+// applyTupleStages filters a tuple stream by each stage in turn, binding a
+// stage's #$var to the positions of the filtered stream.
+func applyTupleStages(stages []tupleStage, stream []pathCtx) ([]pathCtx, error) {
+	for _, stage := range stages {
+		var err error
+		if stream, err = filterTupleStream(stage.predicate, stream); err != nil {
+			return nil, err
+		}
+		if stage.index != "" {
+			for k := range stream {
+				stream[k].env.Bind(stage.index, float64(k))
+			}
+		}
+	}
+	return stream, nil
+}
+
+// parentTuples evaluates a % step for every tuple: the parent value bound by
+// appendTupleResults becomes the context, with the parent's env so chained
+// %.% keeps walking up. A %@$v step instead keeps the context and binds the
+// parent to $v, and %#$i binds the parent's position, which is always 0.
+func parentTuples(step *parser.Node, ctxs []pathCtx) ([]pathCtx, error) {
+	next := make([]pathCtx, 0, len(ctxs))
+	for _, ctx := range ctxs {
+		// LookupWithEnv finds the env that directly holds %%, whose parent is
+		// the parent level even when evalBlock or other scope creators added
+		// intermediate envs that still see %% through the chain.
+		parentVal, bindingEnv, ok := ctx.env.LookupWithEnv(parentKey)
+		if !ok || parentVal == nil {
+			return nil, &JSONataError{Code: "S0217", Message: "% operator used outside of a valid path context"}
+		}
+		parentEnv := bindingEnv.Parent()
+		// Join steps don't change the context level, so consecutive join
+		// bindings with the same parent value are one navigation depth.
+		if _, isJoin := bindingEnv.LookupDirect(parentJoinFlag); isJoin {
+			for parentEnv != nil {
+				if _, joinToo := parentEnv.LookupDirect(parentJoinFlag); !joinToo {
+					break
+				}
+				pv, pe, has := parentEnv.LookupWithEnv(parentKey)
+				if !has || pv != parentVal {
+					break
+				}
+				parentEnv = pe.Parent()
+			}
+		}
+		if parentEnv == nil {
+			parentEnv = bindingEnv
+		}
+		tuple := pathCtx{value: parentVal, env: parentEnv}
+		if step.Focus != "" {
+			tuple = ctx
+		}
+		if step.Focus != "" || step.Index != "" {
+			tuple.env = NewChildEnvironment(tuple.env)
+		}
+		if step.Focus != "" {
+			tuple.env.Bind(step.Focus, parentVal)
+		}
+		if step.Index != "" {
+			tuple.env.Bind(step.Index, float64(0))
+		}
+		next = append(next, tuple)
+	}
+	return next, nil
+}
+
+// filterTupleStream keeps the tuples whose predicate is truthy, or whose
+// position matches the predicate when it yields a number or an array of
+// numbers (negative positions count from the end).
+func filterTupleStream(predicate *parser.Node, stream []pathCtx) ([]pathCtx, error) {
+	var kept []pathCtx
+	for pos, ctx := range stream {
+		if err := ctx.env.Err(); err != nil {
+			return nil, err
+		}
+		res, err := Eval(predicate, ctx.value, ctx.env)
+		if err != nil {
+			return nil, err
+		}
+		matches, positional, err := positionMatches(res, pos, len(stream))
+		if err != nil {
+			return nil, err
+		}
+		if !positional && ToBoolean(res) {
+			matches = 1
+		}
+		if len(kept)+matches > len(stream) {
+			if err := ctx.env.CheckSequence(len(kept) + matches); err != nil {
+				return nil, err
+			}
+		}
+		for range matches {
+			kept = append(kept, ctx)
+		}
+	}
+	return kept, nil
+}
+
+// positionMatches counts how many of the positions a predicate result
+// selects equal pos; positional is false unless the result is a number or a
+// non-empty array of numbers.
+func positionMatches(res any, pos, length int) (matches int, positional bool, _ error) {
+	indices, isArr := res.([]any)
+	if !isArr {
+		indices = []any{res}
+	} else if len(indices) == 0 {
+		return 0, false, nil
+	}
+	resolved, ok, err := resolveIndices(indices, length)
+	if err != nil || !ok {
+		return 0, false, err
+	}
+	for _, i := range resolved {
+		if i == pos {
+			matches++
+		}
+	}
+	return matches, true, nil
+}
+
+// blockPathSteps returns the path steps of a block holding a single path,
+// treating a lone field name as a one-step path, or nil otherwise. A block
+// with an @$var focus binding keeps the generic handling that binds it.
+func blockPathSteps(block *parser.Node) []*parser.Node {
+	if len(block.Expressions) != 1 || block.Focus != "" {
+		return nil
+	}
+	switch expr := block.Expressions[0]; expr.Type {
+	case parser.NodePath:
+		return expr.Steps
+	case parser.NodeName:
+		return []*parser.Node{expr}
+	}
+	return nil
+}
+
+// evalVariableStep evaluates a variable step that is not the first step of
+// its path once per context item, so a.$v yields one $v per item of a and
+// an empty a yields nothing. Only a leading variable makes a path absolute.
+//
+// Array values are flattened one level, as jsonata-js does, except an array
+// built by the preceding array-constructor step: $ returns that item itself,
+// which stays one value (a.[$].$ is [[1],[2]]). A last step with a single
+// array result returns that array unchanged.
+func evalVariableStep(step *parser.Node, input any, env *Environment, consItems, lastStep bool) (any, error) {
+	items, ok := input.([]any)
+	if !ok {
+		return Eval(step, input, env)
+	}
+	results := make([]any, 0, len(items))
+	for _, item := range items {
+		val, err := Eval(step, item, env)
+		if err != nil {
+			return nil, err
+		}
+		if val != nil {
+			results = append(results, val)
+		}
+	}
+	if len(results) == 1 && lastStep {
+		if arr, ok := results[0].([]any); ok {
+			return arr, nil
+		}
+	}
+	keepItems := consItems && step.Value == ""
+	seq := CreateSequence()
+	for _, val := range results {
+		if arr, ok := val.([]any); ok && !keepItems {
+			seq.Values = append(seq.Values, arr...)
+			continue
+		}
+		appendToSequence(seq, val)
+	}
+	if len(seq.Values) == 0 {
+		return nil, nil
 	}
 	return CollapseSequence(seq), nil
 }

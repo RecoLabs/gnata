@@ -99,26 +99,15 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 
 		if left != nil {
 			if _, ok := ToFloat64(left); !ok {
-				code := "T2001"
-				if IsNull(left) {
-					code = "T2002"
-				}
-				return nil, &JSONataError{Code: code, Message: fmt.Sprintf("the left operand of the %q operator must evaluate to a number", op)}
+				return nil, &JSONataError{Code: "T2001", Message: fmt.Sprintf("the left operand of the %q operator must evaluate to a number", op)}
 			}
-		}
-		if left == nil {
-			return nil, nil
 		}
 		if right != nil {
 			if _, ok := ToFloat64(right); !ok {
-				code := "T2001"
-				if IsNull(right) {
-					code = "T2002"
-				}
-				return nil, &JSONataError{Code: code, Message: fmt.Sprintf("the right operand of the %q operator must evaluate to a number", op)}
+				return nil, &JSONataError{Code: "T2002", Message: fmt.Sprintf("the right operand of the %q operator must evaluate to a number", op)}
 			}
 		}
-		if right == nil {
+		if left == nil || right == nil {
 			return nil, nil
 		}
 		if prec := env.DecimalPrecision(); prec > 0 {
@@ -233,11 +222,9 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 		return []any{v}
 	}
 
-	if idx, ok := ToFloat64(rightVal); ok {
-		i := ToIntClamped(idx)
-		if i < 0 {
-			i = len(items) + i
-		}
+	if i, ok, err := subscriptIndex(rightVal, len(items)); err != nil {
+		return nil, err
+	} else if ok {
 		if i < 0 || i >= len(items) {
 			return nil, nil
 		}
@@ -250,8 +237,8 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 
 	// Array index: when subscript evaluates to an array of all-numeric indices,
 	// select multiple elements. Non-numeric arrays fall through to predicate filter.
-	if result, ok := selectByIndices(rightVal, items); ok {
-		return result, nil
+	if result, ok, err := selectByIndices(rightVal, items); err != nil || ok {
+		return result, err
 	}
 
 	// Predicate filter: keep items where right evaluates to truthy.
@@ -331,23 +318,16 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 
 // selectByIndices handles array-of-indices subscript: when rightVal is []any
 // of all-numeric values, it selects the corresponding elements from items.
-// Returns (result, true) if handled, or (nil, false) to fall through to predicate filter.
-func selectByIndices(rightVal any, items []any) (any, bool) {
-	indexArr, ok := rightVal.([]any)
-	if !ok {
-		return nil, false
+// ok is false when an index is not a number, so the caller falls through to
+// the predicate filter; an infinite index raises D1001.
+func selectByIndices(rightVal any, items []any) (selected any, ok bool, err error) {
+	indexArr, isArr := rightVal.([]any)
+	if !isArr {
+		return nil, false, nil
 	}
-	indices := make([]int, 0, len(indexArr))
-	for _, idxVal := range indexArr {
-		idx, ok := ToFloat64(idxVal)
-		if !ok {
-			return nil, false // non-numeric → fall through to predicate filter
-		}
-		i := ToIntClamped(idx)
-		if i < 0 {
-			i = len(items) + i
-		}
-		indices = append(indices, i)
+	indices, ok, err := resolveIndices(indexArr, len(items))
+	if err != nil || !ok {
+		return nil, false, err
 	}
 	sort.Ints(indices)
 	result := make([]any, 0, len(indices))
@@ -357,9 +337,47 @@ func selectByIndices(rightVal any, items []any) (any, bool) {
 		}
 	}
 	if len(result) == 0 {
-		return nil, true
+		return nil, true, nil
 	}
-	return result, true
+	return result, true, nil
+}
+
+// resolveIndices resolves every value of an index array with subscriptIndex.
+// ok is false when any value is not a number; every value is still checked,
+// so an infinite index raises D1001 wherever it sits, as in jsonata-js.
+func resolveIndices(values []any, length int) (indices []int, ok bool, err error) {
+	indices = make([]int, 0, len(values))
+	ok = true
+	for _, v := range values {
+		i, numeric, indexErr := subscriptIndex(v, length)
+		if indexErr != nil {
+			return nil, false, indexErr
+		}
+		ok = ok && numeric
+		indices = append(indices, i)
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	return indices, true, nil
+}
+
+// subscriptIndex resolves a numeric subscript value to a position in a
+// sequence of `length` items: rounded down, and counted from the end when
+// negative. ok is false for non-numbers and NaN, which filter as booleans;
+// ±Inf raises D1001, as in jsonata-js.
+func subscriptIndex(v any, length int) (i int, ok bool, _ error) {
+	f, isNum := ToFloat64(v)
+	switch {
+	case !isNum || math.IsNaN(f):
+		return 0, false, nil
+	case math.IsInf(f, 0):
+		return 0, false, &JSONataError{Code: "D1001", Message: "subscript index is out of range"}
+	}
+	if i = ToIntClamped(math.Floor(f)); i < 0 {
+		i += length
+	}
+	return i, true, nil
 }
 
 // evalArithFloat64 performs arithmetic on two float64 values.

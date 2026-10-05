@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"fmt"
+	"iter"
 
 	"github.com/recolabs/gnata/internal/parser"
 )
@@ -32,6 +33,8 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	switch v := base.(type) {
 	case []any:
 		items = v
+	case ConsArray:
+		items = v
 	case *Sequence:
 		if collapsed := CollapseSequence(v); collapsed == nil {
 			return nil, nil
@@ -43,10 +46,54 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	default:
 		items = []any{base}
 	}
+	return groupItems(groupPairs(node.Group.Pairs), items, env)
+}
 
+// groupPairs yields the key and value expressions of a parsed group.
+func groupPairs(pairs [][2]*parser.Node) iter.Seq2[*parser.Node, *parser.Node] {
+	return func(yield func(key, value *parser.Node) bool) {
+		for _, pair := range pairs {
+			if !yield(pair[0], pair[1]) {
+				return
+			}
+		}
+	}
+}
+
+// objectPairs yields the key and value expressions of an object
+// constructor's flat [k, v, k, v, ...] operands in place.
+func objectPairs(flat []*parser.Node) iter.Seq2[*parser.Node, *parser.Node] {
+	return func(yield func(key, value *parser.Node) bool) {
+		for i := 0; i+1 < len(flat); i += 2 {
+			if !yield(flat[i], flat[i+1]) {
+				return
+			}
+		}
+	}
+}
+
+// groupContext folds the items sharing a group key into the context of the
+// group's value expression as jsonata-js fn.append does: a lone item is kept
+// as is, while array items are concatenated rather than nested.
+func groupContext(items []any) any {
+	if len(items) == 1 {
+		return items[0]
+	}
+	var merged []any
+	for _, item := range items {
+		if arr, ok := AsArray(item); ok {
+			merged = append(merged, arr...)
+		} else if item != nil {
+			merged = append(merged, item)
+		}
+	}
+	return merged
+}
+
+// groupItems builds the {key: value} object of a group expression over items.
+func groupItems(pairs iter.Seq2[*parser.Node, *parser.Node], items []any, env *Environment) (any, error) {
 	outObj, keySet := NewOrderedMap(), map[string]bool{}
-	for _, pair := range node.Group.Pairs {
-		keyNode, valNode := pair[0], pair[1]
+	for keyNode, valNode := range pairs {
 		var groupOrder []string
 		groups := map[string]*groupEntry{}
 
@@ -74,10 +121,7 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 				return nil, &JSONataError{Code: "D1009", Message: fmt.Sprintf("duplicate key: %q", keyStr)}
 			}
 			entry := groups[keyStr]
-			groupInput := any(entry.items)
-			if len(entry.items) == 1 {
-				groupInput = entry.items[0]
-			}
+			groupInput := groupContext(entry.items)
 
 			childEnv := NewChildEnvironment(env)
 			childEnv.Bind("$index", float64(entry.firstIdx))
@@ -85,6 +129,7 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 
 			valResult := groupInput
 			if valNode != nil {
+				var err error
 				if valResult, err = Eval(valNode, groupInput, childEnv); err != nil {
 					return nil, err
 				}

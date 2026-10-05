@@ -112,14 +112,12 @@ func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
 		if envFn, found := env.Lookup(node.Procedure.Value); found && envFn != nil {
 			return nil, &JSONataError{Code: "T1007", Message: "attempted to partially apply a function referenced without $"}
 		}
-		return nil, &JSONataError{Code: "T1008", Message: "cannot partially apply a non-function: the function is not defined"}
 	}
-	// T1007 when fn is nil (undefined); T1008 when fn is a non-function value.
 	switch fn.(type) {
 	case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin:
 		// OK
 	case nil:
-		return nil, &JSONataError{Code: "T1007", Message: "attempted to partially apply an undefined function"}
+		return nil, &JSONataError{Code: "T1008", Message: "cannot partially apply a non-function: the function is not defined"}
 	default:
 		return nil, &JSONataError{Code: "T1008", Message: fmt.Sprintf("cannot partially apply a non-function: %T", fn)}
 	}

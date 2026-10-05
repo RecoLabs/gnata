@@ -95,12 +95,6 @@ func CreateSequence(items ...any) *Sequence {
 	return s
 }
 
-// IsSequence reports whether v is a *Sequence.
-func IsSequence(v any) bool {
-	_, ok := v.(*Sequence)
-	return ok
-}
-
 // CollapseSequence applies JSONata singleton-collapsing rules:
 //   - len 0 → nil (undefined)
 //   - len 1 → elem[0] unless KeepSingleton is set
@@ -181,22 +175,6 @@ func IsNumeric(v any) bool {
 	return false
 }
 
-// CheckNumeric validates that v is a finite numeric value. Returns a D1001 error for Inf/NaN.
-func CheckNumeric(v any) error {
-	switch n := v.(type) {
-	case float64:
-		if math.IsInf(n, 0) || math.IsNaN(n) {
-			return &JSONataError{Code: "D1001", Value: v}
-		}
-	case json.Number:
-		f, err := n.Float64()
-		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
-			return &JSONataError{Code: "D1001", Value: v}
-		}
-	}
-	return nil
-}
-
 // ToBoolean implements JSONata boolean casting rules.
 func ToBoolean(v any) bool {
 	if v == nil || IsNull(v) {
@@ -208,7 +186,7 @@ func ToBoolean(v any) bool {
 	case string:
 		return val != ""
 	case float64:
-		return val != 0
+		return val != 0 && !math.IsNaN(val)
 	case json.Number:
 		f, err := val.Float64()
 		return err == nil && f != 0
