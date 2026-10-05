@@ -986,6 +986,11 @@ func evalPathStepLone(
 		}
 		return noLone(Eval(step, input, env))
 	case parser.NodeWildcard:
+		// A step maps * over its contexts, except a first step over the
+		// root input array, which jsonata-js wraps as one context.
+		if arr, ok := input.([]any); ok && step.Group == nil && (prevWasMapper || !isRootArray(arr, env)) {
+			return noLone(evalWildcardStep(arr, env))
+		}
 		return noLone(Eval(step, input, env))
 	case parser.NodeSort: // Sort steps must be applied to the full accumulated input, not mapped per-element.
 		return noLone(evalSortStep(step, input, env))
@@ -1347,18 +1352,10 @@ func pathStepArray(input any) ([]any, bool) {
 	return arr, ok
 }
 
-// evalPathStepDescendant evaluates a ** path step. It must include the input
-// itself in the search so that a later step can match at the current level
-// too, not just at deeper ones. Arrays are transparent containers: their
-// elements are already included by descendantLookup, so adding the array
-// itself would cause duplicate results when subsequent field lookups
-// auto-map through both the array and its individually-included elements.
+// evalPathStepDescendant evaluates a ** path step. It includes the input
+// itself, so that a later step can match at the current level too.
 func evalPathStepDescendant(input any, env *Environment) (any, error) {
-	seq := CreateSequence()
-	if _, isArr := AsArray(input); !isArr {
-		appendToSequence(seq, input)
-	}
-	appendToSequence(seq, descendantLookup(input))
+	seq := descendantLookup(input)
 	if err := env.CheckSequence(len(seq.Values)); err != nil {
 		return nil, err
 	}
@@ -1406,33 +1403,30 @@ func evalPathFunctionStep(step *parser.Node, item any, env *Environment) (any, e
 	return callFunction(fn, args, item, env)
 }
 
-// descendantLookup recursively collects all values at all depths from maps and arrays.
-// It returns a *Sequence (never collapses to []any) so that appendToSequence can
-// properly flatten the results when building the descendant step sequence.
-//
-// For arrays, individual elements are added (not the array as a whole), matching
-// JSONata semantics where ** traverses into arrays and exposes each element for
-// field lookup in subsequent path steps.
+// descendantLookup collects input and every value nested in it, as the **
+// operator does in jsonata-js: arrays are walked into but are not values
+// themselves.
 func descendantLookup(input any) *Sequence {
 	seq := CreateSequence()
-	if IsMap(input) {
-		MapRange(input, func(_ string, val any) bool {
-			if arr, ok := val.([]any); ok {
-				for _, item := range arr {
-					appendToSequence(seq, item)
-					appendToSequence(seq, descendantLookup(item))
-				}
-			} else {
-				appendToSequence(seq, val)
-				appendToSequence(seq, descendantLookup(val))
-			}
-			return true
-		})
-	} else if arr, ok := input.([]any); ok {
-		for _, item := range arr {
-			appendToSequence(seq, item)
-			appendToSequence(seq, descendantLookup(item))
-		}
+	if input != nil {
+		appendDescendants(input, seq)
 	}
 	return seq
+}
+
+func appendDescendants(v any, seq *Sequence) {
+	if arr, ok := AsArray(v); ok {
+		for _, item := range arr {
+			appendDescendants(item, seq)
+		}
+		return
+	}
+	v = nilAsNull(v)
+	appendToSequence(seq, v)
+	if IsMap(v) {
+		MapRange(v, func(_ string, val any) bool {
+			appendDescendants(val, seq)
+			return true
+		})
+	}
 }

@@ -326,9 +326,7 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any, items []any, _ error) {
 	switch {
 	case node.Left != nil && node.Left.Type == parser.NodeDescendant:
-		descSeq := CreateSequence()
-		appendToSequence(descSeq, input)
-		appendToSequence(descSeq, descendantLookup(input))
+		descSeq := descendantLookup(input)
 		if err := env.CheckSequence(len(descSeq.Values)); err != nil {
 			return nil, nil, err
 		}

@@ -329,6 +329,21 @@ var subscriptCases = []exprCase{
 	{expr: `q^(t){t:1}`, data: `{"q":[[{"t":"a"},{"t":"b"}]]}`, code: "T1003"},
 	{expr: `a^($) & "x"`, data: `{"a":[3,1,2]}`, want: `"[1,2,3]x"`},
 	{expr: `($x := s^($); $x + 1)`, data: `{"s":[3]}`, want: `4`},
+	// ** includes its input and walks into arrays without yielding them;
+	// * flattens array values completely.
+	{expr: `$count(**)`, data: `{"a":{"b":[1,[2,3]]}}`, want: `5`},
+	{expr: `a.*`, data: `{"a":{"b":[[1,[2]],{"c":3}]}}`, want: `[1,2,{"c":3}]`},
+	{expr: `o.*`, data: `{"o":[{"v":[1,2]},{"v":3}]}`, want: `[1,2,3]`},
+	{expr: `y.*`, data: `{"y":[[1,2],[3]]}`, want: `[1,2,3]`},
+	{expr: `n.*`, data: `{"n":[1,2,3]}`, want: undefined},
+	{expr: `{"a":[5]}.*`, want: `[5]`},
+	{expr: `{"a":[[]]}.*`, want: `[]`},
+	{expr: `*`, data: `[{"a":1},2,[3,[4]]]`, want: `[{"a":1},2,3,4]`},
+	{expr: `$.*`, data: `[{"a":1},2,[3,[4]]]`, want: `[1,3,4]`},
+	{expr: `*.a`, data: `[{"a":1},{"a":2}]`, want: `[1,2]`},
+	{expr: `*.*`, data: `[{"a":1},{"b":[2,3]}]`, want: `[1,2,3]`},
+	{expr: `*#$i.$i`, data: `[{"a":1},{"b":[2,3]}]`, want: `[0,1]`},
+	{expr: `$string(**)`, data: `{"s":[3]}`, want: `"[{\"s\":[3]},3]"`},
 }
 
 var operatorCases = []exprCase{
@@ -381,6 +396,7 @@ func TestNullItemsOnGoMaps(t *testing.T) {
 		{expr: `a#$j.$j`, want: `[0,1]`},
 		{expr: `a@$v.$v`, want: `[4,null]`},
 		{expr: `p.a#$j`, want: `[4,null]`},
+		{expr: `$count(*[$=null])`, want: `1`},
 	}
 	var data any
 	if err := json.Unmarshal([]byte(`{"a":[4,null],"p":{"a":[4,null]}}`), &data); err != nil {

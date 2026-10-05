@@ -283,8 +283,8 @@ func evalName(node *parser.Node, input any, _ *Environment) (any, error) {
 }
 
 // evalNameLone is evalName also reporting lone: exactly one context has the
-// field, and its value is an array. A nested array context
-// builds a sequence of its own, so it is never lone. As a path's last step,
+// field, and its value is an array. A nested array context builds a
+// sequence of its own, so it is never lone. As a path's last step,
 // jsonata-js returns a lone value as is.
 func evalNameLone(node *parser.Node, input any) (result any, lone bool, _ error) {
 	switch v := input.(type) {
@@ -363,54 +363,89 @@ func evalNameLone(node *parser.Node, input any) (result any, lone bool, _ error)
 	}
 }
 
+// evalWildcard evaluates * against input as one context, as jsonata-js
+// does outside a path step: an array's values are its items.
 func evalWildcard(_ *parser.Node, input any, env *Environment) (any, error) {
-	if IsMap(input) {
-		if MapLen(input) == 0 {
-			return nil, nil
+	vals, plain, err := wildcardValues(input, env)
+	if err != nil {
+		return nil, err
+	}
+	return wildcardResult(vals, plain), nil
+}
+
+// evalWildcardStep evaluates * against each of contexts and appends their
+// values into one sequence. A lone context's result is returned as is, so
+// a last step can pass it through, as in jsonata-js.
+func evalWildcardStep(contexts []any, env *Environment) (any, error) {
+	if len(contexts) == 1 {
+		return evalWildcard(nil, contexts[0], env)
+	}
+	seq := CreateSequence()
+	for _, ctx := range contexts {
+		vals, _, err := wildcardValues(ctx, env)
+		if err != nil {
+			return nil, err
 		}
-		seq := CreateSequence()
-		MapRange(input, func(_ string, val any) bool {
-			if arr, ok := val.([]any); ok {
-				seq.Values = append(seq.Values, arr...)
-			} else {
-				seq.Values = append(seq.Values, val)
-			}
-			return true
+		seq.Values = append(seq.Values, vals...)
+		if err := env.CheckSequence(len(seq.Values)); err != nil {
+			return nil, err
+		}
+	}
+	return CollapseSequence(seq), nil
+}
+
+// wildcardValues returns the values * yields for one context, as in
+// jsonata-js: those of an object or an array, each array value flattened
+// completely, and none for anything else. plain reports that an array value
+// was appended: from then on jsonata-js's result is a plain array, which
+// does not collapse to a lone item and whose pushes are not counted; an
+// appended array still counts the whole result.
+func wildcardValues(ctx any, env *Environment) (vals []any, plain bool, err error) {
+	add := func(val any) {
+		if err != nil {
+			return
+		}
+		if arr, isArr := AsArray(val); isArr {
+			plain = true
+			err = EachLeaf(arr, -1, env, func(item any) error {
+				vals = append(vals, nilAsNull(item))
+				return env.CheckSequence(len(vals))
+			})
+			return
+		}
+		vals = append(vals, nilAsNull(val))
+		if !plain {
+			err = env.CheckSequence(len(vals))
+		}
+	}
+	if arr, isArr := AsArray(ctx); isArr {
+		for _, item := range arr {
+			add(item)
+		}
+	} else if IsMap(ctx) {
+		MapRange(ctx, func(_ string, val any) bool {
+			add(val)
+			return err == nil
 		})
-		if len(seq.Values) == 0 {
-			return nil, nil
-		}
-		if err := env.CheckSequence(len(seq.Values)); err != nil {
-			return nil, err
-		}
-		if len(seq.Values) == 1 {
-			return seq.Values[0], nil
-		}
-		return CollapseSequence(seq), nil
 	}
-	switch v := input.(type) {
-	case []any:
-		seq := CreateSequence()
-		for _, item := range v {
-			if IsMap(item) {
-				val, err := evalWildcard(nil, item, env)
-				if err != nil {
-					return nil, err
-				}
-				if val != nil {
-					appendToSequence(seq, val)
-				}
-			} else if item != nil {
-				seq.Values = append(seq.Values, item)
-			}
-		}
-		if err := env.CheckSequence(len(seq.Values)); err != nil {
-			return nil, err
-		}
-		return CollapseSequence(seq), nil
-	case ConsArray:
-		return evalWildcard(nil, []any(v), env)
-	default:
-		return nil, nil
+	return vals, plain, err
+}
+
+func wildcardResult(vals []any, plain bool) any {
+	switch {
+	case plain && vals == nil:
+		return []any{}
+	case plain || len(vals) > 1:
+		return vals
+	case len(vals) == 1:
+		return vals[0]
 	}
+	return nil
+}
+
+// isRootArray reports whether arr is the evaluation's input, bound to $$.
+func isRootArray(arr []any, env *Environment) bool {
+	root, _ := env.Lookup("$")
+	rootArr, ok := root.([]any)
+	return ok && len(rootArr) == len(arr) && (len(arr) == 0 || &rootArr[0] == &arr[0])
 }

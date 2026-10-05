@@ -124,10 +124,10 @@ func TestWithTimeout_SlowCallsBoundOverrun(t *testing.T) {
 }
 
 // Arrays nested by $reduce share their items, so the value is small but
-// $keys, $lookup, $spread and $flatten walk 2^30 leaves; the walk checks the
-// deadline.
+// $keys, $lookup, $spread, $flatten and * walk 2^30 leaves; the walk checks
+// the deadline.
 func TestWithTimeout_NestedArrayWalk(t *testing.T) {
-	for _, fn := range []string{"$keys($v)", `$lookup($v, "k")`, "$spread($v)", "$flatten($v)"} {
+	for _, fn := range []string{"$keys($v)", `$lookup($v, "k")`, "$spread($v)", "$flatten($v)", `{"x": $v}.*`} {
 		t.Run(fn, func(t *testing.T) {
 			expr := "($v := $reduce([1..30], function($a, $x){[$a, $a]}, [{\"k\": 1}]); " + fn + ")"
 			e, err := gnata.Compile(expr, gnata.WithTimeout(50*time.Millisecond))
@@ -167,6 +167,23 @@ func twentyItems() []any {
 		items[i] = map[string]any{"b": float64(i)}
 	}
 	return items
+}
+
+// Once * appends an array value its result is a plain array, so jsonata-js
+// counts the values after it only as part of a later appended array.
+const (
+	arrayThenValues     = `{"v":{"a":[1],"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10,"k":11,"l":12}}`
+	valuesThenArray     = `{"v":{"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10,"k":11,"l":12,"a":[1]}}`
+	rootArrayThenValues = `[[1],2,3,4,5,6,7,8,9,10,11,12]`
+)
+
+func mustDecodeJSON(t *testing.T, data string) any {
+	t.Helper()
+	v, err := gnata.DecodeJSON(json.RawMessage(data))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return v
 }
 
 func TestWithSequence(t *testing.T) {
@@ -218,6 +235,7 @@ func TestWithSequence(t *testing.T) {
 		{desc: "$match", expr: `$match("aaaaaaaaaaaa", /a/)`},
 		{desc: "group variables", expr: `x.a@$e{"k": $e}`, data: data},
 		{desc: "$eval of an array context", expr: `$eval("b", a)`, data: data},
+		{desc: "wildcard appending an array to its values", expr: "$count(v.*)", data: mustDecodeJSON(t, valuesThenArray)},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
@@ -281,6 +299,7 @@ func TestWithSequence_Allowed(t *testing.T) {
 	// group-by iterates jsonata-js's wrapper of a root array, so its values
 	// see the array's items as contexts.
 	rootArray := []any{map[string]any{"a": items}, map[string]any{"c": 1.0}}
+	a1 := map[string]any{"a": 1.0}
 	testCases := []struct {
 		desc string
 		expr string
@@ -298,6 +317,10 @@ func TestWithSequence_Allowed(t *testing.T) {
 		{desc: "last block step with an array context", expr: "$count(p.(b))", want: 20.0},
 		{desc: "group-by over a root array", expr: `{"k": $count(a)}`, data: rootArray, want: map[string]any{"k": 20.0}},
 		{desc: "$eval of the current context in a group", expr: `{"k": $count($eval("a"))}`, data: rootArray, want: map[string]any{"k": 20.0}},
+		{desc: "wildcard step over a root array", expr: "*.a", data: []any{a1, map[string]any{"a": 2.0}}, want: []any{1.0, 2.0}},
+		{desc: "lone wildcard over a nested root array", expr: `{"k": *}`, data: []any{[]any{a1}}, want: map[string]any{"k": []any{a1}}},
+		{desc: "wildcard values after an array", expr: "$count(v.*)", data: mustDecodeJSON(t, arrayThenValues), want: 12.0},
+		{desc: "wildcard over a root array after an array", expr: "$count(*)", data: mustDecodeJSON(t, rootArrayThenValues), want: 12.0},
 		{desc: "subscript of a stored array", expr: "x.a[0].b", want: 0.0},
 		{desc: "filter under the guardrail", expr: "a[b<5].b", want: []any{0.0, 1.0, 2.0, 3.0, 4.0}},
 	}
