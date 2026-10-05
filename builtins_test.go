@@ -629,13 +629,22 @@ func TestFunctionContext(t *testing.T) {
 }
 
 // builtinSequenceCases cover HOFs whose callback returns a builtin's
-// sequence.
+// sequence, and $lookup over an array, which searches nested arrays and
+// flattens the values of several matches.
 var builtinSequenceCases = []exprCase{
 	{expr: `$map([{"a":1,"b":2},{"c":1,"d":2}], $keys)`, want: `[["a","b"],["c","d"]]`},
 	{expr: `$each({"a":{"x":1,"y":2},"b":{"z":1,"w":2}}, $keys)`, want: `[["x","y"],["z","w"]]`},
 	{expr: `$map([1,2], function($v){$keys({"a":1})})[0] = "a"`, want: `true`},
 	{expr: `$map([1,2], function($v){$filter([$v], function($x){true})})`, want: `[[1],[2]]`},
+	{expr: `$map([1,2], function($v){$lookup([{"a":[$v]}], "a")})`, want: `[[1],[2]]`},
 	{expr: `$reduce([{"a":1},{"b":1}], function($acc,$v){$keys($v)})`, want: `"b"`},
+	{expr: `$lookup([{"a":[1,2]},{"a":3}], "a")`, want: `[1,2,3]`},
+	{expr: `$lookup([{"a":[1,2]},{"a":3}], "a")[0]`, want: `1`},
+	{expr: `$lookup([[{"a":1}],{"a":[2,[3]]}], "a")`, want: `[1,2,[3]]`},
+	{expr: `$lookup([{"a":1},5,[[{"a":2}]]], "a")`, want: `[1,2]`},
+	{expr: `$lookup([{"a":[]},{"a":5}], "a")`, want: `5`},
+	{expr: `$lookup([{"a":[]},{"a":[]}], "a")`, want: undefined},
+	{expr: `$lookup([{"b":1}], "a")`, want: undefined},
 }
 
 func TestBuiltinSequenceResults(t *testing.T) {

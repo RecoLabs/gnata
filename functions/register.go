@@ -50,7 +50,6 @@ var builtinFuncs = []struct {
 	{"spread", fnSpread},
 	{"merge", fnMerge},
 	{"error", fnError},
-	{"lookup", fnLookup},
 	// ── Boolean ───────────────────────────────────────────────────────────────
 	{"boolean", fnBoolean},
 	{"not", fnNot},
@@ -203,6 +202,7 @@ func RegisterAll(env *evaluator.Environment, evalFn EvalFn) {
 	bind(env, "now", fnNow)
 	bind(env, "millis", fnMillis)
 	bind(env, "toMillis", fnToMillis)
+	bind(env, "lookup", fnLookup)
 	bindPlain(env, "uppercase", fnUppercase)
 	bindPlain(env, "lowercase", fnLowercase)
 	bind(env, "match", makeFnMatch(evalFn))

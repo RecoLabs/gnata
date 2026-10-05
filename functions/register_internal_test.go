@@ -23,7 +23,7 @@ var floatOnlyNumeric = map[string]string{
 var nonNumeric = []string{
 	"length", "substring", "substringBefore", "substringAfter", "trim", "pad", "contains", "split", "join",
 	"encodeUrl", "encodeUrlComponent", "decodeUrl", "decodeUrlComponent", "reverse", "shuffle", "flatten",
-	"zip", "keys", "values", "spread", "merge", "error", "lookup", "boolean", "not", "exists", "assert",
+	"zip", "keys", "values", "spread", "merge", "error", "boolean", "not", "exists", "assert",
 	"type", "now", "base64encode", "base64decode",
 }
 

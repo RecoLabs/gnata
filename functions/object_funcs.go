@@ -280,7 +280,7 @@ func fnError(args []any, _ any) (any, error) {
 
 // ── $lookup ───────────────────────────────────────────────────────────────────
 
-func fnLookup(args []any, _ any) (any, error) {
+func fnLookup(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) < 2 {
 		return nil, &evaluator.JSONataError{Code: "D3006", Message: "$lookup: requires 2 arguments"}
 	}
@@ -300,23 +300,69 @@ func fnLookup(args []any, _ any) (any, error) {
 		return val, nil
 	}
 	if arr, ok := args[0].([]any); ok {
-		var result []any
-		for _, item := range arr {
-			if evaluator.IsMap(item) {
-				if val, exists := evaluator.MapGet(item, key); exists {
-					result = append(result, val)
-				}
-			}
-		}
-		if len(result) == 0 {
-			return nil, nil
-		}
-		if len(result) == 1 {
-			return result[0], nil
-		}
-		return result, nil
+		return lookupArray(arr, key, env)
 	}
 	return nil, nil
+}
+
+// lookupArray is $lookup over an array. As in jsonata-js, nested arrays are
+// searched too, and the values of several matches are flattened into one
+// result. A single match is returned as it is: jsonata-js keeps its array
+// value whole wherever the result is not collapsed again, such as in $map.
+// A work stack instead of recursion keeps deeply nested input off the Go
+// stack, and the walk polls Err because shared nested arrays can make it
+// exponential in the expression's size.
+func lookupArray(arr []any, key string, env *evaluator.Environment) (any, error) {
+	var matches []any
+	for pending := [][]any{arr}; len(pending) > 0; {
+		top := pending[len(pending)-1]
+		if len(top) == 0 {
+			pending = pending[:len(pending)-1]
+			continue
+		}
+		item := top[0]
+		pending[len(pending)-1] = top[1:]
+		if items, isArray := evaluator.AsArray(item); isArray {
+			if err := env.Err(); err != nil {
+				return nil, err
+			}
+			pending = append(pending, items)
+			continue
+		}
+		if !evaluator.IsMap(item) {
+			continue
+		}
+		if val, exists := evaluator.MapGet(item, key); exists {
+			matches = append(matches, val)
+			if err := env.CheckSequence(len(matches)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return matches[0], nil
+	}
+	var flat []any
+	for _, val := range matches {
+		if items, isArray := evaluator.AsArray(val); isArray {
+			flat = append(flat, items...)
+		} else {
+			flat = append(flat, val)
+		}
+	}
+	if err := env.CheckSequence(len(flat)); err != nil {
+		return nil, err
+	}
+	switch len(flat) {
+	case 0:
+		return nil, nil
+	case 1:
+		return flat[0], nil
+	}
+	return flat, nil
 }
 
 // ── $clone ────────────────────────────────────────────────────────────────────
