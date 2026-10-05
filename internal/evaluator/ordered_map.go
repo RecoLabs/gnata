@@ -182,28 +182,110 @@ func decodeJSON(b json.RawMessage, freeze bool) (any, error) {
 	return v, err
 }
 
-// freezeTree freezes every object in a decoded value.
+// freezeTree freezes every object in a decoded value. It walks with an
+// explicit stack, as the legacy decoder can return a value nested deeper than
+// maxDecodeDepth.
 func freezeTree(v any) {
-	switch t := v.(type) {
-	case *OrderedMap:
-		for _, k := range t.keys {
-			freezeTree(t.data[k])
-		}
-		t.freeze()
-	case []any:
-		for _, e := range t {
-			freezeTree(e)
+	stack := []any{v}
+	for len(stack) > 0 {
+		v, stack = stack[len(stack)-1], stack[:len(stack)-1]
+		switch t := v.(type) {
+		case *OrderedMap:
+			for _, k := range t.keys {
+				stack = appendFreezable(stack, t.data[k])
+			}
+			t.freeze()
+		case []any:
+			for _, e := range t {
+				stack = appendFreezable(stack, e)
+			}
 		}
 	}
 }
 
+// appendFreezable appends v to stack if it is an object or an array.
+func appendFreezable(stack []any, v any) []any {
+	switch v.(type) {
+	case *OrderedMap, []any:
+		return append(stack, v)
+	}
+	return stack
+}
+
 // legacyDecodeJSON is the encoding/json token decoder. It remains the
 // reference for error reporting: fastDecodeJSON defers to it on any input it
-// does not accept.
+// does not accept, including input nested deeper than maxDecodeDepth, so it
+// keeps its open objects and arrays on an explicit stack rather than
+// recursing, which could overflow the goroutine stack.
 func legacyDecodeJSON(b json.RawMessage) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
-	return decodeValue(dec)
+	var stack []decodeFrame
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return failedDecode(stack), err
+		}
+		var v any
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				stack = append(stack, decodeFrame{object: NewOrderedMap()})
+				continue
+			case '[':
+				stack = append(stack, decodeFrame{array: []any{}})
+				continue
+			}
+			// The decoder only returns a closing delimiter for an open frame.
+			top := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if top.object != nil {
+				v = top.object
+			} else {
+				v = top.array
+			}
+		case nil:
+			v = Null
+		default:
+			v = tok
+		}
+		if len(stack) == 0 {
+			return v, nil
+		}
+		top := &stack[len(stack)-1]
+		switch {
+		case top.object == nil:
+			top.array = append(top.array, v)
+		case top.hasKey:
+			top.object.Set(top.key, v)
+			top.hasKey = false
+		default:
+			// The decoder only returns a string where an object expects a key.
+			top.key, top.hasKey = v.(string), true
+		}
+	}
+}
+
+// failedDecode is the value legacyDecodeJSON returns with an error: the
+// typed nil of the outermost object or array it had opened, or nil.
+func failedDecode(stack []decodeFrame) any {
+	switch {
+	case len(stack) == 0:
+		return nil
+	case stack[0].object != nil:
+		return (*OrderedMap)(nil)
+	}
+	return []any(nil)
+}
+
+// decodeFrame is an object or array legacyDecodeJSON has opened, with the
+// key read for an object's next value.
+type decodeFrame struct {
+	object *OrderedMap
+	array  []any
+	key    string
+	hasKey bool
 }
 
 // DecodeRawMap converts a map of field names to raw JSON values into an
@@ -222,71 +304,6 @@ func DecodeRawMap(m map[string]json.RawMessage) (*OrderedMap, error) {
 	}
 	om.freeze()
 	return om, nil
-}
-
-func decodeValue(dec *json.Decoder) (any, error) {
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, err
-	}
-	switch t := tok.(type) {
-	case json.Delim:
-		switch t {
-		case '{':
-			return decodeObject(dec)
-		case '[':
-			return decodeArray(dec)
-		}
-	case json.Number:
-		return t, nil
-	case string:
-		return t, nil
-	case bool:
-		return t, nil
-	case nil:
-		return Null, nil
-	}
-	return tok, nil
-}
-
-func decodeObject(dec *json.Decoder) (*OrderedMap, error) {
-	m := NewOrderedMap()
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			return nil, err
-		}
-		key := keyTok.(string)
-		val, err := decodeValue(dec)
-		if err != nil {
-			return nil, err
-		}
-		m.Set(key, val)
-	}
-	// Consume closing '}'
-	if _, err := dec.Token(); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-func decodeArray(dec *json.Decoder) ([]any, error) {
-	var arr []any
-	for dec.More() {
-		val, err := decodeValue(dec)
-		if err != nil {
-			return nil, err
-		}
-		arr = append(arr, val)
-	}
-	// Consume closing ']'
-	if _, err := dec.Token(); err != nil {
-		return nil, err
-	}
-	if arr == nil {
-		arr = []any{}
-	}
-	return arr, nil
 }
 
 // ── Helpers for dual map[string]any / *OrderedMap handling ───────────────────

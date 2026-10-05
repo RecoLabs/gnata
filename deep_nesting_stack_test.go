@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const skipDeepDecode = false
+
 // limitStack lowers the goroutine stack limit to 16 MB for the test, so a
 // walk that recurses once per level fails at deepNesting levels.
 func limitStack(t *testing.T) {

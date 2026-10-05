@@ -92,3 +92,38 @@ func TestDeepNesting(t *testing.T) {
 		})
 	}
 }
+
+// Past the fast decoder's depth limit, decoding falls back to encoding/json's
+// token decoder, which errors on input this deep from Go 1.27 and accepts it
+// before. Either way it must not overflow the stack.
+func TestDeepNestingDecode(t *testing.T) {
+	if skipDeepDecode {
+		t.Skip("the fast decoder recurses up to its depth limit, which can exceed TinyGo's fixed stack")
+	}
+	limitStack(t)
+	e, err := gnata.Compile("$length($string($))")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	testCases := []struct {
+		desc string
+		data string
+	}{
+		{desc: "array", data: strings.Repeat("[", deepNesting) + "1" + strings.Repeat("]", deepNesting)},
+		{desc: "object", data: strings.Repeat(`{"a":`, deepNesting) + "1" + strings.Repeat("}", deepNesting)},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			got, err := e.EvalBytes(context.Background(), json.RawMessage(tC.data))
+			if err != nil {
+				if !strings.Contains(err.Error(), "exceeded max depth") {
+					t.Fatalf("eval bytes: %v", err)
+				}
+				return
+			}
+			if got != float64(len(tC.data)) {
+				t.Fatalf("got %v, want %d", got, len(tC.data))
+			}
+		})
+	}
+}
