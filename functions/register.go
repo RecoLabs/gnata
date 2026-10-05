@@ -164,6 +164,7 @@ var jsSpecs = map[string]jsSpec{
 	"toMillis":           {arity: 2, sig: "s-s?:n"},
 	"fromMillis":         {arity: 3, sig: "n-s?s?:s"},
 	"now":                {arity: 2},
+	"clone":              {arity: 1, sig: "(oa)-:o"},
 	"millis":             {arity: 0},
 	"values":             {arity: 1}, // gnata extension
 	"flatten":            {arity: 1}, // gnata extension
@@ -207,6 +208,7 @@ func RegisterAll(env *evaluator.Environment, evalFn EvalFn) {
 	bind(env, "match", makeFnMatch(evalFn))
 	bind(env, "replace", makeFnReplace(evalFn))
 	bind(env, "eval", makeFnEval())
+	bindPlain(env, "clone", fnClone)
 	bind(env, "sort", makeFnSort(evalFn))
 	bind(env, "sift", makeFnSift(evalFn))
 	bind(env, "each", makeFnEach(evalFn))

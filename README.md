@@ -190,6 +190,8 @@ Where `args` are the evaluated arguments passed by the JSONata expression and `f
 - it is `nil` when the function is passed as an argument, to `$map` or to a lambda, or applied by a bare `x ~> $f`;
 - a call in tail position of a lambda body gets the context of the call that entered the lambda.
 
+A custom function named `clone` replaces `$clone`, including the copy the transform operator (`~> |…|…|`) makes of its input.
+
 ### Registration
 
 Register custom functions via `WithCustomFunctions` when creating a `StreamEvaluator`:

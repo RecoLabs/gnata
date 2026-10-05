@@ -4,30 +4,68 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-func deepClone(v any) any {
+// maxCloneDepth bounds CloneValue's recursion: a transform can make a value
+// contain itself, and recursing through it would overflow the Go stack.
+const maxCloneDepth = 100_000
+
+// CloneValue deep-copies v as jsonata-js's $clone does through JSON, where a
+// function becomes "". Numbers and other Go values, including nil (which
+// is null in Go input), are kept as they are, so no precision is lost.
+func CloneValue(v any) (any, error) {
+	return cloneValue(v, 0)
+}
+
+func cloneValue(v any, depth int) (any, error) {
+	if depth > maxCloneDepth {
+		return nil, &JSONataError{Code: "U1001", Message: "value is nested too deeply to clone; it may contain itself"}
+	}
 	switch val := v.(type) {
 	case *OrderedMap:
 		m := NewOrderedMapWithCapacity(val.Len())
+		var err error
 		val.Range(func(k string, vv any) bool {
-			m.Set(k, deepClone(vv))
+			var c any
+			if c, err = cloneValue(vv, depth+1); err != nil {
+				return false
+			}
+			m.Set(k, c)
 			return true
 		})
-		return m
+		return m, err
 	case map[string]any:
 		m := make(map[string]any, len(val))
 		for k, vv := range val {
-			m[k] = deepClone(vv)
+			c, err := cloneValue(vv, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			m[k] = c
 		}
-		return m
+		return m, nil
 	case []any:
-		s := make([]any, len(val))
-		for i, vv := range val {
-			s[i] = deepClone(vv)
-		}
-		return s
+		return cloneArray(val, depth)
+	case ConsArray:
+		return cloneArray(val, depth)
+	case *Sequence:
+		return cloneValue(CollapseSequence(val), depth)
 	default:
-		return v
+		if isCallable(v) {
+			return "", nil
+		}
+		return v, nil
 	}
+}
+
+func cloneArray(arr []any, depth int) ([]any, error) {
+	out := make([]any, len(arr))
+	for i, v := range arr {
+		c, err := cloneValue(v, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = c
+	}
+	return out, nil
 }
 
 func evalTransform(node *parser.Node, _ any, env *Environment) (any, error) {
@@ -58,7 +96,27 @@ func applyTransform(node *parser.Node, input any, env *Environment) (any, error)
 	if !IsMap(input) && !IsArray(input) {
 		return nil, &JSONataError{Code: "T0410", Message: "the transform expression must be applied to an object or an array"}
 	}
-	cloned := deepClone(input)
+	// jsonata-js copies the input with whatever $clone is bound to. The
+	// clauses below modify the copy, so a rebound $clone is given, and its
+	// result taken as, a copy gnata owns: input can be shared by concurrent
+	// evaluations.
+	cloneFn, _ := env.Lookup("clone")
+	if !isCallable(cloneFn) {
+		return nil, &JSONataError{Code: "T2013", Message: "the transform expression requires $clone to be a function"}
+	}
+	cloned, err := CloneValue(input)
+	if err != nil {
+		return nil, err
+	}
+	if sb, isBuiltin := cloneFn.(*SignedBuiltin); !isBuiltin || sb.Name != "clone" {
+		result, err := callFunction(cloneFn, []any{cloned}, Null, env)
+		if err != nil {
+			return nil, err
+		}
+		if cloned, err = CloneValue(result); err != nil {
+			return nil, err
+		}
+	}
 
 	matched, err := Eval(node.Pattern, cloned, env)
 	if err != nil {

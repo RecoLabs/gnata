@@ -256,3 +256,55 @@ func TestDeepEqual(t *testing.T) {
 		}
 	}
 }
+
+// The transform operator copies its input, as $clone does, keeping Go values
+// and number precision, and never modifies the caller's data, even when the
+// expression rebinds $clone to return its argument.
+func TestTransformCopiesInput(t *testing.T) {
+	const big = json.Number("123456789012345678901234.5")
+	newData := func() map[string]any {
+		return map[string]any{"i": 5, "s": []string{"x"}, "d": big, "n": nil}
+	}
+	testCases := []struct {
+		desc string
+		expr string
+		opts []gnata.Option
+		want any
+	}{
+		{
+			desc: "keeps Go values",
+			expr: `$ ~> |$|{"z":1}|`,
+			want: map[string]any{"i": 5, "s": []string{"x"}, "d": big, "n": nil, "z": float64(1)},
+		},
+		{
+			desc: "keeps decimal precision",
+			expr: `$ ~> |$|{"z":1}|`,
+			opts: []gnata.Option{gnata.WithDecimalPrecision(30)},
+			want: map[string]any{"i": 5, "s": []string{"x"}, "d": big, "n": nil, "z": json.Number("1")},
+		},
+		{
+			desc: "copies around a rebound $clone",
+			expr: `($clone := function($x){$x}; $ ~> |$|{"z":1}, ["i"]|)`,
+			want: map[string]any{"s": []string{"x"}, "d": big, "n": nil, "z": float64(1)},
+		},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			expr, err := gnata.Compile(tC.expr, tC.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := newData()
+			got, err := expr.Eval(context.Background(), data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gnata.NormalizeValue(got); !reflect.DeepEqual(got, tC.want) {
+				t.Fatalf("got %#v, want %#v", got, tC.want)
+			}
+			if !reflect.DeepEqual(data, newData()) {
+				t.Fatalf("input changed to %#v", data)
+			}
+		})
+	}
+}

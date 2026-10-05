@@ -318,3 +318,20 @@ func fnLookup(args []any, _ any) (any, error) {
 	}
 	return nil, nil
 }
+
+// ── $clone ────────────────────────────────────────────────────────────────────
+
+// fnClone deep-copies an object or array as jsonata-js does (see
+// evaluator.CloneValue).
+func fnClone(args []any, _ any) (any, error) {
+	if len(args) == 0 || args[0] == nil {
+		return nil, nil
+	}
+	if len(args) > 1 {
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$clone: takes 1 argument"}
+	}
+	if !evaluator.IsArray(args[0]) && !evaluator.IsMap(args[0]) {
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$clone: argument must be an object or array"}
+	}
+	return evaluator.CloneValue(args[0])
+}

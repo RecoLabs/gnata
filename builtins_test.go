@@ -609,6 +609,19 @@ var functionContextCases = []exprCase{
 	{expr: `$substring("abc", 1, nothing)`, want: `"bc"`},
 	{expr: `x.$substring(nothing)`, data: `{"x":"abc"}`, want: `"abc"`},
 	{expr: `$substring("abc", nothing, "x")`, code: "T0410"},
+	// $clone.
+	{expr: `$clone(a.[b,c])`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2]`},
+	{expr: `($clone := function($x){{"z":1}}; {"a":1} ~> |$|{}|)`, want: `{"z":1}`},
+	{expr: `{"f":$uppercase,"g":1} ~> |$|{}|`, want: `{"f":"","g":1}`},
+	{expr: `($clone := 5; {"a":1} ~> |$|{}|)`, code: "T2013"},
+	{expr: `$clone({"a":[1,{"b":"c"}],"d":null})`, want: `{"a":[1,{"b":"c"}],"d":null}`},
+	{expr: `$clone([1,"x",null,true])`, want: `[1,"x",null,true]`},
+	{expr: `{"a":1}.$clone()`, want: `{"a":1}`},
+	{expr: `$clone({"f":$uppercase,"a":1})`, want: `{"a":1,"f":""}`},
+	{expr: `$clone({"a":nothing})`, want: `{}`},
+	{expr: `$clone()`, want: undefined},
+	{expr: `$clone("a")`, code: "T0410"},
+	{expr: `$clone(null)`, code: "T0410"},
 }
 
 func TestFunctionContext(t *testing.T) {
