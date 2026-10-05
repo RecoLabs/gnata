@@ -821,6 +821,7 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 		type groupEntry struct {
 			values []any
 			envs   []*Environment
+			size   appendCount
 		}
 		var keyOrder []string
 		groups := map[string]*groupEntry{}
@@ -842,6 +843,9 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 			}
 			g.values = append(g.values, ctx.value)
 			g.envs = append(g.envs, ctx.env)
+			if err := g.size.add(ctx.value, ctx.env); err != nil {
+				return nil, err
+			}
 		}
 
 		// Phase 2: evaluate value expression per group.
@@ -854,7 +858,10 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 				groupEnv = g.envs[0]
 			} else {
 				groupCtx = groupContext(g.values)
-				groupEnv = mergeGroupEnvs(g.envs)
+				var err error
+				if groupEnv, err = mergeGroupEnvs(g.envs); err != nil {
+					return nil, err
+				}
 			}
 			val, err := Eval(pair[1], groupCtx, groupEnv)
 			if err != nil {
@@ -873,12 +880,12 @@ func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
 // mergeGroupEnvs creates a merged environment for a group of records.
 // Variables that differ across records are collected into arrays so that
 // path navigation in the value expression can operate on all values.
-func mergeGroupEnvs(envs []*Environment) *Environment {
+func mergeGroupEnvs(envs []*Environment) (*Environment, error) {
 	if len(envs) == 0 {
-		return nil
+		return nil, nil
 	}
 	if len(envs) == 1 {
-		return envs[0]
+		return envs[0], nil
 	}
 	// Find the common ancestor to use as parent of the merged env.
 	merged := NewChildEnvironment(envs[0].Parent())
@@ -915,22 +922,18 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 		if len(vals) == 1 {
 			merged.Bind(name, vals[0])
 		} else if len(vals) > 0 {
-			// Check if all values are identical — if so, keep single value.
-			allSame := true
-			for _, v := range vals[1:] {
-				if !DeepEqualPrec(v, vals[0], merged.DecimalPrecision()) {
-					allSame = false
-					break
+			// jsonata-js appends each tuple's value with $append.
+			var appended []any
+			for _, v := range vals {
+				appended = append(appended, AppendItems(v)...)
+				if err := merged.CheckSequence(len(appended)); err != nil {
+					return nil, err
 				}
 			}
-			if allSame {
-				merged.Bind(name, vals[0])
-			} else {
-				merged.Bind(name, vals)
-			}
+			merged.Bind(name, appended)
 		}
 	}
-	return merged
+	return merged, nil
 }
 
 // evalPathStep evaluates a single path step against input.

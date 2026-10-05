@@ -45,7 +45,14 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 			// Determine whether this expression is an explicit array constructor
 			// (NodeUnary "["). Explicit inner arrays are preserved as single elements.
 			// All other expressions that return arrays/sequences are spread.
-			isExplicitArray := expr.Type == parser.NodeUnary && expr.Value == "["
+			isExplicitArray := isArrayConstructor(expr)
+			// jsonata-js appends every other value with $append, which counts
+			// against the sequence guardrail; a nested constructor is pushed.
+			if !isExplicitArray {
+				if err := env.CheckSequence(len(result) + appendLength(val)); err != nil {
+					return nil, err
+				}
+			}
 			switch v := val.(type) {
 			case *Sequence:
 				if v.ConsArray || isExplicitArray {
@@ -54,7 +61,11 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 					result = append(result, v.Values...)
 				}
 			case ConsArray:
-				result = append(result, val)
+				if isExplicitArray {
+					result = append(result, val)
+				} else {
+					result = append(result, v...)
+				}
 			case []any:
 				if isExplicitArray {
 					result = append(result, val)
@@ -111,4 +122,14 @@ func evalObjectConstructor(node *parser.Node, input any, env *Environment) (any,
 		result.Set(key, val)
 	}
 	return result, nil
+}
+
+// isArrayConstructor reports whether n is a [...] constructor, possibly
+// subscripted as in [[1,2]][0], which jsonata-js pushes into an enclosing
+// constructor as one value.
+func isArrayConstructor(n *parser.Node) bool {
+	for n.Type == parser.NodeBinary && n.Value == "[" && n.Left != nil {
+		n = n.Left
+	}
+	return n.Type == parser.NodeUnary && n.Value == "["
 }

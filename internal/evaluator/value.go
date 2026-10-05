@@ -199,6 +199,20 @@ func EachLeaf(arr []any, depth int, env *Environment, visit func(item any) error
 	return nil
 }
 
+// appendLength is len(AppendItems(v)) without allocating.
+func appendLength(v any) int {
+	if v == nil {
+		return 0
+	}
+	if arr, ok := AsArray(v); ok {
+		return len(arr)
+	}
+	if seq, ok := v.(*Sequence); ok {
+		return len(seq.Values)
+	}
+	return 1
+}
+
 // ToFloat64 converts a numeric value to float64, handling both float64 and json.Number.
 func ToFloat64(v any) (float64, bool) {
 	switch n := v.(type) {

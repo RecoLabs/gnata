@@ -10,6 +10,21 @@ import (
 type groupEntry struct {
 	items    []any
 	firstIdx int
+	size     appendCount
+}
+
+// appendCount counts the items of values appended in turn as jsonata-js
+// fn.append does. The first value is taken as is, so only appending a later
+// one counts against the sequence guardrail.
+type appendCount struct{ items, values int }
+
+func (c *appendCount) add(v any, env *Environment) error {
+	c.items += appendLength(v)
+	c.values++
+	if c.values == 1 {
+		return nil
+	}
+	return env.CheckSequence(c.items)
 }
 
 func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
@@ -108,11 +123,15 @@ func groupItems(pairs iter.Seq2[*parser.Node, *parser.Node], items []any, env *E
 			} else if !ok {
 				return nil, &JSONataError{Code: "T1003", Message: fmt.Sprintf("key expression must evaluate to a string, got %T", keyVal)}
 			}
-			if g, exists := groups[keyStr]; exists {
-				g.items = append(g.items, item)
-			} else {
+			g, exists := groups[keyStr]
+			if !exists {
 				groupOrder = append(groupOrder, keyStr)
-				groups[keyStr] = &groupEntry{items: []any{item}, firstIdx: i}
+				g = &groupEntry{firstIdx: i}
+				groups[keyStr] = g
+			}
+			g.items = append(g.items, item)
+			if err := g.size.add(item, env); err != nil {
+				return nil, err
 			}
 		}
 

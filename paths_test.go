@@ -140,6 +140,12 @@ var bindingOperatorCases = []exprCase{
 	{expr: `library.loans@$l.books@$b[$l.isbn=$b.isbn][[0,2]].$l.customer`, data: libraryJSON, want: `["c1","c3"]`},
 	{expr: `Account.Order.(Product[%.OrderID="o1"])@$p[$p.Price>5].$p.Name`, data: accountJSON, want: `"Hat"`},
 	{expr: `Account.Order.(Product.%)@$o[$o.OrderID="o2"].$o.OrderID`, data: accountJSON, want: `"o2"`},
+	// Group values merge the tuples' variables as $append does.
+	{expr: `Account.Order[0]#$o.Product{"k":$o}`, data: accountJSON, want: `{"k":[0,0]}`},
+	// A constructed array is appended into an enclosing constructor.
+	{expr: `[a.[b,c], 1]`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2,1]`},
+	{expr: `($c := a.[b,c]; [$c, 3])`, data: `{"a":{"b":1,"c":2}}`, want: `[1,2,3]`},
+	{expr: `[[[1,2]][0], 3]`, want: `[[1,2],3]`},
 }
 
 var groupAndSortCases = []exprCase{
