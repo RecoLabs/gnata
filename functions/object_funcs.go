@@ -125,7 +125,7 @@ func fnSpread(args []any, _ any) (any, error) {
 			}
 		}
 		if result == nil {
-			return []any{}, nil
+			return nil, nil
 		}
 		return result, nil
 	}
@@ -143,7 +143,7 @@ func fnMerge(args []any, _ any) (any, error) {
 		if evaluator.IsMap(args[0]) {
 			return args[0], nil
 		}
-		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$merge: argument must be an array of objects"}
+		return nil, &evaluator.JSONataError{Code: "T0412", Message: "$merge: argument must be an array of objects"}
 	}
 	result := evaluator.NewOrderedMap()
 	for _, item := range arr {

@@ -46,6 +46,30 @@ func TestGuardrailsDefaultUnaffected(t *testing.T) {
 	}
 }
 
+func TestEvalKeepsGuardrailCodes(t *testing.T) {
+	const factorial = "$factorial := function($n){$n = 0 ? 1 : $n * $factorial($n - 1)}"
+	testCases := []struct {
+		desc string
+		expr string
+		code string
+	}{
+		{desc: "stack overflow", expr: `$eval("(` + factorial + `; $factorial(100))")`, code: "U1001"},
+		{desc: "nested eval error wrapped once", expr: `$eval("$eval('1 + \"a\"')")`, code: "D3121: $eval: T2002"},
+		{desc: "ordinary error wrapped", expr: `$eval("1 + 'a'")`, code: "D3121"},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			if _, err := e.Eval(context.Background(), nil); err == nil || !strings.HasPrefix(err.Error(), tC.code) {
+				t.Fatalf("expected error starting with %s, got %v", tC.code, err)
+			}
+		})
+	}
+}
+
 func TestWithStack(t *testing.T) {
 	e, err := gnata.Compile(
 		"($factorial := function($n){$n = 0 ? 1 : $n * $factorial($n - 1)}; $factorial(20))",
@@ -143,6 +167,32 @@ func TestWithSequence(t *testing.T) {
 				t.Fatalf("expected D2015, got %v", err)
 			}
 		})
+	}
+}
+
+// A tuple filter whose predicate repeats each tuple's own position keeps it
+// once per repeat, so 200 tuples × 200 repeats grows past the guardrail while
+// every intermediate sequence stays under it. Filtering input data larger
+// than the guardrail is not growth and stays allowed.
+func TestWithSequence_RepeatedTuplePositions(t *testing.T) {
+	items := make([]any, 200)
+	for i := range items {
+		items[i] = map[string]any{"b": float64(i)}
+	}
+	e, err := gnata.Compile("$count(a.b#$i[($v := $; $map([1..200], function($x){$v}))])", gnata.WithSequence(1000))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	_, err = e.Eval(context.Background(), map[string]any{"a": items})
+	if err == nil || !strings.Contains(err.Error(), "D2015") {
+		t.Fatalf("expected D2015, got %v", err)
+	}
+	e, err = gnata.Compile("$count(a.b#$i[true])", gnata.WithSequence(100))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, err := e.Eval(context.Background(), map[string]any{"a": items}); err != nil || got != 200.0 {
+		t.Fatalf("filtering input larger than the guardrail: got %v, %v", got, err)
 	}
 }
 

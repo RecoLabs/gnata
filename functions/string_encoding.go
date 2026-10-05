@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/recolabs/gnata/internal/evaluator"
@@ -12,6 +13,11 @@ import (
 )
 
 // ── $eval ─────────────────────────────────────────────────────────────────────
+
+// evalPassthroughCodes are guardrail errors (stack depth, sequence length,
+// $eval nesting) that $eval reports as-is rather than wrapping in D3121, so a
+// caller can still tell which limit was hit.
+var evalPassthroughCodes = []string{"D1011", "D2015", "D3121", "U1001"}
 
 func makeFnEval() evaluator.EnvAwareBuiltin {
 	const maxEvalDepth = 5
@@ -46,11 +52,8 @@ func makeFnEval() evaluator.EnvAwareBuiltin {
 		childEnv := evaluator.NewChildEnvironment(env)
 		result, evalErr := evaluator.Eval(ast, ctx, childEnv)
 		if evalErr != nil {
-			je := &evaluator.JSONataError{}
-			if errors.As(evalErr, &je) {
-				if je.Code == "T1006" || je.Code == "T1005" {
-					return nil, &evaluator.JSONataError{Code: "D3121", Message: fmt.Sprintf("$eval: %v", evalErr)}
-				}
+			if je := new(evaluator.JSONataError); errors.As(evalErr, &je) && !slices.Contains(evalPassthroughCodes, je.Code) {
+				return nil, &evaluator.JSONataError{Code: "D3121", Message: fmt.Sprintf("$eval: %v", evalErr)}
 			}
 			return nil, evalErr
 		}
@@ -79,9 +82,11 @@ func fnBase64Decode(args []any, _ any) (any, error) {
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$base64decode: argument must be a string"}
 	}
-	b, err := base64.StdEncoding.DecodeString(s)
+	// Padding is optional, as in the forgiving-base64 decode behind JavaScript's atob.
+	s = strings.TrimRight(s, "=")
+	b, err := base64.RawStdEncoding.DecodeString(s)
 	if err != nil {
-		b, err = base64.URLEncoding.DecodeString(s)
+		b, err = base64.RawURLEncoding.DecodeString(s)
 		if err != nil {
 			return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("$base64decode: invalid base64 string: %v", err)}
 		}
