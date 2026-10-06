@@ -70,8 +70,8 @@ const (
 // costliest unit measured, overflow at about 12,500 on a fresh stack and at
 // about 4,900 once an earlier chain in the same evaluation has grown it, and
 // 100 lambda calls with grouping-constructor bodies overflow a grown stack at
-// about 16,000 levels: the limit, with lambdaFreeDepth, stays near half of
-// both. Hosts with a smaller stack, such as Node's default, can overflow
+// about 16,000 levels: the limit stays about a third of the former and, with
+// lambdaFreeDepth, about half of the latter. Hosts with a smaller stack, such as Node's default, can overflow
 // below the limit.
 const maxNestedCalls = 1_500
 
