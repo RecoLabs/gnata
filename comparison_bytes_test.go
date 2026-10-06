@@ -128,6 +128,34 @@ func TestEvalBytes_KeepArray_MatchesEval(t *testing.T) {
 	}
 }
 
+// TestEvalBytes_PathGroup_MatchesEval checks that a path that groups its
+// result stays off the gjson fast paths, which would drop the group.
+func TestEvalBytes_PathGroup_MatchesEval(t *testing.T) {
+	testCases := []struct {
+		desc string
+		expr string
+	}{
+		{desc: "grouped path", expr: `Account.Order{OrderID: $count(Product)}`},
+		{desc: "builtin of a grouped path", expr: `$count(Account.Order{OrderID: 1})`},
+		{desc: "comparison of a grouped path", expr: `Account.Order{OrderID: 1} = 1`},
+		{desc: "boolean of a grouped path", expr: `$exists(Account.Order{OrderID: 1}) and true`},
+	}
+
+	rawData := json.RawMessage(comparisonBytesTestData)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	noFastPath := func(e *gnata.Expression) bool {
+		return !e.IsFastPath() && !e.IsFuncFastPath() && !e.IsComparisonFastPath() && !e.IsBooleanFastPath()
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			evalBytesMatchesEvalCase(t, tC.expr, rawData, decoded, noFastPath)
+		})
+	}
+}
+
 // TestEvalBytes_DistinctKeepsArray checks that the $distinct fast path, which
 // handles only a path that crosses no array, keeps its plain array an array.
 func TestEvalBytes_DistinctKeepsArray(t *testing.T) {

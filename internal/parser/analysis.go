@@ -379,7 +379,11 @@ func collectPaths(node *Node) ([]string, bool) {
 		return []string{escaped}, true
 
 	case NodePath:
-		// All steps must be simple name nodes with no predicates/stages.
+		// All steps must be simple name nodes with no predicates/stages, and
+		// the path must not group its result.
+		if node.Group != nil {
+			return nil, false
+		}
 		parts := make([]string, 0, len(node.Steps))
 		for _, step := range node.Steps {
 			if step.Type != NodeName {
