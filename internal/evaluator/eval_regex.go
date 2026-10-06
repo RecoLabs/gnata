@@ -1,12 +1,17 @@
 package evaluator
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"regexp/syntax"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -55,6 +60,37 @@ func (r *Regex) FindStringMatch(s string) (*Match, error) {
 		allLocs:  allLocs,
 		matchIdx: 0,
 	}, nil
+}
+
+// findMatchFrom returns the first match in s that starts at or after the
+// byte offset from. A regex without left context matches the suffix exactly.
+// One with left context is matched on all of s, so a match that starts before
+// from and ends at or after it can hide one that starts at from.
+func (r *Regex) findMatchFrom(s string, from int) *Match {
+	if from > 0 && r.leftContext {
+		// Matches start at distinct bytes, so at most from of them start
+		// before from.
+		for _, loc := range r.re.FindAllStringSubmatchIndex(s, from+1) {
+			if loc[0] >= from {
+				return r.matchAt(s, loc)
+			}
+		}
+		return nil
+	}
+	loc := r.re.FindStringSubmatchIndex(s[from:])
+	if loc == nil {
+		return nil
+	}
+	for i := range loc {
+		if loc[i] >= 0 {
+			loc[i] += from
+		}
+	}
+	return r.matchAt(s, loc)
+}
+
+func (r *Regex) matchAt(s string, loc []int) *Match {
+	return &Match{Index: loc[0], Length: loc[1] - loc[0], input: s, regex: r, loc: loc}
 }
 
 func (r *Regex) MatchString(s string) (bool, error) {
@@ -216,55 +252,170 @@ func CompileLiteralRegex(literal string) (*Regex, error) {
 
 // ── Regex as a function (~> and calls) ────────────────────────────────────────
 
-// RegexValue returns v as a regex value: a map with exactly the string
-// "pattern" and "flags" a regex literal evaluates to. Any other object,
-// including one with only a "pattern", stays an object, as in jsonata-js.
-func RegexValue(v any) (map[string]any, bool) {
+// RegexLiteral is the value a regex literal evaluates to. jsonata-js treats it
+// as a function, and so does the evaluator. At the API edges, in results and
+// in custom function arguments and return values, it is the map ToMap returns.
+type RegexLiteral struct {
+	Pattern string
+	Flags   string
+}
+
+// Compile compiles the regex, caching it by pattern and flags.
+func (r *RegexLiteral) Compile() (*Regex, error) {
+	return CachedCompileRegex(r.Pattern, r.Flags)
+}
+
+// ToMap returns the {"pattern", "flags"} map that stands for r at the API edges.
+func (r *RegexLiteral) ToMap() map[string]any {
+	return map[string]any{"pattern": r.Pattern, "flags": r.Flags}
+}
+
+// MarshalJSON encodes r as its ToMap form.
+func (r *RegexLiteral) MarshalJSON() ([]byte, error) {
+	return AppendJSON(nil, r)
+}
+
+// RegexFromMap returns the regex a custom function's return value stands for:
+// a map with exactly the string "pattern" and "flags" ToMap produces.
+func RegexFromMap(v any) (*RegexLiteral, bool) {
 	m, ok := v.(map[string]any)
 	if !ok || len(m) != 2 {
 		return nil, false
 	}
-	_, hasPattern := m["pattern"].(string)
-	_, hasFlags := m["flags"].(string)
-	return m, hasPattern && hasFlags
+	pattern, hasPattern := m["pattern"].(string)
+	flags, hasFlags := m["flags"].(string)
+	if !hasPattern || !hasFlags {
+		return nil, false
+	}
+	return &RegexLiteral{Pattern: pattern, Flags: flags}, true
 }
 
-// CompileRegexValue compiles a map that RegexValue accepted.
-func CompileRegexValue(m map[string]any) (*Regex, error) {
-	return CachedCompileRegex(m["pattern"].(string), m["flags"].(string))
-}
+// CallRegexArity is the parameter count of jsonata-js's regex closure,
+// (str, fromIndex), which sets how many arguments a callback receives.
+const CallRegexArity = 2
 
-// callRegex applies a regex called as a function to its first argument.
-// jsonata-js reads a second argument as the offset to search from; gnata
-// always searches from the start.
-func callRegex(regexMap map[string]any, args []any) (any, error) {
+// callRegex applies a regex called as a function, like jsonata-js's closure:
+// the first match in the first argument, searching from the code point offset
+// in the second.
+func callRegex(r *RegexLiteral, args []any) (any, error) {
 	if len(args) == 0 {
 		return nil, nil
 	}
-	return applyRegexTest(args[0], regexMap)
+	from := 0
+	if len(args) > 1 {
+		from = regexOffset(args[1])
+	}
+	return applyRegex(args[0], r, from)
 }
 
-// applyRegexTest applies a regex the way jsonata-js applies it as a function,
-// in a call (/re/(s)) or on the right of ~>. It returns the first match object
-// (like $match with limit 1) when the regex matches, or nil (undefined) when
-// it does not.
-func applyRegexTest(input any, regexMap map[string]any) (any, error) {
+// regexOffset converts a fromIndex argument the way JavaScript sets a regex's
+// lastIndex: a number, or a value that converts to one, truncated toward zero;
+// anything else, or a negative number, is 0.
+func regexOffset(v any) int {
+	switch val := v.(type) {
+	case float64:
+		return max(ToIntClamped(val), 0)
+	case json.Number:
+		return regexOffset(jsStringToNumber(string(val)))
+	case string:
+		return regexOffset(jsStringToNumber(val))
+	case bool:
+		if val {
+			return 1
+		}
+	}
+	// JavaScript converts an array through its string, where a boolean item
+	// is a word, not a number.
+	if arr, ok := AsArray(v); ok && len(arr) == 1 {
+		if _, isBool := arr[0].(bool); !isBool {
+			return regexOffset(arr[0])
+		}
+	}
+	return 0
+}
+
+// jsStringToNumber converts s the way JavaScript's Number does: a decimal,
+// Infinity, or a hex, binary or octal integer, around white space; "" is 0
+// and anything else NaN. A number too large for float64 is infinite.
+func jsStringToNumber(s string) float64 {
+	s = strings.TrimFunc(s, isJSWhiteSpace)
+	switch s {
+	case "":
+		return 0
+	case "Infinity", "+Infinity":
+		return math.Inf(1)
+	case "-Infinity":
+		return math.Inf(-1)
+	}
+	if base, _ := RadixPrefix(s); base != 0 {
+		n, err := strconv.ParseUint(s[2:], base, 64)
+		switch {
+		case err == nil:
+			return float64(n)
+		case errors.Is(err, strconv.ErrRange):
+			return math.Inf(1)
+		}
+		return math.NaN()
+	}
+	// Go also reads inf, nan, hex floats and digit underscores, which
+	// JavaScript does not.
+	if strings.ContainsAny(s, "iInNxXpP_") {
+		return math.NaN()
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return math.NaN()
+	}
+	return f
+}
+
+// isJSWhiteSpace reports whether JavaScript's Number trims r: a space
+// separator, a line terminator, tab, vertical tab, form feed or U+FEFF.
+func isJSWhiteSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', '\u2028', '\u2029', '\uFEFF':
+		return true
+	}
+	return unicode.Is(unicode.Zs, r)
+}
+
+// applyRegex applies a regex the way jsonata-js applies it as a function, in
+// a call (/re/(s)) or on the right of ~>. It returns the first match object at
+// or after the code point offset from, or nil (undefined) when there is none.
+// A one-item array holding a string is that string, as JavaScript reads it.
+func applyRegex(input any, r *RegexLiteral, from int) (any, error) {
+	for arr, ok := AsArray(input); ok && len(arr) == 1; arr, ok = AsArray(input) {
+		input = arr[0]
+	}
 	s, ok := input.(string)
 	if !ok {
 		return nil, nil
 	}
-	re, err := CompileRegexValue(regexMap)
+	start, ok := byteOffset(s, from)
+	if !ok {
+		return nil, nil
+	}
+	re, err := r.Compile()
 	if err != nil {
 		return nil, &JSONataError{Code: "D1002", Message: fmt.Sprintf("invalid regex: %v", err)}
 	}
-	m, err := re.FindStringMatch(s)
-	if err != nil {
-		return nil, &JSONataError{Code: "D1002", Message: fmt.Sprintf("regex error: %v", err)}
-	}
+	m := re.findMatchFrom(s, start)
 	if m == nil {
 		return nil, nil
 	}
 	return NewMatchObject(s, m), nil
+}
+
+// byteOffset returns the byte offset of the code point offset runes into s,
+// and false when s is shorter than that.
+func byteOffset(s string, runes int) (int, bool) {
+	for i := range s {
+		if runes == 0 {
+			return i, true
+		}
+		runes--
+	}
+	return len(s), runes == 0
 }
 
 // NewMatchObject builds the {match, start, end, groups} object jsonata-js
@@ -287,14 +438,14 @@ func NewMatchObject(s string, m *Match) *OrderedMap {
 
 // ── Regex parsing ─────────────────────────────────────────────────────────────
 
-func evalRegex(raw string) map[string]any {
+func evalRegex(raw string) *RegexLiteral {
 	if idx := strings.LastIndex(raw, "/"); idx >= 0 {
 		suffix := raw[idx+1:]
 		if isRegexFlags(suffix) {
-			return map[string]any{"pattern": raw[:idx], "flags": suffix}
+			return &RegexLiteral{Pattern: raw[:idx], Flags: suffix}
 		}
 	}
-	return map[string]any{"pattern": raw, "flags": ""}
+	return &RegexLiteral{Pattern: raw}
 }
 
 func isRegexFlags(s string) bool {

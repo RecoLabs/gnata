@@ -233,7 +233,7 @@ func DeepEqual(a, b any) bool {
 
 // DeepEqualPrec is DeepEqual comparing numbers in decimal to prec significant
 // digits, or in float64 when prec is 0.
-func DeepEqualPrec(a, b any, prec int) bool { //nolint:gocyclo // type-switch fast path adds branches but not real complexity
+func DeepEqualPrec(a, b any, prec int) bool {
 	if prec > 0 {
 		if equal, ok := decimalEqual(a, b, prec); ok {
 			return equal
@@ -278,33 +278,37 @@ func DeepEqualPrec(a, b any, prec int) bool { //nolint:gocyclo // type-switch fa
 			}
 		}
 		return true
-	case map[string]any:
-		if !IsMap(b) || MapLen(b) != len(av) {
-			return false
-		}
-		for k, va := range av {
-			vb, exists := MapGet(b, k)
-			if !exists || !DeepEqualPrec(va, vb, prec) {
+	case map[string]any, *OrderedMap:
+		return mapsEqual(av, b, prec)
+	case *RegexLiteral:
+		return av == b
+	}
+	return false
+}
+
+// mapsEqual is DeepEqualPrec for a map a.
+func mapsEqual(a, b any, prec int) bool {
+	if !IsMap(b) || MapLen(b) != MapLen(a) {
+		return false
+	}
+	valueEqual := func(k string, va any) bool {
+		vb, exists := MapGet(b, k)
+		return exists && DeepEqualPrec(va, vb, prec)
+	}
+	if m, ok := a.(map[string]any); ok {
+		for k, va := range m {
+			if !valueEqual(k, va) {
 				return false
 			}
 		}
 		return true
-	case *OrderedMap:
-		if !IsMap(b) || MapLen(b) != av.Len() {
-			return false
-		}
-		equal := true
-		av.Range(func(k string, va any) bool {
-			vb, exists := MapGet(b, k)
-			if !exists || !DeepEqualPrec(va, vb, prec) {
-				equal = false
-				return false
-			}
-			return true
-		})
-		return equal
 	}
-	return false
+	equal := true
+	a.(*OrderedMap).Range(func(k string, va any) bool {
+		equal = valueEqual(k, va)
+		return equal
+	})
+	return equal
 }
 
 // JSONataError is the structured error type used throughout evaluation.
@@ -340,4 +344,21 @@ func ToIntClamped(f float64) int {
 		return math.MinInt32
 	}
 	return int(f)
+}
+
+// RadixPrefix returns the base of a hex (0x), binary (0b) or octal (0o) prefix
+// on s, and the bits each digit carries, or 0, 0 when there is none.
+func RadixPrefix(s string) (base, digitBits int) {
+	if len(s) < 2 || s[0] != '0' {
+		return 0, 0
+	}
+	switch s[1] {
+	case 'x', 'X':
+		return 16, 4
+	case 'b', 'B':
+		return 2, 1
+	case 'o', 'O':
+		return 8, 3
+	}
+	return 0, 0
 }

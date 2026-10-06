@@ -30,8 +30,7 @@ func makeFnMatch(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		}
 		limit := matchCountLimit(limitArg)
 
-		switch args[1].(type) {
-		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+		if _, isRegex := args[1].(*evaluator.RegexLiteral); !isRegex && evaluator.IsFunction(args[1]) {
 			return matchWithCustomMatcher(s, args[1], limit, evalFn, env)
 		}
 
@@ -120,11 +119,7 @@ func isMatcherResult(m any) bool {
 		return true
 	}
 	next, _ := evaluator.MapGet(m, "next")
-	switch next.(type) {
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return true
-	}
-	return false
+	return evaluator.IsFunction(next)
 }
 
 // isFalsyJS reports whether jsonata-js would treat a matcher's return value as
@@ -230,7 +225,7 @@ func makeFnReplace(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 				return replaceWithFn(s, literalRe, args[2], limit, evalFn, focus, env)
 			}
 
-		case map[string]any:
+		case *evaluator.RegexLiteral:
 			re, err := compileRegex(pattern)
 			if err != nil {
 				return nil, err
@@ -405,11 +400,8 @@ func replacerMatchObject(s string, m *evaluator.Match) *evaluator.OrderedMap {
 
 var errNotPattern = &evaluator.JSONataError{Code: "T0410", Message: "expected a string or regex pattern"}
 
-func compileRegex(m map[string]any) (*evaluator.Regex, error) {
-	if _, ok := evaluator.RegexValue(m); !ok {
-		return nil, errNotPattern
-	}
-	re, err := evaluator.CompileRegexValue(m)
+func compileRegex(r *evaluator.RegexLiteral) (*evaluator.Regex, error) {
+	re, err := r.Compile()
 	if err != nil {
 		return nil, &evaluator.JSONataError{Code: "D3137", Message: fmt.Sprintf("invalid regex: %v", err)}
 	}
@@ -420,7 +412,7 @@ func compileRegexArg(v any) (*evaluator.Regex, error) {
 	switch p := v.(type) {
 	case string:
 		return evaluator.CompileLiteralRegex(p)
-	case map[string]any:
+	case *evaluator.RegexLiteral:
 		return compileRegex(p)
 	default:
 		return nil, errNotPattern

@@ -13,23 +13,6 @@ import (
 
 // ── $number ───────────────────────────────────────────────────────────────────
 
-// radixPrefix returns the base of a hex (0x), binary (0b) or octal (0o) prefix
-// on s, and the bits each digit carries, or 0, 0 when there is none.
-func radixPrefix(s string) (base, digitBits int) {
-	if len(s) < 2 || s[0] != '0' {
-		return 0, 0
-	}
-	switch s[1] {
-	case 'x', 'X':
-		return 16, 4
-	case 'b', 'B':
-		return 2, 1
-	case 'o', 'O':
-		return 8, 3
-	}
-	return 0, 0
-}
-
 func fnNumber(args []any, focus any) (any, error) {
 	var arg any
 	switch len(args) {
@@ -57,7 +40,7 @@ func fnNumber(args []any, focus any) (any, error) {
 		return f, nil
 	case string:
 		s := strings.TrimSpace(v)
-		if base, _ := radixPrefix(s); base != 0 {
+		if base, _ := evaluator.RadixPrefix(s); base != 0 {
 			if n, err := strconv.ParseInt(s[2:], base, 64); err == nil {
 				return float64(n), nil
 			}

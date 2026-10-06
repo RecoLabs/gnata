@@ -78,7 +78,7 @@ func decNumber(args []any, focus any, prec int) (res any, ok bool, err error) {
 	default:
 		return nil, false, nil
 	}
-	if base, digitBits := radixPrefix(s); base != 0 {
+	if base, digitBits := evaluator.RadixPrefix(s); base != 0 {
 		// Bound the digits before parsing so a long string cannot become a huge integer.
 		if len(s[2:])*digitBits > decimal.MaxIntegerBits {
 			return nil, false, nil

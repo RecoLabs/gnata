@@ -191,20 +191,26 @@ func newEnv(customFuncs map[string]CustomFunc, sharedArgs bool) *evaluator.Envir
 }
 
 // wrapCustomFunc wraps a user-provided custom function to normalize
-// internal evaluator types (OrderedMap, Null sentinel) into standard
-// Go types (map[string]any, nil) before the function sees them.
+// internal evaluator types (OrderedMap, Null sentinel, regex) into standard
+// Go types (map[string]any, nil) before the function sees them. A returned
+// {"pattern", "flags"} map, the form a regex argument arrives in, is a regex.
 func wrapCustomFunc(fn CustomFunc, sharedArgs bool) CustomFunc {
 	return func(args []any, focus any) (any, error) {
 		for i, a := range args {
 			args[i] = normalizeValue(a, sharedArgs)
 		}
-		return fn(args, normalizeValue(focus, sharedArgs))
+		result, err := fn(args, normalizeValue(focus, sharedArgs))
+		if re, ok := evaluator.RegexFromMap(result); ok {
+			return re, err
+		}
+		return result, err
 	}
 }
 
 // NormalizeValue converts internal evaluator types to standard Go types.
-// OrderedMap becomes map[string]any, the null sentinel becomes nil,
-// and slices are recursively normalized only when they contain internal types.
+// OrderedMap becomes map[string]any, the null sentinel becomes nil, a regex
+// becomes its {"pattern", "flags"} map, and slices are recursively normalized
+// only when they contain internal types.
 // Scalar values and slices of pure scalars pass through without allocation:
 // maps in the result are always freshly allocated and may be modified, but
 // slices may be the caller's own and must not be modified in place.
@@ -234,6 +240,8 @@ func normalizeValue(v any, shared bool) any {
 		return normalizeSlice(val, shared)
 	case evaluator.ConsArray:
 		return normalizeSlice([]any(val), shared)
+	case *evaluator.RegexLiteral:
+		return val.ToMap()
 	}
 	return v
 }
@@ -275,6 +283,8 @@ func needsNormalize(v any) bool {
 	case *evaluator.Sequence:
 		return true
 	case []any:
+		return true
+	case *evaluator.RegexLiteral:
 		return true
 	}
 	return evaluator.IsNull(v)
@@ -326,6 +336,9 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 	}
 	if seq, ok := result.(*evaluator.Sequence); ok {
 		result = evaluator.CollapseSequence(seq)
+	}
+	if re, ok := result.(*evaluator.RegexLiteral); ok {
+		return re.ToMap(), nil
 	}
 	return evaluator.StripCons(result), nil
 }

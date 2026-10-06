@@ -47,6 +47,9 @@ func stringifyValue(v any, prec int) (string, error) {
 		}
 		return "false", nil
 	default:
+		if IsFunction(v) {
+			return "", nil
+		}
 		b, err := AppendJSON(nil, v)
 		if err != nil {
 			return "", fmt.Errorf("cannot stringify value: %w", err)

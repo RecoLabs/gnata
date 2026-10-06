@@ -11,6 +11,7 @@ import (
 
 // hofArity returns the callback argument count for the given HOF function.
 // For lambdas, uses the declared parameter count (capped at 3).
+// A regex takes the value and index, like jsonata-js's regex closure.
 // For built-in functions, defaults to 1 (value only).
 func hofArity(fn any) int {
 	if lambda, ok := fn.(*evaluator.Lambda); ok {
@@ -19,6 +20,9 @@ func hofArity(fn any) int {
 			return 3
 		}
 		return n
+	}
+	if _, ok := fn.(*evaluator.RegexLiteral); ok {
+		return evaluator.CallRegexArity
 	}
 	return 1
 }
@@ -316,9 +320,9 @@ func fnTypeOf(args []any, _ any) (any, error) {
 		return "array", nil
 	case *evaluator.OrderedMap, map[string]any:
 		return "object", nil
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return "function", nil
-	default:
-		return nil, nil
 	}
+	if evaluator.IsFunction(args[0]) {
+		return "function", nil
+	}
+	return nil, nil
 }

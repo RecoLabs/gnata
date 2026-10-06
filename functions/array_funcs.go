@@ -95,12 +95,11 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		case 0:
 			arrVal = focus
 		case 1:
-			switch args[0].(type) {
-			case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+			if evaluator.IsFunction(args[0]) {
 				// arg is a function → use focus as the array
 				arrVal = focus
 				fn = args[0]
-			default:
+			} else {
 				arrVal = args[0]
 			}
 		default:

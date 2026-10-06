@@ -25,8 +25,7 @@ func stringify(args []any, focus any, prec int) (any, error) {
 		if focus == nil {
 			return nil, nil
 		}
-		switch focus.(type) {
-		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+		if evaluator.IsFunction(focus) {
 			return nil, nil
 		}
 		return valueToString(focus, false, prec)
@@ -43,9 +42,10 @@ func stringify(args []any, focus any, prec int) (any, error) {
 		switch v := args[1].(type) {
 		case bool:
 			prettify = v
-		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-			return nil, &evaluator.JSONataError{Code: "D3011", Message: "$string: second argument cannot be a function"}
 		default:
+			if evaluator.IsFunction(v) {
+				return nil, &evaluator.JSONataError{Code: "D3011", Message: "$string: second argument cannot be a function"}
+			}
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("$string: second argument must be a boolean, got %T", v)}
 		}
 	}
@@ -55,6 +55,9 @@ func stringify(args []any, focus any, prec int) (any, error) {
 func valueToString(v any, prettify bool, prec int) (string, error) {
 	if evaluator.IsNull(v) {
 		return parser.NullJSON, nil
+	}
+	if evaluator.IsFunction(v) {
+		return "", nil // functions serialize as empty string in JSONata
 	}
 	switch val := v.(type) {
 	case string:
@@ -79,8 +82,6 @@ func valueToString(v any, prettify bool, prec int) (string, error) {
 		return "false", nil
 	case nil:
 		return "", nil // undefined → caller returns nil
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return "", nil // functions serialize as empty string in JSONata
 	case *evaluator.Sequence:
 		return valueToString(evaluator.CollapseSequence(val), prettify, prec)
 	default:
@@ -106,11 +107,12 @@ func sanitizeForJSON(v any, prec int) any {
 	if evaluator.IsNull(v) {
 		return nil
 	}
+	if evaluator.IsFunction(v) {
+		return ""
+	}
 	switch val := v.(type) {
 	case *evaluator.Sequence:
 		return sanitizeForJSON(evaluator.CollapseSequence(val), prec)
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return ""
 	case *evaluator.OrderedMap:
 		out := evaluator.NewOrderedMapWithCapacity(val.Len())
 		val.Range(func(k string, v any) bool {
@@ -422,7 +424,7 @@ func fnContains(args []any, focus any) (any, error) {
 	switch p := args[1].(type) {
 	case string:
 		return strings.Contains(s, p), nil
-	case map[string]any:
+	case *evaluator.RegexLiteral:
 		re, err := compileRegex(p)
 		if err != nil {
 			return nil, err
@@ -472,7 +474,7 @@ func fnSplit(args []any, _ any) (any, error) {
 		} else {
 			parts = strings.Split(s, p)
 		}
-	case map[string]any:
+	case *evaluator.RegexLiteral:
 		re, err := compileRegex(p)
 		if err != nil {
 			return nil, err
@@ -481,12 +483,10 @@ func fnSplit(args []any, _ any) (any, error) {
 			return nil, err
 		}
 	default:
-		switch args[1].(type) {
-		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+		if evaluator.IsFunction(args[1]) {
 			return nil, &evaluator.JSONataError{Code: "T1010", Message: "$split: second argument must be a string or regex"}
-		default:
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$split: second argument must be a string or regex"}
 		}
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$split: second argument must be a string or regex"}
 	}
 
 	result := make([]any, len(parts))

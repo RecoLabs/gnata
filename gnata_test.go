@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/recolabs/gnata"
@@ -109,6 +110,59 @@ func TestJSONNull_TypeAssertFromEval(t *testing.T) {
 	}
 	if val != gnata.Null {
 		t.Fatalf("value %v != gnata.Null", val)
+	}
+}
+
+// TestRegexAtAPIEdges checks that a regex is its {"pattern", "flags"} map
+// in results and custom function arguments, that a custom function can return
+// that map as a regex, and that input data of the same shape stays an object.
+func TestRegexAtAPIEdges(t *testing.T) {
+	regexMap := map[string]any{"pattern": "b", "flags": "g"}
+	env := gnata.NewCustomEnvironment(map[string]gnata.CustomFunc{
+		"identity": func(args []any, _ any) (any, error) { return args[0], nil },
+		"regex": func(args []any, _ any) (any, error) {
+			return map[string]any{"pattern": args[0], "flags": ""}, nil
+		},
+		"isMap": func(args []any, _ any) (any, error) {
+			_, ok := args[0].(map[string]any)
+			return ok, nil
+		},
+	})
+	testCases := []struct {
+		desc string
+		expr string
+		data any
+		want any
+	}{
+		{desc: "result", expr: `/b/`, want: regexMap},
+		{desc: "custom function argument", expr: `$isMap(/b/)`, want: true},
+		{desc: "custom function round trip", expr: `$identity(/b/)("abc").start`, want: float64(1)},
+		{desc: "custom function return", expr: `$match("abc", $regex("b")).index`, want: float64(1)},
+		{desc: "Go map input", expr: `$type(r)`, data: map[string]any{"r": regexMap}, want: "object"},
+		{desc: "Go map input passed through", expr: `$type($identity(r))`, data: map[string]any{"r": regexMap}, want: "function"},
+		{desc: "nested result", expr: `{"r": /b/}`, want: map[string]any{"r": regexMap}},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			compiled, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", tC.expr, err)
+			}
+			got, err := compiled.EvalWithCustomEnvironmentAndVars(context.Background(), tC.data, env, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tC.expr, err)
+			}
+			if got = gnata.NormalizeValue(got); !reflect.DeepEqual(got, tC.want) {
+				t.Fatalf("Eval(%q) = %#v, want %#v", tC.expr, got, tC.want)
+			}
+		})
+	}
+	compiled, err := gnata.Compile(`r("abc")`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if _, err := compiled.Eval(context.Background(), map[string]any{"r": regexMap}); err == nil || !strings.Contains(err.Error(), "T1006") {
+		t.Fatalf("calling a Go map with a regex's keys: got %v, want T1006", err)
 	}
 }
 

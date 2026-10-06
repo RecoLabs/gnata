@@ -122,6 +122,12 @@ func AppendJSON(b []byte, v any) ([]byte, error) { //nolint:gocyclo,funlen // ty
 			}
 		}
 		return append(b, '}'), nil
+	case *RegexLiteral:
+		b = append(b, `{"flags":`...)
+		b = appendJSONString(b, val.Flags)
+		b = append(b, `,"pattern":`...)
+		b = appendJSONString(b, val.Pattern)
+		return append(b, '}'), nil
 	case map[string]string:
 		if val == nil {
 			return append(b, "null"...), nil

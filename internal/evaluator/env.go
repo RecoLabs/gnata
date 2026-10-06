@@ -407,6 +407,16 @@ type SignedBuiltin struct {
 	ParsedSig []parser.ParamSpec // pre-parsed signature; avoids re-parsing on every call
 }
 
+// IsFunction reports whether v is a function value, including a regex,
+// which jsonata-js treats as a function.
+func IsFunction(v any) bool {
+	switch v.(type) {
+	case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin, *RegexLiteral:
+		return true
+	}
+	return false
+}
+
 // Lambda represents a user-defined function (lambda expression).
 type Lambda struct {
 	Params        []string           // parameter names

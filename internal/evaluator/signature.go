@@ -180,11 +180,7 @@ func sigTypeMatches(arg any, t byte) bool {
 	case 'x': // anything — including functions
 		return true
 	case 'j': // any JSON value (not a function)
-		switch arg.(type) {
-		case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin:
-			return false
-		}
-		return true
+		return !IsFunction(arg)
 	case 'n':
 		switch arg.(type) {
 		case float64, json.Number:
@@ -205,11 +201,7 @@ func sigTypeMatches(arg any, t byte) bool {
 	case 'o':
 		return IsMap(arg)
 	case 'f':
-		switch arg.(type) {
-		case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin:
-			return true
-		}
-		return false
+		return IsFunction(arg)
 	case 'u': // union of primitives: Boolean, Number, String, or Null
 		switch arg.(type) {
 		case bool, float64, string, json.Number:

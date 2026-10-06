@@ -45,22 +45,15 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 	if err != nil {
 		return nil, err
 	}
-	if regexMap, ok := RegexValue(fn); ok {
-		return applyRegexTest(piped, regexMap)
-	}
-	// Validate right side is callable.
-	switch fn.(type) {
-	case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin:
-		// OK
-	case nil:
+	if fn == nil {
 		return nil, &JSONataError{Code: "T1006", Message: "attempted to invoke undefined function"}
-	default:
+	}
+	if !IsFunction(fn) {
 		return nil, &JSONataError{Code: "T2006", Message: fmt.Sprintf("the right-hand side of the ~> operator must be a function, got %T", fn)}
 	}
 	// If piped value is itself a function, create a function composition rather
 	// than calling fn(piped). e.g. $trim ~> $uppercase creates a composed function.
-	switch piped.(type) {
-	case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin:
+	if IsFunction(piped) {
 		return BuiltinFunction(func(args []any, focus any) (any, error) {
 			intermediate, err := callFunction(piped, args, focus, env)
 			if err != nil {
