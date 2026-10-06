@@ -305,7 +305,7 @@ func evalSubscriptStage(node *parser.Node, input any, env *Environment) (any, er
 // filterByPredicate keeps items where predicate evaluates to truthy, binding
 // %% → parent (for the % operator) and optionally indexVar to the loop position.
 func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar string, env *Environment) (any, error) {
-	seq := CreateSequence()
+	var seq *Sequence
 	filterEnv := NewChildEnvironment(env)
 	filterEnv.Bind(parentKey, parent)
 	for i, item := range items {
@@ -318,16 +318,33 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 		if val, err := Eval(predicate, item, filterEnv); err != nil {
 			return nil, err
 		} else if ToBoolean(val) {
+			if seq == nil {
+				seq = newFilterSequence()
+			}
 			seq.Values = append(seq.Values, item)
 		}
+	}
+	if seq == nil {
+		return nil, nil
 	}
 	if err := env.CheckSequence(len(seq.Values)); err != nil {
 		return nil, err
 	}
-	if len(seq.Values) == 0 {
-		return nil, nil
-	}
 	return seq, nil
+}
+
+// filterSequence is a filter's result sequence with room for the few items
+// a filter usually keeps, so that the sequence and its first four items
+// share one allocation.
+type filterSequence struct {
+	Sequence
+	items [4]any
+}
+
+func newFilterSequence() *Sequence {
+	f := new(filterSequence)
+	f.Values = f.items[:0]
+	return &f.Sequence
 }
 
 // evalSubscriptLeft evaluates the left side of a subscript and normalizes
