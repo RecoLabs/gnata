@@ -139,6 +139,8 @@ func TestEvalBytes_PathGroup_MatchesEval(t *testing.T) {
 		{desc: "builtin of a grouped path", expr: `$count(Account.Order{OrderID: 1})`},
 		{desc: "comparison of a grouped path", expr: `Account.Order{OrderID: 1} = 1`},
 		{desc: "boolean of a grouped path", expr: `$exists(Account.Order{OrderID: 1}) and true`},
+		{desc: "grouped builtin", expr: `$count(Account.Order){"k": $}`},
+		{desc: "comparison of a grouped builtin", expr: `$count(Account.Order){"k": $} = 3`},
 	}
 
 	rawData := json.RawMessage(comparisonBytesTestData)

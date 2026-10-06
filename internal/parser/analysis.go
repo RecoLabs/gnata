@@ -268,7 +268,7 @@ func rawStepNames(node *Node) []string {
 // built-in function with a pure-path first argument. Returns nil when the
 // pattern does not match.
 func tryCollectFunc(node *Node) *FuncFastPath {
-	if node == nil || node.Type != NodeFunction || node.KeepArray {
+	if node == nil || node.Type != NodeFunction || node.KeepArray || node.Group != nil {
 		return nil
 	}
 	if node.Procedure == nil || node.Procedure.Type != NodeVariable {
