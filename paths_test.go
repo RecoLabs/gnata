@@ -100,6 +100,9 @@ var parentOperatorCases = []exprCase{
 	{expr: `a.().%`, data: pairsJSON, want: undefined},
 	{expr: `a.($error("boom"); b).%`, data: pairsJSON, code: "D3137"},
 	{expr: `library.loans@$l.%.$l.customer`, data: libraryJSON, want: `["c1","c2","c3"]`},
+	{expr: `a.b.%@$p[0].{"p":$p.c}`, data: `{"a":[{"b":[1,2],"c":"x"},{"b":[3],"c":"y"}]}`, want: `{"p":"x"}`},
+	{expr: `a.b.%@$p[$p.c="y"].{"p":$p.c}`, data: `{"a":[{"b":[1,2],"c":"x"},{"b":[3],"c":"y"}]}`, want: `{"p":"y"}`},
+	{expr: `a.b.%@$p[c="y"]`, data: `{"a":[{"b":[1,2],"c":"x"},{"b":[3],"c":"y"}]}`, want: undefined},
 	{expr: `library.(loans@$l).%.$l.customer`, data: libraryJSON, want: `["c1","c2","c3"]`},
 	{
 		expr: `library.loans#$i.(%)#$j.{"i":$i,"j":$j}`, data: libraryJSON,

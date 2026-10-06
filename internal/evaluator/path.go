@@ -339,7 +339,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// elements, bind each to $focus_var, then apply the predicate with
 		// access to both the focus variable and previously bound variables.
 		if step.Type == parser.NodeBinary && step.Value == "[" &&
-			step.Left != nil && step.Left.Focus != "" {
+			step.Left != nil && isJoinStep(step.Left) {
 			predicate := step.Right
 			leftNode := step.Left
 			focusVar := leftNode.Focus
@@ -367,7 +367,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// tuples, then apply the outer subscript to the entire tuple collection.
 		if step.Type == parser.NodeBinary && step.Value == "[" &&
 			step.Left != nil && step.Left.Type == parser.NodeBinary && step.Left.Value == "[" &&
-			step.Left.Left != nil && step.Left.Left.Focus != "" {
+			step.Left.Left != nil && isJoinStep(step.Left.Left) {
 			// Process the inner join-filter as if it were a standalone step.
 			innerStep := step.Left
 			predicate := innerStep.Right
@@ -406,7 +406,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			continue
 		}
 
-		if base, stages := splitTupleStages(step); (startsStream || inStream) && len(stages) > 0 && isPlainTupleBase(base) {
+		if base, stages := splitTupleStages(step); (startsStream || inStream) && len(stages) > 0 && !isJoinStep(base) {
 			var err error
 			if ctxs, err = evalTupleStages(base, stages, ctxs, node.KeepSingletonArray); err != nil {
 				return nil, nil, false, err
@@ -989,11 +989,13 @@ func splitTupleStages(step *parser.Node) (*parser.Node, []tupleStage) {
 	return step, stages
 }
 
-// isPlainTupleBase reports whether a predicated step's base is one that
-// evalTupleStages can expand per context; sorts and joins keep their
-// dedicated handling.
-func isPlainTupleBase(base *parser.Node) bool {
-	return base.Type != parser.NodeSort && base.Focus == "" && base.Group == nil
+// isJoinStep reports whether a predicated step's base is a join, binding an
+// @$var on a step other than %, which keeps its dedicated handling. Any
+// other base's predicates filter the tuple stream (see evalTupleStages);
+// a sort's are applied by the sort branch, and a predicated base cannot
+// carry a group of its own (S0209).
+func isJoinStep(base *parser.Node) bool {
+	return base.Focus != "" && base.Type != parser.NodeParent
 }
 
 // evalTupleStages expands base for every context, then applies each stage
