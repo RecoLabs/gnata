@@ -40,6 +40,10 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 	sortsByPartial := func(depth int) string {
 		return fmt.Sprintf(`($p := $sort(?, ?); $d := $reduce([1..%d], function($a,$i){[[$a], $p]}, [2,1]); $count($sort($d, $p)))`, depth)
 	}
+	deepBodies := func(depth int) string {
+		body := strings.Repeat("$string(", depth) + "$f($n-1)" + strings.Repeat(")", depth)
+		return `($f := function($n){$n = 0 ? 0 : ` + body + `}; $f(99))`
+	}
 	nested := func(depth int) string { return strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth) }
 	const tooNested = "U1001: stack overflow error: function values nested more than 5000 deep"
 	runNestingCases(t, []nestingCase{
@@ -54,6 +58,14 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		{desc: "builtin callbacks exceed nesting limit", expr: sortsBySort(1_000_000), code: tooNested},
 		{desc: "builtin callbacks through partials within nesting limit", expr: sortsByPartial(4_999), want: float64(2)},
 		{desc: "builtin callbacks through partials exceed nesting limit", expr: sortsByPartial(5_001), code: tooNested},
+		{desc: "lambdas with shallow bodies bounded by the call depth alone", expr: deepBodies(60), want: "0"},
+		{desc: "lambdas with deep bodies exceed nesting limit", expr: deepBodies(400), code: tooNested},
+		{
+			desc: "deep lambda bodies in tail position release the budget",
+			expr: `($f := function($n){` + strings.Repeat("($n > -1 ? ", 300) + "($n = 0 ? 0 : $f($n-1))" +
+				strings.Repeat(" : 0)", 300) + `}; $f(99))`,
+			want: float64(0),
+		},
 		{desc: "recursion through a transform within default stack", expr: recursiveTransform(99), want: float64(2)},
 		{desc: "deep transforms in a group exceed nesting limit", expr: groupedTransforms(10_000, 3_000), code: tooNested},
 		{

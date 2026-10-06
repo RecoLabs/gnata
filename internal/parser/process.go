@@ -15,7 +15,7 @@ func ProcessAST(node *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	markTransformDepths(node)
+	markFunctionDepths(node)
 	return node, nil
 }
 

@@ -476,4 +476,5 @@ type Lambda struct {
 	ParsedSig     []parser.ParamSpec // pre-parsed signature; avoids re-parsing per call
 	Context       *ContextSig        // nil: no parameter defaults to the context
 	CapturedFocus any                // focus ($) at definition time, which the body evaluates against
+	DeepBody      int                // nesting budget each call spends, see lambdaFreeDepth
 }

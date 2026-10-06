@@ -2,23 +2,21 @@ package parser
 
 import "math"
 
-// markTransformDepths sets Depth on every transform in the tree rooted at n
-// and returns how deeply evaluating n recurses. Evaluating a lambda or a
-// transform only builds a function, whose body is accounted for when it is
-// called, so each counts as one level here.
-func markTransformDepths(n *Node) int {
+// markFunctionDepths sets Depth on every transform and lambda in the tree
+// rooted at n and returns how deeply evaluating n recurses. Evaluating a
+// lambda or a transform only builds a function, whose body is accounted for
+// when it is called, so each counts as one level here.
+func markFunctionDepths(n *Node) int {
 	if n == nil {
 		return 0
 	}
 	deepest := 0
 	forEachChild(n, func(child *Node) {
-		deepest = max(deepest, markTransformDepths(child))
+		deepest = max(deepest, markFunctionDepths(child))
 	})
 	switch n.Type {
-	case NodeTransform:
+	case NodeTransform, NodeLambda:
 		n.Depth = uint16(min(deepest, math.MaxUint16))
-		return 1
-	case NodeLambda:
 		return 1
 	}
 	return deepest + 1

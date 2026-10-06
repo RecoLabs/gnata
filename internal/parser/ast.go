@@ -50,7 +50,7 @@ type Node struct {
 	Thunk              bool   // call is trampolined as a tail call
 	TailContext        bool   // call is a jsonata-js tail call, taking the entering call's context
 	Tuple              bool   // step participates in a tuple stream
-	Depth              uint16 // type="transform": how deeply evaluating its clauses recurses, saturating
+	Depth              uint16 // type="transform" or "lambda": how deeply evaluating its clauses or body recurses, saturating
 
 	// Focus / index variable names (set by @ and # operators)
 	Focus string // variable name bound by @

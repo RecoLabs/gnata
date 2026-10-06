@@ -106,7 +106,25 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 		ParsedSig:     parsedSig,
 		Context:       contextSig,
 		CapturedFocus: input,
+		DeepBody:      max(int(node.Depth)-lambdaFreeDepth, 0),
 	}, nil
+}
+
+// lambdaFreeDepth is how deeply a lambda's body may nest before each call
+// spends the nesting budget, which it does by the depth beyond. The call
+// depth alone bounds recursion with shallower bodies: the default 100 calls
+// with bodies 64 deep stay well inside the stack of js/wasm in Node, which
+// overflows at about 99 calls with bodies 800 deep.
+const lambdaFreeDepth = 64
+
+// evalLambdaBody evaluates the body of f, a lambda called with env.
+func evalLambdaBody(f *Lambda, env *Environment, counter *callCounter) (any, error) {
+	if f.DeepBody == 0 {
+		return Eval(f.Body, f.CapturedFocus, env)
+	}
+	return counter.callNested(f.DeepBody, func() (any, error) {
+		return Eval(f.Body, f.CapturedFocus, env)
+	})
 }
 
 func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
@@ -331,7 +349,7 @@ func invokeFunction(fn any, args []any, focus any, env *Environment, checked boo
 			}
 			outerFocus := counter.applyFocus
 			counter.applyFocus = focus
-			result, err := Eval(f.Body, f.CapturedFocus, childEnv)
+			result, err := evalLambdaBody(f, childEnv, counter)
 			counter.applyFocus = outerFocus
 			counter.depth--
 			if err != nil {
