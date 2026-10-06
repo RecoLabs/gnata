@@ -68,10 +68,12 @@ const (
 // for far more, but under js/wasm in Node with go_js_wasm_exec's 8 MB stack,
 // the stack CI runs, $sort comparators that are partial applications, the
 // costliest unit measured, overflow at about 12,500 on a fresh stack and at
-// about 4,900 once an earlier chain in the same evaluation has grown it, so
-// the limit leaves about 2.4 times that. Hosts with a smaller stack, such as
-// Node's default, can overflow below the limit.
-const maxNestedCalls = 2_000
+// about 4,900 once an earlier chain in the same evaluation has grown it, and
+// 100 lambda calls with grouping-constructor bodies overflow a grown stack at
+// about 16,000 levels: the limit, with lambdaFreeDepth, stays near half of
+// both. Hosts with a smaller stack, such as Node's default, can overflow
+// below the limit.
+const maxNestedCalls = 1_500
 
 // callCounter.nested must hold maxNestedCalls.
 const _ uint16 = maxNestedCalls

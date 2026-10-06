@@ -113,12 +113,12 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 // lambdaFreeDepth is how deeply the body of a lambda may nest before each
 // call spends the nesting budget, one unit per levelsPerNestedCall levels
 // beyond; the call depth alone bounds recursion with shallower bodies.
-// Under js/wasm in Node with go_js_wasm_exec's 8 MB stack, 3 levels of the
-// costliest body found, grouping constructors, take less stack than the
-// costliest unit (see maxNestedCalls), also once the stack has grown, and
-// the default 100 calls with free bodies leave that limit unchanged.
+// The free levels of the default 100 calls, 3,200, plus a full budget at 3
+// levels per unit, 4,500, stay near half of the 16,000 levels of the
+// costliest body found, grouping constructors, at which 100 calls overflow
+// a grown stack under js/wasm in Node with go_js_wasm_exec's 8 MB stack.
 const (
-	lambdaFreeDepth     = 64
+	lambdaFreeDepth     = 32
 	levelsPerNestedCall = 3
 )
 

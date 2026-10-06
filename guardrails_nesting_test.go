@@ -11,7 +11,7 @@ import (
 	"github.com/recolabs/gnata"
 )
 
-// Chains near the nesting limit need tens of MB of Go stack, more than the
+// Chains near the nesting limit need several MB of Go stack, more than the
 // fixed stacks the TinyGo test run uses.
 func TestNestedFunctionValueLimit(t *testing.T) {
 	partials := func(n int) string {
@@ -53,35 +53,35 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 			strings.Repeat("}", depth) + `; {}) |}, | $ | {} |)({"k":1})`
 	}
 	nested := func(depth int) string { return strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth) }
-	const tooNested = "U1001: stack overflow error: nested calls exceeded the nesting budget of 2000"
+	const tooNested = "U1001: stack overflow error: nested calls exceeded the nesting budget of 1500"
 	runNestingCases(t, []nestingCase{
-		{desc: "partial applications within nesting limit", expr: partials(1_999), want: float64(5)},
-		{desc: "partial applications exceed nesting limit", expr: partials(2_001), code: tooNested},
-		{desc: "compositions within nesting limit", expr: compositions(1_999), want: "5"},
-		{desc: "compositions exceed nesting limit", expr: compositions(2_001), code: tooNested},
+		{desc: "partial applications within nesting limit", expr: partials(1_499), want: float64(5)},
+		{desc: "partial applications exceed nesting limit", expr: partials(1_501), code: tooNested},
+		{desc: "compositions within nesting limit", expr: compositions(1_499), want: "5"},
+		{desc: "compositions exceed nesting limit", expr: compositions(1_501), code: tooNested},
 		{desc: "transforms within nesting limit", expr: transforms(600), want: map[string]any{"k": float64(1)}},
 		{desc: "transforms exceed nesting limit", expr: transforms(3_000_000), code: tooNested},
-		{desc: "transforms with shallow clauses within nesting limit", expr: transformChain(90, 60), want: map[string]any{"k": float64(1)}},
-		{desc: "transforms with shallow clauses exceed nesting limit", expr: transformChain(4_999, 60), code: tooNested},
+		{desc: "transforms with shallow clauses within nesting limit", expr: transformChain(68, 60), want: map[string]any{"k": float64(1)}},
+		{desc: "transforms with shallow clauses exceed nesting limit", expr: transformChain(69, 60), code: tooNested},
 		{desc: "deep transforms exceed nesting limit", expr: deepTransforms(1_000, 3_000), code: tooNested},
-		{desc: "builtin callbacks within nesting limit", expr: sortsBySort(1_999), want: float64(2)},
+		{desc: "builtin callbacks within nesting limit", expr: sortsBySort(1_499), want: float64(2)},
 		{desc: "builtin callbacks exceed nesting limit", expr: sortsBySort(1_000_000), code: tooNested},
-		{desc: "builtin callbacks through partials within nesting limit", expr: sortsByPartial(1_999), want: float64(2)},
-		{desc: "builtin callbacks through partials exceed nesting limit", expr: sortsByPartial(2_001), code: tooNested},
+		{desc: "builtin callbacks through partials within nesting limit", expr: sortsByPartial(1_499), want: float64(2)},
+		{desc: "builtin callbacks through partials exceed nesting limit", expr: sortsByPartial(1_501), code: tooNested},
 		{
 			desc: "chains within nesting limit after a chain that grew the stack",
-			expr: "($x := " + groupingTransforms(95, 59) + "; $y := " + sortsByPartial(1_999) + "; " + sortsByPartial(1_999) + ")",
+			expr: "($x := " + groupingTransforms(71, 59) + "; $y := " + sortsByPartial(1_499) + "; " + sortsByPartial(1_499) + ")",
 			want: float64(2),
 		},
 		{
 			desc: "chains within nesting limit under free lambda bodies after a chain that grew the stack",
-			expr: `$exists(($f := function($n){$n = 0 ? (` + "$x := " + groupingTransforms(95, 59) + "; $y := " + sortsByPartial(1_999) +
-				"; " + sortsByPartial(1_999) + `) : ` + strings.Repeat(`{"a":1}{"k": `, 60) + "$f($n-1)" + strings.Repeat("}", 60) +
+			expr: `$exists(($f := function($n){$n = 0 ? (` + "$x := " + groupingTransforms(71, 59) + "; $y := " + sortsByPartial(1_499) +
+				"; " + sortsByPartial(1_499) + `) : ` + strings.Repeat(`{"a":1}{"k": `, 29) + "$f($n-1)" + strings.Repeat("}", 29) +
 				`}; $f(98)))`,
 			want: true,
 		},
-		{desc: "lambdas with shallow bodies bounded by the call depth alone", expr: deepBodies(60), want: "0"},
-		{desc: "lambdas with moderately deep bodies within nesting limit", expr: deepBodies(110), want: "0"},
+		{desc: "lambdas with shallow bodies bounded by the call depth alone", expr: deepBodies(28), want: "0"},
+		{desc: "lambdas with moderately deep bodies within nesting limit", expr: deepBodies(70), want: "0"},
 		{desc: "lambdas with deep bodies exceed nesting limit", expr: deepBodies(400), code: tooNested},
 		{
 			desc: "deep lambda bodies in tail position release the budget",
@@ -91,15 +91,15 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		},
 		{
 			desc: "recursion through a transform with a moderately deep clause",
-			expr: `($f := function($n){$n = 0 ? 0 : ({} ~> | $ | {"a": ` + strings.Repeat("[", 40) + "$f($n-1)" +
-				strings.Repeat("]", 40) + `} |)}; $count($f(98)))`,
+			expr: `($f := function($n){$n = 0 ? 0 : ({} ~> | $ | {"a": ` + strings.Repeat("[", 36) + "$f($n-1)" +
+				strings.Repeat("]", 36) + `} |)}; $count($f(98)))`,
 			want: float64(1),
 		},
 		{desc: "recursion through a transform within default stack", expr: recursiveTransform(99), want: float64(2)},
 		{desc: "deep transforms in a group exceed nesting limit", expr: groupedTransforms(10_000, 3_000), code: tooNested},
 		{
 			desc: "inner transform charged when called, not with the outer one",
-			expr: `($f := function($n){$n = 0 ? {} : ({"a":1} ~> | $ | ($ ~> | $ | {"b": $f($n-1), "c": ` + nested(45) +
+			expr: `($f := function($n){$n = 0 ? {} : ({"a":1} ~> | $ | ($ ~> | $ | {"b": $f($n-1), "c": ` + nested(33) +
 				`} |) |)}; $count($keys($f(99))))`,
 			want: float64(3),
 		},
@@ -144,7 +144,7 @@ func TestWithStackThroughFunctionValues(t *testing.T) {
 		},
 		{
 			desc: "WithStack bounds recursion with moderately deep bodies",
-			expr: `($f := function($n){$n = 0 ? 0 : ` + strings.Repeat("$string(", 80) + "$f($n-1)" + strings.Repeat(")", 80) + `}; $f(300))`,
+			expr: `($f := function($n){$n = 0 ? 0 : ` + strings.Repeat("$string(", 40) + "$f($n-1)" + strings.Repeat(")", 40) + `}; $f(300))`,
 			opts: withStack, want: "0",
 		},
 		{

@@ -67,8 +67,8 @@ type Option func(*compileOptions)
 // error code, matching jsonata-js's `stack` guardrail.
 // Calls through partial applications, compositions, builtin function
 // arguments, transforms and builtins passed as higher-order functions'
-// callbacks have a separate fixed limit of 2,000 nested calls (U1001), which
-// WithStack does not change. A call to a lambda whose body nests more than 64
+// callbacks have a separate fixed limit of 1,500 nested calls (U1001), which
+// WithStack does not change. A call to a lambda whose body nests more than 32
 // levels deep also spends one unit per 3 levels beyond from that limit, and a
 // call to a transform one unit plus one per 3 levels of its clauses.
 func WithStack(n int) Option {
