@@ -193,9 +193,10 @@ func TestWithSequence(t *testing.T) {
 	}
 	items := twentyItems()
 	data := map[string]any{
-		"a": items,
-		"x": map[string]any{"a": items},
-		"m": []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
+		"a":  items,
+		"x":  map[string]any{"a": items},
+		"m":  []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
+		"oo": []any{[]any{map[string]any{"a": items}}},
 	}
 	testCases := []struct {
 		desc string
@@ -235,6 +236,9 @@ func TestWithSequence(t *testing.T) {
 		{desc: "$match", expr: `$match("aaaaaaaaaaaa", /a/)`},
 		{desc: "group variables", expr: `x.a@$e{"k": $e}`, data: data},
 		{desc: "$eval of an array context", expr: `$eval("b", a)`, data: data},
+		// A lone context's value passes through a last step only when it is a
+		// stored array; a lookup over an array context builds a sequence.
+		{desc: "last field step over a nested array context", expr: "$count(oo.a)", data: data},
 		{desc: "wildcard appending an array to its values", expr: "$count(v.*)", data: mustDecodeJSON(t, valuesThenArray)},
 	}
 	for _, tC := range testCases {

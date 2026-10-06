@@ -140,7 +140,7 @@ func walkPathSimple(node *parser.Node, input any, env *Environment) (result any,
 		if err != nil {
 			return nil, false, err
 		}
-		if err := checkPathStep(stepInput, result, singleContext, lone, i == len(node.Steps)-1, env); err != nil {
+		if err := checkPathStep(stepInput, result, lone, i == len(node.Steps)-1, env); err != nil {
 			return nil, false, err
 		}
 		// An array constructed from a single context, as in a.[b, c], is one
@@ -195,14 +195,16 @@ func sequenceContexts(seq *Sequence) any {
 }
 
 // checkPathStep applies the sequence guardrail to a path step's result. As
-// in jsonata-js, a last step returns the result of a lone context as is
-// rather than building a sequence. That context is either the step's only
-// one, or the only one of several that yields a value (lone).
-func checkPathStep(stepInput, result any, singleContext, lone, lastStep bool, env *Environment) error {
+// in jsonata-js, a last step returns the value of a lone context as is,
+// rather than building a sequence, when that value is a stored array: the
+// step has one context that is not an array, or exactly one of its contexts
+// yields a value and that value is an array it holds (lone). A lookup over
+// an array context builds a sequence, so it is never lone.
+func checkPathStep(stepInput, result any, lone, lastStep bool, env *Environment) error {
 	if !env.SequenceLimited() {
 		return nil
 	}
-	if _, isArr := stepInput.([]any); lastStep && (!isArr || singleContext || lone) {
+	if _, isArr := stepInput.([]any); lastStep && (!isArr || lone) {
 		return nil
 	}
 	return checkSequenceLength(result, env)

@@ -88,10 +88,11 @@ func WithTimeout(d time.Duration) Option {
 // $keys, $spread, $lookup, $match, wildcard (*), descendant (**), every path
 // step and every tuple stream of a #/@ binding. Exceeding it returns error
 // D2015. As in jsonata-js, a path step mapping over input data counts too,
-// so a.b over more than n items of a exceeds it; a last step returning the
-// value of a lone context is exempt. Expressions compiled with it always use
-// the full evaluator. Without this option, only the built-in 10,000,000
-// element hard caps (D2014 / D3010) apply.
+// so a.b over more than n items of a exceeds it; a last step returning an
+// array stored in the data, the value of its only context that yields one,
+// is exempt. Expressions compiled with it always use the full evaluator.
+// Without this option, only the built-in 10,000,000 element hard caps
+// (D2014 / D3010) apply.
 func WithSequence(n int) Option {
 	return func(o *compileOptions) { o.sequence = n }
 }
