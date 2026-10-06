@@ -552,6 +552,7 @@ func markRootContext(node *Node, root bool) {
 	case NodeBind:
 		markRootContext(node.Right, root)
 	case NodeFunction, NodePartial:
+		markRootContext(node.Procedure, root)
 		for _, arg := range node.Arguments {
 			markRootContext(arg, root)
 		}

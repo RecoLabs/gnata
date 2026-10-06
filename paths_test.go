@@ -45,6 +45,8 @@ var parentOperatorCases = []exprCase{
 	{expr: `Account.Order.Product.%#$i.$i`, data: accountJSON, want: `[0,0,0]`},
 	{expr: `a.%`, data: `{"a":{"b":1}}`, want: `{"a":{"b":1}}`},
 	{expr: `$count(k.%)`, data: parentArrayJSON, want: `6`},
+	{expr: `(function(){ $count(k.%) })()`, data: parentArrayJSON, want: `6`},
+	{expr: `$count((function(){ *.% })())`, data: parentArrayJSON, want: `4`},
 	{expr: `$count((k.%))`, data: parentArrayJSON, want: `6`},
 	{expr: `$count((k).%)`, data: parentArrayJSON, want: `3`},
 	{expr: `$count($$.k.%)`, data: parentArrayJSON, want: `3`},
