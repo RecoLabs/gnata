@@ -340,7 +340,7 @@ func (l *Lexer) scanString(quote byte, startPos int) (Token, error) {
 			// jsonata-js accepts the short escape and then runs out of input.
 			return Token{}, lexError("S0101", "unterminated string literal")
 		}
-		r, _ := strconv.ParseInt(hex, 16, 32)
+		r, _ := strconv.ParseInt(hex, 16, 32) // four hex digits, checked above
 		l.pos += 4
 		// Handle UTF-16 surrogate pairs: high surrogate + low surrogate -> single code point.
 		if r >= 0xD800 && r <= 0xDBFF && l.pos+6 <= len(l.src) && l.src[l.pos] == '\\' && l.src[l.pos+1] == 'u' {
@@ -385,7 +385,9 @@ func (l *Lexer) scanNumber(startPos int) (Token, error) {
 			end++
 		}
 		if end < len(l.src) && l.src[end] >= '0' && l.src[end] <= '9' {
-			for l.pos = end; l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9'; l.pos++ {
+			l.pos = end
+			for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
+				l.pos++
 			}
 		}
 	}

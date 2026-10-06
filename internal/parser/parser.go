@@ -56,7 +56,7 @@ func parseError(code, tok, msg string) error {
 // expression and each chained operator is one level. It keeps the parser and
 // the recursive passes over the tree (processing, analysis, evaluation) far
 // from Go's fatal stack limit, which deep enough input would otherwise reach.
-// jsonata-js itself overflows its stack at about 5,000 levels.
+// jsonata-js itself overflows its stack at about 2,000 levels of nesting.
 const MaxDepth = 10_000
 
 // Parser is a top-down operator precedence (Pratt) parser for JSONata.
@@ -172,8 +172,8 @@ func (p *Parser) endError() error {
 	return parseError("S0203", "EOF", "expected a token before end of expression")
 }
 
-// deferError records err to report once the expression has parsed, unless an
-// earlier deferred error was recorded first.
+// deferError records err to report once the expression has parsed; the first
+// recorded error wins.
 func (p *Parser) deferError(err error) {
 	if p.deferred == nil {
 		p.deferred = err
@@ -896,7 +896,7 @@ func (p *Parser) parseBinding(left *Node, focus bool) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	if rhs.Type != NodeVariable || rhs.Index != "" || rhs.Focus != "" || rhs.Group != nil {
+	if rhs.Type != NodeVariable {
 		return nil, parseError("S0214", op, "the right side of "+op+" must be a $variable")
 	}
 	if !focus {
