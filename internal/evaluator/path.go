@@ -127,15 +127,15 @@ func walkPathSimple(node *parser.Node, input any, env *Environment) (result any,
 			singleContext = true
 		}
 		mapped := prevWasMapper && !singleConsArray
-		stepInput, lone := result, false
-		var err error
-		switch {
-		case singleConsArray:
+		stepInput := result
+		var (
+			lone bool
+			err  error
+		)
+		if singleConsArray {
 			result, err = evalConsArrayStep(step, result, env, node.KeepSingletonArray)
-		case i > 0 && step.Type == parser.NodeVariable:
-			result, lone, err = evalVariableStep(step, result, env, prevWasCons, i == len(node.Steps)-1)
-		default:
-			result, lone, err = evalPathStepLone(step, result, env, prevWasMapper, node.KeepSingletonArray)
+		} else {
+			result, lone, err = walkStep(node, i, result, env, prevWasMapper, prevWasCons)
 		}
 		if err != nil {
 			return nil, false, err
@@ -164,6 +164,21 @@ func walkPathSimple(node *parser.Node, input any, env *Environment) (result any,
 	}
 
 	return result, singleConsArray, nil
+}
+
+// walkStep evaluates step i of a path, other than a step over an array
+// constructed from a single context, reporting lone as evalPathStepLone does.
+func walkStep(node *parser.Node, i int, input any, env *Environment, prevWasMapper, prevWasCons bool) (result any, lone bool, _ error) {
+	step := node.Steps[i]
+	switch {
+	case i > 0 && step.Type == parser.NodeVariable:
+		return evalVariableStep(step, input, env, prevWasCons, i == len(node.Steps)-1)
+	case i == 0 && isSubscript(step) && isContextArray(input, env):
+		// A path over an array other than the input, which jsonata-js
+		// wraps as one context, maps its first step over the items.
+		return mapPathStep(step, input.([]any), env, node.KeepSingletonArray)
+	}
+	return evalPathStepLone(step, input, env, prevWasMapper, node.KeepSingletonArray)
 }
 
 // pathResult is a path's value: a sequence collapses as the path ends, as
@@ -1052,6 +1067,14 @@ func mapPathStep(step *parser.Node, arr []any, env *Environment, keepSingletonAr
 	case isSubscript(step):
 		evalItem = evalSubscriptStep
 	}
+	if isSubscript(step) {
+		// jsonata-js filters each context's value with the step's
+		// predicates into a sequence of its own, defined even when the
+		// value is not, so each context counts.
+		if err := env.CheckSequence(len(arr)); err != nil {
+			return nil, false, err
+		}
+	}
 	contributed := 0
 	for _, item := range arr {
 		val, err := evalItem(step, item, env)
@@ -1348,6 +1371,14 @@ func evalVariableStep(step *parser.Node, input any, env *Environment, consItems,
 		return nil, false, nil
 	}
 	return CollapseSequence(seq), false, nil
+}
+
+// isContextArray reports whether input is an array whose items a path's
+// first step maps over: any array but the input, which jsonata-js wraps as
+// one context.
+func isContextArray(input any, env *Environment) bool {
+	arr, ok := input.([]any)
+	return ok && !isRootArray(arr, env)
 }
 
 // pathStepArray returns the array to map a step over. A ConsArray is

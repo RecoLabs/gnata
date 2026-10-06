@@ -268,6 +268,9 @@ var pathStepCases = []exprCase{
 	{expr: `a.[b, c].($count($))`, data: `{"a":[{"b":1,"c":2}]}`, want: `2`},
 	{expr: `a.[b, c].$[0]`, data: `{"a":[{"b":1,"c":2}]}`, want: `1`},
 	{expr: `a.[b, c].x[0]`, data: `{"a":[{"b":{"x":[1,5]},"c":{"x":2}}]}`, want: `1`},
+	// A field with a predicate is a one-step path, which maps over an array
+	// of contexts.
+	{expr: `q.(a[0])`, data: `{"q":[[{"a":[1,2]},{"a":[3]}]]}`, want: `[1,3]`},
 	{expr: `a.[b, c].*`, data: `{"a":[{"b":[{"x":1},{"y":3}],"c":{"x":2}}]}`, want: `[{"x":1},{"y":3},{"x":2}]`},
 	{expr: `a.[b].*`, data: `{"a":[{"x":1}]}`, want: undefined},
 	{expr: `a.[b].*`, data: `{"a":[{"b":{"x":1}}]}`, want: `{"x":1}`},

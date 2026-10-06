@@ -173,6 +173,15 @@ func hasKeepArrayInChain(node *parser.Node) bool {
 // jsonata-js, each stage filters the sequence the previous one selected,
 // and only the chain's result collapses: a lone item stands alone.
 func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) {
+	if arr, ok := input.([]any); ok && subscriptsName(node) && !isRootArray(arr, env) {
+		// jsonata-js evaluates a field with predicates as a one-step path,
+		// which maps over an array of contexts other than the input.
+		result, _, err := mapPathStep(node, arr, env, false)
+		if _, isArr := result.([]any); err == nil && !isArr && result != nil && (node.KeepArray || hasKeepArrayInChain(node.Left)) {
+			return []any{result}, nil
+		}
+		return result, err
+	}
 	result, err := evalSubscriptStage(node, input, env)
 	seq, isSeq := result.(*Sequence)
 	if err != nil || !isSeq {
@@ -338,6 +347,18 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 		}
 		if left = stage; err != nil {
 			return nil, nil, err
+		}
+	case node.Left != nil && node.Left.Type == parser.NodeName && node.Left.Group == nil:
+		// A field lookup over an array context builds a sequence, which
+		// jsonata-js bounds even when one item holds the field.
+		var err error
+		if left, _, err = evalNameLone(node.Left, input); err != nil {
+			return nil, nil, err
+		}
+		if _, isArr := input.([]any); isArr {
+			if err := checkSequenceLength(left, env); err != nil {
+				return nil, nil, err
+			}
 		}
 	default:
 		var err error
@@ -512,6 +533,14 @@ func evalOperandStage(node *parser.Node, input any, env *Environment) (any, erro
 		return pathResult(result, node.KeepSingletonArray, singleConsArray), nil
 	}
 	return Eval(node, input, env)
+}
+
+// subscriptsName reports whether node is a chain of subscripts of a field.
+func subscriptsName(node *parser.Node) bool {
+	for isSubscript(node) {
+		node = node.Left
+	}
+	return node != nil && node.Type == parser.NodeName && node.Group == nil
 }
 
 func isSubscript(n *parser.Node) bool {

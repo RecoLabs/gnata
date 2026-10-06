@@ -192,11 +192,16 @@ func TestWithSequence(t *testing.T) {
 		wideObject[fmt.Sprintf("k%d", i)] = i
 	}
 	items := twentyItems()
+	oneItemArrays := make([]any, 12)
+	for i := range oneItemArrays {
+		oneItemArrays[i] = []any{float64(i)}
+	}
 	data := map[string]any{
 		"a":  items,
 		"x":  map[string]any{"a": items},
 		"m":  []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
 		"oo": []any{[]any{map[string]any{"a": items}}},
+		"w":  oneItemArrays,
 	}
 	testCases := []struct {
 		desc string
@@ -239,6 +244,8 @@ func TestWithSequence(t *testing.T) {
 		// A lone context's value passes through a last step only when it is a
 		// stored array; a lookup over an array context builds a sequence.
 		{desc: "last field step over a nested array context", expr: "$count(oo.a)", data: data},
+		{desc: "subscripted field over a nested array context", expr: "$count(oo.a[0])", data: data},
+		{desc: "predicated step over many contexts", expr: "$count(w.(a[0]))", data: data},
 		{desc: "wildcard appending an array to its values", expr: "$count(v.*)", data: mustDecodeJSON(t, valuesThenArray)},
 	}
 	for _, tC := range testCases {
@@ -293,12 +300,13 @@ func TestWithSequence_EvalBytes(t *testing.T) {
 func TestWithSequence_Allowed(t *testing.T) {
 	items := twentyItems()
 	data := map[string]any{
-		"a": items,
-		"x": map[string]any{"a": items},
-		"o": []any{map[string]any{"a": items}},
-		"m": []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
-		"n": []any{map[string]any{"b": items}, []any{map[string]any{"c": 1.0}}},
-		"p": []any{[]any{map[string]any{"b": items}}, map[string]any{"c": 1.0}},
+		"a":  items,
+		"x":  map[string]any{"a": items},
+		"o":  []any{map[string]any{"a": items}},
+		"m":  []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
+		"n":  []any{map[string]any{"b": items}, []any{map[string]any{"c": 1.0}}},
+		"p":  []any{[]any{map[string]any{"b": items}}, map[string]any{"c": 1.0}},
+		"oo": []any{[]any{map[string]any{"a": items}}},
 	}
 	// group-by iterates jsonata-js's wrapper of a root array, so its values
 	// see the array's items as contexts.
@@ -326,6 +334,7 @@ func TestWithSequence_Allowed(t *testing.T) {
 		{desc: "wildcard values after an array", expr: "$count(v.*)", data: mustDecodeJSON(t, arrayThenValues), want: 12.0},
 		{desc: "wildcard over a root array after an array", expr: "$count(*)", data: mustDecodeJSON(t, rootArrayThenValues), want: 12.0},
 		{desc: "subscript of a stored array", expr: "x.a[0].b", want: 0.0},
+		{desc: "subscript inside a block over a nested array", expr: "$count(oo.(a[0]))", want: 1.0},
 		{desc: "filter under the guardrail", expr: "a[b<5].b", want: []any{0.0, 1.0, 2.0, 3.0, 4.0}},
 	}
 	for _, tC := range testCases {
