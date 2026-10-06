@@ -189,6 +189,13 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$distinct(m^($))`, data: `{"m":[5,5]}`, want: `[5]`},
 	{expr: `$distinct((a.b))`, data: `{"a":[{"b":5},{"b":5}]}`, want: `5`},
 	{expr: `$distinct($map([5,5], function($v){$v}))`, want: `5`},
+	{expr: `$distinct(o.[b,b])`, data: `{"o":{"b":5}}`, want: `[5]`},
+	{expr: `$distinct(o.([b,b]))`, data: `{"o":{"b":5}}`, want: `[5]`},
+	{expr: `$distinct(n.[b,b])`, data: `{"n":[[{"b":1}]]}`, want: `[1]`},
+	{expr: `$distinct(a.[b,b])`, data: `{"a":[{"b":1},{"b":3}]}`, want: `[[1,1],[3,3]]`},
+	{expr: `$distinct(o.[b,b])^($)`, data: `{"o":{"b":5}}`, want: `5`},
+	{expr: `$map([1], function($i){$filter([[1,2],[3]], function($v){$v[0]=1})})`, want: `[[1,2]]`},
+	{expr: `$map([1,2], function($i){$filter([[1,2],[3]], function($v){$v[0]=1})})`, want: `[[[1,2]],[[1,2]]]`},
 }
 
 var numericBuiltinCases = []exprCase{

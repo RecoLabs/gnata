@@ -164,9 +164,10 @@ func evalShapedBlock(node *parser.Node, input any, env *Environment) (any, argSh
 
 // lastStepSequence reports whether a path whose last step is step, mapped
 // over in, yields a sequence in jsonata-js. It does unless the step is a
-// field that exactly one item holds, as a plain array, which evaluateStep
-// returns as is, or a number-literal pick from one item, which returns an
-// array item whole. A filter always yields a sequence.
+// field that exactly one item holds, as a plain array, or a step building a
+// plain array for exactly one item, both of which evaluateStep returns as
+// is, or a number-literal pick from one item, which returns an array item
+// whole. A filter always yields a sequence.
 func lastStepSequence(step *parser.Node, in any) bool {
 	items, mapped := in.([]any)
 	switch {
@@ -176,6 +177,8 @@ func lastStepSequence(step *parser.Node, in any) bool {
 		return step.Right.Type != parser.NodeNumber || mapped && len(items) > 1
 	case step.Type == parser.NodeSort:
 		return false
+	case plainArrayStep(step):
+		return mapped && len(items) != 1
 	case step.Type != parser.NodeName:
 		return true
 	case !mapped:
@@ -195,6 +198,15 @@ func lastStepSequence(step *parser.Node, in any) bool {
 		}
 	}
 	return !plain
+}
+
+// plainArrayStep reports whether step builds one plain array per context
+// item: an array constructor, or a block ending in one.
+func plainArrayStep(step *parser.Node) bool {
+	for step.Type == parser.NodeBlock && len(step.Expressions) > 0 {
+		step = step.Expressions[len(step.Expressions)-1]
+	}
+	return step.Type == parser.NodeUnary && step.Value == "["
 }
 
 func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
