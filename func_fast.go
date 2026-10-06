@@ -311,9 +311,7 @@ func evalFuncDistinct(r *gjson.Result, _ *parser.FuncFastPath) (result any, hand
 		seen := map[string]struct{}{}
 		out := make([]any, 0)
 		hasComplex := false
-		inputLen := 0
 		r.ForEach(func(_, elem gjson.Result) bool {
-			inputLen++
 			var key string
 			//nolint:exhaustive // only handle scalar types; complex types fall through
 			switch elem.Type {
@@ -340,13 +338,8 @@ func evalFuncDistinct(r *gjson.Result, _ *parser.FuncFastPath) (result any, hand
 		if hasComplex {
 			return nil, false, nil
 		}
-		// Singleton unwrap: mirrors *Sequence + CollapseSequence in the full
-		// evaluator path. inputLen > 1 corresponds to the len(arr) <= 1
-		// early-return guard in fnDistinct that skips Sequence wrapping
-		// when no dedup was needed.
-		if len(out) == 1 && inputLen > 1 {
-			return out[0], true, nil
-		}
+		// The path resolves without crossing an array, so its value is one
+		// plain array, which $distinct keeps an array (see argShape).
 		return out, true, nil
 	}
 	return nil, false, nil

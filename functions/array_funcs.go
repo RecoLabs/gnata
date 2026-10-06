@@ -313,7 +313,7 @@ func distinct(args []any, prec int) (any, error) {
 			}
 		}
 	}
-	return &evaluator.Sequence{Values: result}, nil
+	return &evaluator.Sequence{Values: result, ArgShaped: true}, nil
 }
 
 // ── $flatten ──────────────────────────────────────────────────────────────────

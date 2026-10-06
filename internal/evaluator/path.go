@@ -88,20 +88,28 @@ func nodeHasParentRef(node *parser.Node) bool {
 // evalPathSimple is step-by-step path evaluation for paths with no index,
 // focus or parent (%) bindings.
 func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error) {
-	result := input
+	result, _, err := evalPathSimpleLast(node, input, env)
+	return result, err
+}
+
+// evalPathSimpleLast is evalPathSimple, also returning the last step's
+// input (see argShape).
+func evalPathSimpleLast(node *parser.Node, input any, env *Environment) (result, lastIn any, _ error) {
+	result = input
 	prevWasMapper := false
 	for i, step := range node.Steps {
 		if i > 0 && result == nil {
-			return nil, nil
+			return nil, nil, nil
 		}
 		if seq, ok := result.(*Sequence); ok {
 			result = flattenKept(CollapseSequence(seq))
 			if i > 0 && result == nil {
-				return nil, nil
+				return nil, nil, nil
 			}
 		}
 
 		var err error
+		lastIn = result
 		// A constructed array, as in a.[b, c], is one context item for the
 		// step rather than a sequence to map over.
 		switch _, consItem := result.(ConsArray); {
@@ -113,7 +121,7 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray, i == len(node.Steps)-1)
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		result = flattenKept(spreadSortIndexStage(step, result))
 		// Mapping over a one-item array nests a constructed array for [];
@@ -122,7 +130,7 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 			result = unnestCons(result)
 		}
 		if _, consItem := result.(ConsArray); !consItem && prevWasMapper && isNothingFound(step, result) {
-			return nil, nil
+			return nil, nil, nil
 		}
 		_, isArr := result.([]any)
 		_, isSeq := result.(*Sequence)
@@ -133,9 +141,9 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 		result = CollapseSequence(seq)
 	}
 	if node.KeepSingletonArray {
-		return keepSingletonArray(result), nil
+		return keepSingletonArray(result), lastIn, nil
 	}
-	return result, nil
+	return result, lastIn, nil
 }
 
 // isNothingFound reports whether a step mapped over a sequence produced an

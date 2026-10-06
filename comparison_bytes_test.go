@@ -128,6 +128,21 @@ func TestEvalBytes_KeepArray_MatchesEval(t *testing.T) {
 	}
 }
 
+// TestEvalBytes_DistinctKeepsArray checks that the $distinct fast path, which
+// handles only a path that crosses no array, keeps its plain array an array.
+func TestEvalBytes_DistinctKeepsArray(t *testing.T) {
+	rawData := json.RawMessage(`{"m":["x","x"],"o":{"m":["x","x","y"]}}`)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	for _, expr := range []string{`$distinct(m)`, `$distinct(o.m)`} {
+		t.Run(expr, func(t *testing.T) {
+			evalBytesMatchesEvalCase(t, expr, rawData, decoded, (*gnata.Expression).IsFuncFastPath)
+		})
+	}
+}
+
 func TestEvalMap_ArrayAutoMap_MatchesEval(t *testing.T) {
 	testCases := []struct {
 		desc string

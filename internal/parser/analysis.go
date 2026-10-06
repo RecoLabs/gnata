@@ -369,7 +369,7 @@ func collectPaths(node *Node) ([]string, bool) {
 	switch node.Type {
 	case NodeName:
 		// Simple field name — GJSON path is just the name.
-		if len(node.Stages) > 0 || node.Group != nil || node.Focus != "" || node.KeepArray {
+		if len(node.Stages) > 0 || node.Group != nil || node.Focus != "" || node.Index != "" || node.KeepArray {
 			return nil, false
 		}
 		escaped, ok := gjsonEscapeName(node.Value)
@@ -385,7 +385,7 @@ func collectPaths(node *Node) ([]string, bool) {
 			if step.Type != NodeName {
 				return nil, false
 			}
-			if len(step.Stages) > 0 || step.Group != nil || step.Focus != "" {
+			if len(step.Stages) > 0 || step.Group != nil || step.Focus != "" || step.Index != "" {
 				return nil, false
 			}
 			if step.KeepArray || step.ConsArray {

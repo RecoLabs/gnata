@@ -286,6 +286,7 @@ type Sequence struct {
 	ConsArray    bool // explicitly constructed via [...]; prevents flattening
 	OuterWrapper bool // input was a JSON array; treated as a single document
 	TupleStream  bool // contains tuple objects {"@": value, varName: value}
+	ArgShaped    bool // a built-in result shaped like its first argument (see argShape)
 }
 
 // CreateSequence creates a Sequence optionally pre-populated with one value.

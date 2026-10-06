@@ -179,6 +179,16 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$sort([3,1], function($a,$b){$string})`, want: `[1,3]`},
 	{expr: `$sort([3,1], function($a,$b){0})`, want: `[3,1]`},
 	{expr: `$sort([3,1], function($a,$b){""})`, want: `[3,1]`},
+	{expr: `$distinct([5,5])`, want: `[5]`},
+	{expr: `$distinct(m)`, data: `{"m":[5,5]}`, want: `[5]`},
+	{expr: `$distinct(q.k)`, data: `{"q":[{"k":[5,5]}]}`, want: `[5]`},
+	{expr: `$distinct(a.b)`, data: `{"a":[{"b":5},{"b":5}]}`, want: `5`},
+	{expr: `($x := a.b; $distinct($x))`, data: `{"a":[{"b":5},{"b":5}]}`, want: `5`},
+	{expr: `$distinct(m[$ > 0])`, data: `{"m":[5,5]}`, want: `5`},
+	{expr: `$distinct(nn[0])`, data: `{"nn":[[5,5]]}`, want: `[5]`},
+	{expr: `$distinct(m^($))`, data: `{"m":[5,5]}`, want: `[5]`},
+	{expr: `$distinct((a.b))`, data: `{"a":[{"b":5},{"b":5}]}`, want: `5`},
+	{expr: `$distinct($map([5,5], function($v){$v}))`, want: `5`},
 }
 
 var numericBuiltinCases = []exprCase{

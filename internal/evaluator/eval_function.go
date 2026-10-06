@@ -48,12 +48,19 @@ func evalFunctionSequence(node *parser.Node, input any, env *Environment) (any, 
 	}
 
 	args := make([]any, 0, len(node.Arguments))
-	for _, argNode := range node.Arguments {
+	var shape argShape
+	for i, argNode := range node.Arguments {
 		if argNode.Type == parser.NodePlaceholder {
 			args = append(args, nil)
 			continue
 		}
-		val, err := Eval(argNode, input, env)
+		var val any
+		var err error
+		if i == 0 {
+			val, shape, err = evalShapedArg(argNode, input, env)
+		} else {
+			val, err = Eval(argNode, input, env)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -80,7 +87,114 @@ func evalFunctionSequence(node *parser.Node, input any, env *Environment) (any, 
 		return &TailCall{Fn: fn, Args: args}, nil
 	}
 
-	return callFunction(fn, args, input, env)
+	result, err := callFunction(fn, args, input, env)
+	if seq, ok := result.(*Sequence); ok && seq.ArgShaped && !shape.sequence() {
+		return slices.Clip(seq.Values), err
+	}
+	return result, err
+}
+
+// argShape records whether a call's first argument is a sequence in
+// jsonata-js, for a built-in whose result takes that shape (see
+// Sequence.ArgShaped): $distinct keeps a plain array a plain array but
+// collapses a sequence. An array constructor, a sort, a number-literal pick
+// of an array item, a field that one object holds as an array, and a call
+// returning anything but a sequence are plain arrays; anything else counts
+// as a sequence, a variable included, since gnata keeps no sequence mark on
+// stored values.
+type argShape struct {
+	plain  bool
+	last   *parser.Node // a path's last step whose input decides (see lastStepSequence)
+	lastIn any
+}
+
+func (a argShape) sequence() bool {
+	if a.last != nil {
+		return lastStepSequence(a.last, a.lastIn)
+	}
+	return !a.plain
+}
+
+// evalShapedArg evaluates a call's first argument and its shape.
+func evalShapedArg(node *parser.Node, input any, env *Environment) (any, argShape, error) {
+	if node.Group != nil || node.KeepArray {
+		v, err := Eval(node, input, env)
+		return v, argShape{}, err
+	}
+	switch node.Type {
+	case parser.NodeFunction:
+		raw, err := evalFunctionSequence(node, input, env)
+		_, seq := raw.(*Sequence)
+		return CollapseAndKeep(raw, false), argShape{plain: !seq}, err
+	case parser.NodeUnary, parser.NodeSort:
+		v, err := Eval(node, input, env)
+		return v, argShape{plain: node.Type == parser.NodeSort || node.Value == "["}, err
+	case parser.NodeName, parser.NodeBinary:
+		v, err := Eval(node, input, env)
+		return v, argShape{last: node, lastIn: input}, err
+	case parser.NodePath:
+		if pathHasTupleStep(node.Steps) {
+			v, err := Eval(node, input, env)
+			return v, argShape{}, err
+		}
+		v, lastIn, err := evalPathSimpleLast(node, input, env)
+		return v, argShape{last: node.Steps[len(node.Steps)-1], lastIn: lastIn}, err
+	case parser.NodeBlock:
+		return evalShapedBlock(node, input, env)
+	}
+	v, err := Eval(node, input, env)
+	return v, argShape{}, err
+}
+
+// evalShapedBlock is evalBlock, taking the shape of its last expression.
+func evalShapedBlock(node *parser.Node, input any, env *Environment) (any, argShape, error) {
+	if len(node.Expressions) == 0 {
+		return nil, argShape{}, nil
+	}
+	childEnv := NewChildEnvironment(env)
+	last := len(node.Expressions) - 1
+	for _, expr := range node.Expressions[:last] {
+		if _, err := Eval(expr, input, childEnv); err != nil {
+			return nil, argShape{}, err
+		}
+	}
+	v, shape, err := evalShapedArg(node.Expressions[last], input, childEnv)
+	return settleRaw(v, false), shape, err
+}
+
+// lastStepSequence reports whether a path whose last step is step, mapped
+// over in, yields a sequence in jsonata-js. It does unless the step is a
+// field that exactly one item holds, as a plain array, which evaluateStep
+// returns as is, or a number-literal pick from one item, which returns an
+// array item whole. A filter always yields a sequence.
+func lastStepSequence(step *parser.Node, in any) bool {
+	items, mapped := in.([]any)
+	switch {
+	case step.Index != "" || step.Focus != "" || step.KeepArray:
+		return true
+	case step.Type == parser.NodeBinary && step.Value == "[":
+		return step.Right.Type != parser.NodeNumber || mapped && len(items) > 1
+	case step.Type == parser.NodeSort:
+		return false
+	case step.Type != parser.NodeName:
+		return true
+	case !mapped:
+		return false
+	}
+	defined, plain := 0, false
+	for _, item := range items {
+		if _, nested := AsArray(item); nested {
+			return true
+		}
+		if val, found := MapGet(item, step.Value); found {
+			defined++
+			if defined > 1 {
+				return true
+			}
+			_, plain = val.([]any)
+		}
+	}
+	return !plain
 }
 
 func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {

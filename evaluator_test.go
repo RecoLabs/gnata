@@ -501,9 +501,9 @@ func TestRegressionExpr(t *testing.T) {
 		expr: "$distinct([1])",
 		want: []any{float64(1)},
 	}, {
-		desc: "distinct_all_duplicates_literal_unwraps",
+		desc: "distinct_all_duplicates_literal_stays_array",
 		expr: "$distinct([1, 1, 1])",
-		want: float64(1),
+		want: []any{float64(1)},
 	}, {
 		desc: "distinct_no_unwrap_all_unique",
 		expr: "$distinct([1,2,3])",
@@ -819,7 +819,7 @@ func TestDecimalPaths(t *testing.T) {
 		{desc: "path_array_mixed", expr: "a.b", payload: `{"a":[{"b":"x"},{"b":null},{"b":true},{"b":2}]}`, want: `["x",null,true,2]`, sameInFloat64: true},
 		{desc: "path_eq_beyond_2^53", expr: "a = 9007199254740992", payload: `{"a":9007199254740993}`, want: `false`}, // float64: 2^53 rounding
 		{desc: "path_eq_string", expr: `a = "x"`, payload: `{"a":"x"}`, want: `true`, sameInFloat64: true},
-		{desc: "path_distinct", expr: "$distinct(a)", payload: `{"a":[9007199254740993.5,9007199254740993.5]}`, want: `9007199254740993.5`}, // float64: 2^53 rounding
+		{desc: "path_distinct", expr: "$distinct(a)", payload: `{"a":[9007199254740993.5,9007199254740993.5]}`, want: `[9007199254740993.5]`}, // float64: 2^53 rounding
 		{desc: "path_string", expr: "$string(a)", payload: `{"a":9007199254740993}`, want: `"9007199254740993"`, sameInFloat64: true},
 	})
 }
