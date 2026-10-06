@@ -236,6 +236,7 @@ func processBinaryChildren(node *Node) (*Node, error) {
 // applies after it; on a path, as in a.b{k: v}[0], the subscript becomes a
 // stage of the last step, as jsonata-js applies it there.
 func processSubscript(node *Node) (*Node, error) {
+	node.KeepSingletonArray = ChainKeepsArray(node.Left)
 	path := node.Left
 	if path.Type != NodePath || IsStepPath(path) {
 		path = nil
@@ -245,6 +246,7 @@ func processSubscript(node *Node) (*Node, error) {
 		path.Steps[last] = node
 		node.PathStage = last > 0
 	}
+	node.base = stepBase(node.Left)
 	if err := resolvePredicateAncestry(node); err != nil {
 		return nil, err
 	}
@@ -463,6 +465,7 @@ func processSortChildren(node *Node) (*Node, error) {
 			return nil, err
 		}
 	}
+	node.KeepSingletonArray = ChainKeepsArray(node.Left)
 	if err := resolveSortAncestry(node); err != nil {
 		return nil, err
 	}
@@ -581,29 +584,27 @@ func wrapBoundStep(node *Node) *Node {
 	case node.Type == NodePath:
 		return node
 	case node.Type == NodeSort && node.Tuple:
-		return wrapStep(node)
+		return wrapStep(node, pathSlots(node))
 	case node.Type == NodeBinary && node.Value == "[" && IsStepPath(node.Left):
-		keep := node.KeepArray || node.Left.KeepSingletonArray
+		seeking := node.Left.SeekingParent
 		node.Left = node.Left.Steps[0]
-		path := wrapStep(node)
-		path.KeepSingletonArray = keep
-		return path
+		return wrapStep(node, seeking)
 	case node.Type == NodeBinary && node.Value == "[" && len(predicateSlots(node.Right)) > 0 &&
 		isPathLike(node) && stepBase(node).Ancestor != nil:
-		return wrapStep(node)
+		return wrapStep(node, pathSlots(node))
 	case node.Index != "" || node.Type == NodeName && node.Focus != "":
-		return wrapStep(node)
+		return wrapStep(node, pathSlots(node))
 	}
 	return node
 }
 
 // wrapStep returns a one-step path running step, as jsonata-js makes any
-// step it evaluates as a tuple stream a path. A group on the path moves to
-// it.
-func wrapStep(step *Node) *Node {
+// step it evaluates as a tuple stream a path, with the slots seeking past
+// it. A group on the path moves to it.
+func wrapStep(step *Node, seeking []*Slot) *Node {
 	path := &Node{
 		Type: NodePath, Steps: []*Node{step}, Pos: step.Pos, Tuple: true,
-		KeepSingletonArray: ChainKeepsArray(step), SeekingParent: pathSlots(step),
+		KeepSingletonArray: ChainKeepsArray(step), SeekingParent: seeking,
 	}
 	if step.Group != nil && step.Group.OnPath {
 		path.Group, step.Group = step.Group, nil
@@ -617,14 +618,11 @@ func IsStepPath(node *Node) bool {
 }
 
 // ChainKeepsArray reports whether node or a node along its Left chain has a
-// [] suffix, or is a path that does.
+// [] suffix, or is a path that does. ProcessAST records the answer for a
+// subscript's or sort's Left chain in its KeepSingletonArray, so a long
+// chain such as a[0][0]... is not rescanned at every link.
 func ChainKeepsArray(node *Node) bool {
-	for ; node != nil; node = node.Left {
-		if node.KeepArray || node.Type == NodePath && node.KeepSingletonArray {
-			return true
-		}
-	}
-	return false
+	return node != nil && (node.KeepArray || node.KeepSingletonArray)
 }
 
 // hasBinding reports whether node or any node in its Left, Right or Steps

@@ -45,7 +45,7 @@ type Node struct {
 
 	// Metadata flags set by processAST
 	KeepArray          bool // step has [] suffix → force array output
-	KeepSingletonArray bool // path has at least one keepArray step
+	KeepSingletonArray bool // path has at least one keepArray step; on a subscript or sort, its Left chain does (see ChainKeepsArray)
 	ConsArray          bool // step is an array constructor used as a path step
 	Thunk              bool // call, or ?: or ?? operator, in a lambda's tail position
 	Tuple              bool // sort whose Left binds #$var, @$var or an ancestor, or the step path wrapping it (see wrapStep)
@@ -72,6 +72,7 @@ type Node struct {
 	// SeekingParent holds the % slots this node passes to the expression
 	// around it (see ancestry.go).
 	SeekingParent []*Slot
+	base          *Node // a subscript's step (see stepBase)
 
 	// NextFunction: name of the next function (for T1005 error)
 	NextFunction string

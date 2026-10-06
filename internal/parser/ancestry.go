@@ -53,7 +53,7 @@ func seekParent(node *Node, slot *Slot) error {
 		// jsonata-js makes a name or #$var step a path, which yields its
 		// tuples; any other step yields its value.
 		if expr := node.Expressions[last]; expr.Type != NodePath && isPathLike(expr) {
-			node.Expressions[last] = wrapStep(expr)
+			node.Expressions[last] = wrapStep(expr, pathSlots(expr))
 			node.Expressions[last].TupleResult = true
 		}
 		return nil
@@ -165,10 +165,13 @@ func resolveSortAncestry(sort *Node) error {
 }
 
 // stepBase returns the step a subscript chain applies to, looking through a
-// path to its last step.
+// path to its last step. processSubscript records each subscript's, so a
+// long chain is not rescanned at every link.
 func stepBase(node *Node) *Node {
 	for {
 		switch {
+		case node.base != nil:
+			return node.base
 		case node.Type == NodePath && len(node.Steps) > 0:
 			node = node.Steps[len(node.Steps)-1]
 		case node.Type == NodeBinary && node.Value == "[" && node.Left != nil:
