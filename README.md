@@ -382,7 +382,7 @@ gnata targets exact parity with the JSONata reference implementation ([jsonata-j
 | 19 | **Step and parent errors** | `S0213` and `S0217` when evaluated: `false ? % : 1` → `1` | `S0213` / `S0217` while parsing | gnata detects these during evaluation, so only steps that run raise them. |
 | 20 | **Lambda signatures** | `S0402` for an unknown character, as in `function($a)<#n:n>{$a}` | ignores unknown characters | The same parser validates custom function signatures, where a typo should fail. |
 | 21 | **Predicate after a path's group** | `a{"k": 1}[0]` → `S0209` | groups the result of `a[0]` | A predicate after a group on a variable, literal or constructor is `S0209` in both. |
-| 22 | **Nesting depth** | `S0218` past 10,000 levels; `U1001` once recursive calls re-enter more than 100,000 levels of bodies | a `RangeError` stack overflow from about 2,000 levels | Each nested expression and each chained operator is a level, in `Compile` and `$eval` alike. Together the limits keep deep expressions away from Go's fatal stack limit. |
+| 22 | **Nesting depth** | `S0218` past 10,000 levels; `U1001` once the lambda and transform bodies active across recursive calls nest more than 100,000 levels in total, whatever `WithStack` allows | a `RangeError` stack overflow from about 2,000 levels | Each nested expression and each chained operator is a level, in `Compile` and `$eval` alike. Together the limits keep deep expressions away from Go's fatal stack limit. |
 
 ## Regex Engine: RE2 vs JavaScript RegExp
 
