@@ -177,3 +177,29 @@ func TestEvalBytes_ArrayAutoMap_FallsBackOnScalarStep(t *testing.T) {
 		t.Fatalf("EvalBytes(%q) = %#v, want nil (undefined)", "Account.Name.Missing", got)
 	}
 }
+
+func TestEvalBytes_GroupOrIndex_NotFastPath(t *testing.T) {
+	testCases := []struct {
+		desc string
+		expr string
+	}{
+		{desc: "group after a plain path", expr: `Account.Order{OrderID: $count(Product)}`},
+		{desc: "group after an index binding", expr: `Account.Order#$i{OrderID: $i}`},
+		{desc: "group after a bound [] step", expr: `Account.Order#$i[]{OrderID: $i}`},
+		{desc: "index binding on a name step", expr: `Account.Order.OrderID#$i`},
+		{desc: "index binding after a dropped []", expr: `Account.Order.Product.SKU#$i[]`},
+	}
+
+	rawData := json.RawMessage(pathBytesTestData)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+
+	notFastPath := func(e *gnata.Expression) bool { return !e.IsFastPath() }
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			evalBytesMatchesEvalCase(t, tC.expr, rawData, decoded, notFastPath)
+		})
+	}
+}
