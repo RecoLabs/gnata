@@ -421,3 +421,33 @@ func TestNullItemsOnGoMaps(t *testing.T) {
 		})
 	}
 }
+
+// gjson reads an all-digit path component as an array index, so EvalBytes
+// leaves such field names to the evaluator, which looks them up by name.
+func TestNumericFieldNamesBytes(t *testing.T) {
+	testCases := []struct {
+		expr string
+		data string
+		want string
+	}{
+		{expr: "x.`0`", data: `{"x":[5,6]}`, want: undefined},
+		{expr: "`0`", data: `[5,6]`, want: undefined},
+		{expr: "x.`0`", data: `{"x":{"0":7}}`, want: `7`},
+		{expr: "x.`12`.y", data: `{"x":{"12":{"y":3}}}`, want: `3`},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := e.EvalBytes(context.Background(), json.RawMessage(tC.data))
+			if err != nil {
+				t.Fatalf("eval bytes: %v", err)
+			}
+			if r := render(t, got); r != tC.want {
+				t.Fatalf("got %s, want %s", r, tC.want)
+			}
+		})
+	}
+}

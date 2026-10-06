@@ -425,6 +425,11 @@ func gjsonEscapeName(name string) (string, bool) {
 	if strings.HasPrefix(name, "@") {
 		return "", false
 	}
+	// gjson reads an all-digit path component as an index into an array,
+	// where JSONata looks up a field of that name in each item.
+	if name != "" && strings.Trim(name, "0123456789") == "" {
+		return "", false
+	}
 	if strings.ContainsAny(name, ".*?|#[]!{}\\") || strings.Contains(name, " ") {
 		return "`" + strings.ReplaceAll(name, "`", "\\`") + "`", true
 	}
