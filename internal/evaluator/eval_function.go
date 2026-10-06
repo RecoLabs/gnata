@@ -146,6 +146,13 @@ func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
 				argIdx++
 			}
 		}
+		// Partial applications built in a loop wrap each other arbitrarily
+		// deep, so each one counts toward the nesting limit.
+		counter := env.callCounter()
+		if err := counter.enterNesting(1); err != nil {
+			return nil, err
+		}
+		defer counter.exitNesting(1)
 		return callFunction(fn, fullArgs, focus, env)
 	})
 	return partial, nil
@@ -164,8 +171,8 @@ func stackOverflowError(counter *callCounter) error {
 	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 }
 
-// enterCall records a call into a lambda or transform whose body is
-// bodyHeight levels deep, or returns the error that stops it.
+// enterCall records a call into a lambda whose body is bodyHeight levels deep,
+// or returns the error that stops it.
 func (c *callCounter) enterCall(bodyHeight int16) error {
 	if c.depth >= c.max {
 		return stackOverflowError(c)
@@ -183,8 +190,9 @@ func (c *callCounter) exitCall(bodyHeight int16) {
 	c.exitNesting(bodyHeight)
 }
 
-// enterNesting adds levels of evaluation nesting that are not a counted call,
-// such as one step of a composed function, or returns the error that stops it.
+// enterNesting adds levels of evaluation nesting that do not count toward the
+// call limit, such as a transform or one step of a composed or partially
+// applied function, or returns the error that stops it.
 func (c *callCounter) enterNesting(levels int16) error {
 	if int(c.nesting)+int(levels) > maxCallNesting {
 		return &JSONataError{Code: "U1001", Message: fmt.Sprintf(

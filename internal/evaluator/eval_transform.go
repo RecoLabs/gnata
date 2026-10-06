@@ -38,13 +38,15 @@ func evalTransform(node *parser.Node, _ any, env *Environment) (any, error) {
 		} else {
 			doc = focus
 		}
-		// A transform can call itself through a variable, so each use counts
-		// as a call of its clauses' height.
+		// A transform can call itself through a variable, so each use adds its
+		// clauses' height, plus one for the transform itself, to the nesting
+		// limit. Like jsonata-js, it does not count toward the call limit.
 		counter := env.callCounter()
-		if err := counter.enterCall(node.BodyHeight); err != nil {
+		levels := node.BodyHeight + 1
+		if err := counter.enterNesting(levels); err != nil {
 			return nil, err
 		}
-		defer counter.exitCall(node.BodyHeight)
+		defer counter.exitNesting(levels)
 		return applyTransform(node, doc, env)
 	}), nil
 }

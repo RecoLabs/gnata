@@ -14,8 +14,9 @@ import (
 // Matches the JSONata reference implementation's default.
 const defaultMaxCallDepth = 100
 
-// maxCallNesting bounds the summed nesting height of the lambda bodies being
-// evaluated at once. parser.MaxDepth bounds one expression, but each recursive
+// maxCallNesting bounds the summed nesting of the lambda bodies, transform
+// clauses and composed or partially applied function steps being evaluated at
+// once. parser.MaxDepth bounds one expression, but each recursive
 // call re-enters its body, so a deeply nested body recursing to the call limit
 // could still exhaust Go's stack, which is fatal. At roughly 1.5 KB of stack
 // per level, as measured, this is about 150 MB, well under Go's 1 GB default
@@ -36,7 +37,7 @@ type callCounter struct {
 	// evaluation.
 	depth        int32
 	max          int32
-	nesting      int32 // summed Lambda.BodyHeight of active calls, at most maxCallNesting
+	nesting      int32 // summed nesting of active calls (see maxCallNesting)
 	maxSequence  int32 // 0 = unlimited; guardrail set via WithSequence (error D2015)
 	evalDepth    int16 // $eval nesting, capped at a small constant by IncrEvalDepth's caller
 	stackIsLimit bool  // true when max was set via the WithStack guardrail (error D1011 instead of U1001)

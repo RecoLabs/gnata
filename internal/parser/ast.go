@@ -51,8 +51,8 @@ type Node struct {
 	Tuple              bool // step participates in a tuple stream
 
 	// BodyHeight is the nesting height of a lambda's body or a transform's
-	// clauses, at most MaxDepth; the evaluator sums it over active calls to
-	// bound recursion depth. int16 fits in the padding after the flags above.
+	// clauses, at most MaxDepth; the evaluator sums it over active calls and
+	// transforms to bound recursion depth. int16 fits in the padding after the flags above.
 	BodyHeight int16
 
 	// Focus / index variable names (set by @ and # operators)

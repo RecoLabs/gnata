@@ -103,9 +103,9 @@ func TestRecursionNestingLimit(t *testing.T) {
 	recurse := func(n int) string {
 		return fmt.Sprintf("($f := function($n){%s}; $f(%d))", body, n)
 	}
-	// compose builds $string ~> $string ~> ... n steps long with tail calls.
-	compose := func(n int) string {
-		return fmt.Sprintf("($build := function($n, $f){ $n = 0 ? $f : $build($n - 1, $f ~> $string) }; $build(%d, $string)(1))", n)
+	// compose wraps $string n times with step, using tail calls.
+	compose := func(n int, step string) string {
+		return fmt.Sprintf("($build := function($n, $f){ $n = 0 ? $f : $build($n - 1, %s) }; $build(%d, $string)(1))", step, n)
 	}
 	testCases := []struct {
 		desc string
@@ -117,8 +117,13 @@ func TestRecursionNestingLimit(t *testing.T) {
 		{desc: "past the nesting budget", expr: recurse(50), code: "U1001"},
 		{desc: "past the budget with a raised call limit", expr: recurse(500), opts: []gnata.Option{gnata.WithStack(100_000)}, code: "U1001"},
 		{desc: "transform calling itself", expr: `($t := |$|{"x": $ ~> $t}|; {"a": 1} ~> $t)`, code: "U1001"},
-		{desc: "short composition", expr: compose(50)},
-		{desc: "composition built in a loop", expr: compose(200_000), code: "U1001"},
+		{desc: "short composition", expr: compose(50, "$f ~> $string")},
+		{desc: "composition built in a loop", expr: compose(200_000, "$f ~> $string"), code: "U1001"},
+		{desc: "partial applications built in a loop", expr: compose(200_000, "$f(?)"), code: "U1001"},
+		{
+			desc: "recursion through a transform per level",
+			expr: `($f := function($n){ $n = 0 ? 0 : ({"a": 1} ~> |$|{"b": $f($n - 1)}|).b + 1 }; $f(90))`,
+		},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
