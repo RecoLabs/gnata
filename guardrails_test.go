@@ -353,6 +353,14 @@ func TestWithSequence_FastPaths(t *testing.T) {
 	}
 }
 
+func numbersArray() []any {
+	numbers := make([]any, 20)
+	for i := range numbers {
+		numbers[i] = float64(i)
+	}
+	return numbers
+}
+
 func twentyItemsJSON() string {
 	b, err := json.Marshal(twentyItems())
 	if err != nil {
@@ -373,6 +381,7 @@ func TestWithSequence_Allowed(t *testing.T) {
 		"n":  []any{map[string]any{"b": items}, []any{map[string]any{"c": 1.0}}},
 		"p":  []any{[]any{map[string]any{"b": items}}, map[string]any{"c": 1.0}},
 		"oo": []any{[]any{map[string]any{"a": items}}},
+		"mm": []any{map[string]any{"b": []any{numbersArray()}}},
 	}
 	// group-by iterates jsonata-js's wrapper of a root array, so its values
 	// see the array's items as contexts.
@@ -401,6 +410,7 @@ func TestWithSequence_Allowed(t *testing.T) {
 		{desc: "wildcard over a root array after an array", expr: "$count(*)", data: mustDecodeJSON(t, rootArrayThenValues), want: 12.0},
 		{desc: "subscript of a stored array", expr: "x.a[0].b", want: 0.0},
 		{desc: "subscript inside a block over a nested array", expr: "$count(oo.(a[0]))", want: 1.0},
+		{desc: "stored array of arrays as a last step", expr: "$exists(mm.b)", want: true},
 		{desc: "filter under the guardrail", expr: "a[b<5].b", want: []any{0.0, 1.0, 2.0, 3.0, 4.0}},
 	}
 	for _, tC := range testCases {

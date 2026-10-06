@@ -351,7 +351,7 @@ func evalNameLone(node *parser.Node, input any) (result any, lone bool, _ error)
 			return nil, false, nil
 		}
 		if len(seq.Values) == 1 {
-			return seq.Values[0], false, nil
+			return seq.Values[0], lone && contributed == 1, nil
 		}
 		return CollapseSequence(seq), lone && contributed == 1, nil
 	case ConsArray:
