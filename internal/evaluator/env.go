@@ -88,7 +88,7 @@ type Environment struct {
 	tuple bool
 	// decimalPrecision is the significant digits set via WithDecimalPrecision
 	// (0 = float64 only), inherited by children. At most 100, so it fits in
-	// the padding after hasDeadline.
+	// the padding after tuple.
 	decimalPrecision uint16
 	bindings         map[string]any // nil until inline overflows
 	calls            *callCounter   // shared call-depth counter; nil inherits from parent

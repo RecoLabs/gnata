@@ -305,15 +305,8 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// which carry the bindings made inside; predicates on the block
 		// then filter the whole stream.
 		if base, stages := splitTupleStages(step); base.Type == parser.NodeBlock && base.TupleResult {
-			var stream []pathCtx
-			for _, ctx := range ctxs {
-				var err error
-				if stream, err = appendBlockTuples(stream, base, ctx); err != nil {
-					return nil, nil, false, err
-				}
-			}
 			var err error
-			if ctxs, err = applyTupleStages(stages, stream, nil); err != nil {
+			if ctxs, err = blockTuples(base, stages, ctxs); err != nil {
 				return nil, nil, false, err
 			}
 			if len(ctxs) == 0 {
@@ -322,7 +315,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			continue
 		}
 
-		// Subscript step whose Left has a Focus binding (join operator @):
+		// Subscript step on a join (see isJoinStep):
 		// e.g., Contact@$c[$c.ssn = $e.SSN]. We evaluate the Left to get
 		// elements, bind each to $focus_var, then apply the predicate with
 		// access to both the focus variable and previously bound variables.
@@ -349,7 +342,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		}
 
 		// Compound subscript after a join-filter: binary "[" whose Left is a
-		// binary "[" with Left.Focus set. E.g., books@$b[pred][1] or
+		// subscript on a join. E.g., books@$b[pred][1] or
 		// books@$b[pred][]. Process the inner join-filter first to collect
 		// tuples, then apply the outer subscript to the entire tuple collection.
 		if step.Type == parser.NodeBinary && step.Value == "[" &&
@@ -528,8 +521,6 @@ func evalTupleSort(
 	if !inStream && !step.Tuple {
 		started = len(ctxs) > 0
 	}
-	// jsonata-js returns a stream of at most one tuple as is, still a
-	// stream, and sorts a longer one into raw tuples.
 	rawResult = inputRaw || (inStream || step.Tuple) && len(ctxs) > 1
 
 	if len(step.Terms) == 0 {
@@ -673,6 +664,19 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 	}
 }
 
+// blockTuples returns the tuples a block a % reaches into yields for each of
+// ctxs, filtered by the block's stages as one stream.
+func blockTuples(block *parser.Node, stages []tupleStage, ctxs []pathCtx) ([]pathCtx, error) {
+	var stream []pathCtx
+	for _, ctx := range ctxs {
+		var err error
+		if stream, err = appendBlockTuples(stream, block, ctx); err != nil {
+			return nil, err
+		}
+	}
+	return applyTupleStages(stages, stream, nil)
+}
+
 // appendBlockTuples appends to stream the tuples a block a % reaches into
 // yields for ctx: jsonata-js merges each tuple the block's last expression
 // returns into ctx's tuple, while a plain value's items become tuples as
@@ -779,6 +783,8 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 	merged := NewChildEnvironment(envs[0].Parent())
 	merged.decimalPrecision = envs[0].decimalPrecision
 
+	merged.tuple = true
+
 	// Collect variable names from tuple-specific envs only (stop at the
 	// first env that is not a tuple's: a shared ancestor with built-in
 	// bindings).
@@ -792,7 +798,6 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 	}
 
 	// For each variable, collect values from each env via Lookup (full chain).
-	merged.tuple = true
 	for name := range varNames {
 		var vals []any
 		for _, env := range envs {
@@ -979,10 +984,8 @@ func splitTupleStages(step *parser.Node) (*parser.Node, []tupleStage) {
 }
 
 // isJoinStep reports whether a predicated step's base is a join, binding an
-// @$var on a step other than %, which keeps its dedicated handling. Any
-// other base's predicates filter the tuple stream (see evalTupleStages);
-// a sort's are applied by the sort branch, and a predicated base cannot
-// carry a group of its own (S0209).
+// @$var on a step other than %, which keeps its dedicated handling; any
+// other base's predicates filter the tuple stream (see evalTupleStages).
 func isJoinStep(base *parser.Node) bool {
 	return base.Focus != "" && base.Type != parser.NodeParent
 }

@@ -173,18 +173,29 @@ func evalDefaultLeft(node *parser.Node, input any, env *Environment) (left, resu
 }
 
 func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) {
+	// keepArray: [] applies to this subscript or to a node in its left chain,
+	// as through a sort step.
+	keepArray := node.KeepArray || parser.ChainKeepsArray(node.Left)
+	// A subscripted block a % reaches into, outside a path's tuple stream,
+	// is filtered as its tuples, seeing their bindings, as in jsonata-js;
+	// the result is the kept tuples' values, where jsonata-js leaks the
+	// tuples themselves unless a path step merges them.
 	if base := parser.StepBase(node); base.Type == parser.NodeBlock && base.TupleResult {
 		_, stages := splitTupleStages(node)
-		return evalBlockStages(node, base, stages, input, env)
+		stream, err := blockTuples(base, stages, []pathCtx{{value: input, env: env}})
+		if err != nil {
+			return nil, err
+		}
+		seq := CreateSequence()
+		for _, ctx := range stream {
+			appendToSequence(seq, ctx.value)
+		}
+		return CollapseAndKeep(seq, keepArray), nil
 	}
 	left, items, err := evalSubscriptLeft(node, input, env)
 	if err != nil || left == nil {
 		return nil, err
 	}
-
-	// keepArray: [] applies to this subscript or to a node in its left chain,
-	// as through a sort step.
-	keepArray := node.KeepArray || parser.ChainKeepsArray(node.Left)
 	if len(items) == 0 {
 		return nil, nil
 	}
@@ -196,26 +207,6 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 		return nil, err
 	}
 	return CollapseAndKeep(filtered, keepArray), nil
-}
-
-// evalBlockStages evaluates a subscripted block a % reaches into, outside a
-// path's tuple stream: as in jsonata-js, its predicates filter the block's
-// tuples, seeing their bindings. The result is the kept tuples' values,
-// where jsonata-js leaks the tuples themselves unless a path step merges
-// them.
-func evalBlockStages(node, block *parser.Node, stages []tupleStage, input any, env *Environment) (any, error) {
-	stream, err := appendBlockTuples(nil, block, pathCtx{value: input, env: env})
-	if err != nil {
-		return nil, err
-	}
-	if stream, err = applyTupleStages(stages, stream, nil); err != nil {
-		return nil, err
-	}
-	seq := CreateSequence()
-	for _, ctx := range stream {
-		appendToSequence(seq, ctx.value)
-	}
-	return CollapseAndKeep(seq, node.KeepArray || parser.ChainKeepsArray(node.Left)), nil
 }
 
 // pickItem applies a number-literal subscript. As in jsonata-js, an array
