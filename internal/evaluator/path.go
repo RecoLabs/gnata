@@ -845,7 +845,7 @@ func evalPathStep(
 	switch step.Type {
 	case parser.NodeWildcard:
 		return evalPathStepWildcard(step, input, env)
-	case parser.NodeName, parser.NodeParent, parser.NodeNumber,
+	case parser.NodeName, parser.NodeNumber,
 		parser.NodeVariable, parser.NodeString, parser.NodeValue,
 		parser.NodeSort: // Sort steps must be applied to the full accumulated input, not mapped per-element.
 		return Eval(step, input, env)
@@ -1034,8 +1034,10 @@ func evalTupleContextStep(step *parser.Node, val any, env *Environment, keepSing
 		result, err = evalConsArrayStep(step, val, env, keepSingleton)
 	case step.Type == parser.NodeWildcard && step.Group == nil:
 		result, err = evalWildcard(step, val, env)
-	default:
+	case beforeStream:
 		result, err = evalPathStep(step, val, env, false, keepSingleton, false)
+	default:
+		return evalTupleStep(step, val, env)
 	}
 	if err != nil {
 		return nil, err
@@ -1048,6 +1050,19 @@ func evalTupleContextStep(step *parser.Node, val any, env *Environment, keepSing
 		return []any{cons}, nil
 	}
 	return result, nil
+}
+
+// evalTupleStep evaluates a step of a running tuple stream once against the
+// tuple's value, as jsonata-js evaluateTupleStep does: a call on an array
+// value sees the whole array, where a plain step would map over its items.
+func evalTupleStep(step *parser.Node, val any, env *Environment) (any, error) {
+	switch {
+	case step.Type == parser.NodeFunction && step.Group == nil:
+		return evalPathFunctionStep(step, val, env)
+	case step.Type == parser.NodeDescendant:
+		return evalPathStepDescendant(val, env)
+	}
+	return Eval(step, val, env)
 }
 
 // tupleContext returns the context value and environment a stage predicate

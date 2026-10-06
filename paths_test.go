@@ -18,6 +18,8 @@ const (
 	// parentArrayJSON is a root array, which jsonata-js wraps as one item.
 	parentArrayJSON = `[{"k":[1,2],"m":[1]},{"k":4,"m":[2,3]}]`
 	keyedJSON       = `{"a":[{"b":"k","c":[1,2]},{"b":"k","c":[3]},{"b":"j","c":4}],"e":[]}`
+	rootItemsJSON   = `[{"k":[{"v":1},{"v":2}],"n":"p"},{"k":[{"v":3}],"n":"q"}]`
+	nestedItemsJSON = `{"x":[[1,2],[3]],"y":[[{"n":"a"},{"n":"b"}],[{"n":"c"}]],"n":"top"}`
 )
 
 var parentOperatorCases = []exprCase{
@@ -146,6 +148,13 @@ var bindingOperatorCases = []exprCase{
 	{expr: `$map([1], $keys)#$i{"x":$i}`, want: `{}`},
 	{expr: `a@$v[$v.b>1].$v.c`, data: pairsJSON, want: `4`},
 	{expr: `$.(a#$i.$i)`, data: `[[{"a":[1,2]},{"a":[3]}],[{"a":[4]}]]`, want: `[0,1,0,0]`},
+	{expr: `$count($)#$i`, data: rootItemsJSON, want: `2`},
+	{expr: `{"a":$count($)}#$i`, data: rootItemsJSON, want: `{"a":2}`},
+	{expr: `-$count($)#$i`, data: rootItemsJSON, want: `-2`},
+	{expr: `$count($)@$v.$v`, data: rootItemsJSON, want: `2`},
+	{expr: `x.$count($)#$i`, data: nestedItemsJSON, want: `[2,1]`},
+	{expr: `y.(%.n)`, data: nestedItemsJSON, want: `["top","top","top"]`},
+	{expr: `y.{"a":%.n}`, data: nestedItemsJSON, want: `[{"a":["top","top"]},{"a":"top"}]`},
 	{expr: `a#$i.$i`, data: `[[{"a":[1,2]},{"a":[3]}],[{"a":[4]}]]`, want: `[0,1,2,3]`},
 	{expr: `$^($)#$i.{"v":$,"i":$i}`, data: `[3,1,4]`, want: `[{"i":0,"v":1},{"i":1,"v":3},{"i":2,"v":4}]`},
 	{expr: `$^(>$).($)#$j.$j`, data: `[3,1,4]`, want: `[0,0,0]`},
