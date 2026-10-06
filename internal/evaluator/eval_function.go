@@ -175,11 +175,18 @@ func stackOverflowError(counter *callCounter) error {
 
 // callBuiltin calls a builtin with each constructed-array argument as a
 // plain array. jsonata-js passes the array object itself, so a builtin that
-// returns an argument unchanged returns the constructed array.
+// returns an argument unchanged returns the constructed array, and an
+// ArgShaped result of a constructed array stays an array, as $distinct
+// keeps a plain array input a plain array.
 func callBuiltin(args []any, call func([]any) (any, error)) (any, error) {
 	result, err := call(unconsArgs(args))
 	if err != nil {
 		return nil, err
+	}
+	if seq, ok := result.(*Sequence); ok && seq.ArgShaped && len(args) > 0 {
+		if _, cons := args[0].(ConsArray); cons {
+			return slices.Clip(seq.Values), nil
+		}
 	}
 	if arr, ok := result.([]any); ok && len(arr) > 0 {
 		for _, arg := range args {
