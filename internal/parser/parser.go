@@ -601,6 +601,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 			return nil, err
 		}
 		left.Focus = name
+		left.indexLast = false
 		return left, nil
 
 	case lexer.TokenHash:
@@ -620,6 +621,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 			return nil, err
 		}
 		left.Index = name
+		left.indexLast = true
 		return left, nil
 
 	case lexer.TokenQuestion:
@@ -963,12 +965,13 @@ func (p *Parser) parseSubscript(left *Node, pos int) (*Node, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
+		alreadyKept := left.KeepArray
 		left.KeepArray = true
 		base := left
 		for base.Type == NodeBinary && base.Value == "[" && base.Left != nil {
 			base = base.Left
 		}
-		if base.Index != "" {
+		if base.indexLast && !alreadyKept {
 			base.IndexKeepArray = true
 		}
 		return left, nil

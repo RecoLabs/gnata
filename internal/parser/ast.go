@@ -54,8 +54,9 @@ type Node struct {
 	Stage              bool // subscript of a call that is a later path step (see markCallStages)
 
 	// Focus / index variable names (set by @ and # operators)
-	Focus string // variable name bound by @
-	Index string // variable name bound by #
+	Focus     string // variable name bound by @
+	Index     string // variable name bound by #
+	indexLast bool   // # bound after any @ on this node (parser only)
 
 	// Ancestor slot (set by % operator)
 	Slot *Slot

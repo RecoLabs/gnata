@@ -21,6 +21,10 @@ const pairsJSON = `{"a":[{"b":1,"c":2},{"b":3,"c":4}],"o":{"b":5,"c":6}}`
 // stageJSON gives each item of w arrays for a call in a later path step.
 const stageJSON = `{"w":[{"a":[[1,2],[3]]},{"a":[[1,9]]}]}`
 
+// boundJSON gives a one-item w1 a nested array and a one-item array for
+// [] around #$i and @$x bindings.
+const boundJSON = `{"w1":[{"c":[[1,2]],"m":[3]}]}`
+
 // exprCase evaluates expr against data, a JSON document ("" for no input).
 // want is the canonical JSON of the result (see render); code, when set,
 // is the error code evaluation or compilation must fail with instead.
@@ -167,6 +171,13 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `w1#$j.(c)#$i[]`, data: `{"w1":[{"c":[[1,2]]}]}`, want: `[1,2]`},
 	{expr: `z.($)#$i[]`, data: `{"z":[[[1,2]]]}`, want: `[1,2]`},
 	{expr: `w.$filter(a, function($v){$v[0]=1})#$i[]`, data: stageJSON, want: `[1,2,1,9]`},
+	{expr: `w.$filter(a, function($v){$v[0]=1})[]#$i[]`, data: stageJSON, want: `[[1,2],[1,9]]`},
+	{expr: `w1.c[]#$i[]`, data: boundJSON, want: `[[1,2]]`},
+	{expr: `w1.m[]#$i[]`, data: boundJSON, want: `[3]`},
+	{expr: `u.c[]#$i[]`, data: `{"u":[{"c":5}]}`, want: `[5]`},
+	{expr: `w1.c#$i@$x[]`, data: boundJSON, want: `[{"c":[[1,2]],"m":[3]}]`},
+	{expr: `w1.c@$x#$i[]`, data: boundJSON, want: `{"c":[[1,2]],"m":[3]}`},
+	{expr: `w1.m@$x[]#$i[]`, data: boundJSON, want: `[{"c":[[1,2]],"m":[3]}]`},
 	// jsonata-js keeps a lambda's tail-call result as its raw sequence,
 	// giving [[1,2]] and [1,2].
 	{expr: `$map([1], function($i){$filter([[1,2],[3]], function($v){$v[0]=1})})`, want: `[1,2]`},
