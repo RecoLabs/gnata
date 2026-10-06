@@ -11,11 +11,17 @@ import (
 )
 
 // longChainCases guard against compile or evaluation time growing
-// quadratically with the length of a chain of sorts or subscripts.
+// quadratically with the length of a chain of sorts, subscripts or
+// operators.
 var longChainCases = []exprCase{
 	{expr: `a` + strings.Repeat(`[0]`, 20_000), data: `{"a":[{"c":2},{"c":1}]}`, want: `{"c":2}`},
 	{expr: `a[]` + strings.Repeat(`[0]`, 20_000), data: `{"a":[{"c":2},{"c":1}]}`, want: `[{"c":2}]`},
 	{expr: `a` + strings.Repeat(`[%.c]`, 20_000) + `.x`, data: `{"a":{"x":1},"c":true}`, want: `1`},
+	{expr: `a.(%.x` + strings.Repeat(`+%.x`, 20_000) + `)`, data: `{"a":{"x":1},"x":1}`, want: `20001`},
+	{
+		expr: `a.(` + strings.Repeat(`%.x ? `, 20_000) + `1` + strings.Repeat(` : 0`, 20_000) + `)`,
+		data: `{"a":{"x":1},"x":1}`, want: `1`,
+	},
 	{expr: `a` + strings.Repeat(`.$^(c)`, 20_000), data: `{"a":[{"c":2},{"c":1}]}`, want: `[{"c":1},{"c":2}]`},
 	{expr: `a` + strings.Repeat(`^($)`, 20_000), data: `{"a":[3,1,2]}`, want: `[1,2,3]`},
 	{expr: `a#$j` + strings.Repeat(`^($)[0]`, 20_000) + `.$j`, data: `{"a":[3,1,2]}`, want: `1`},

@@ -243,9 +243,26 @@ func pathSlots(node *Node) []*Slot {
 }
 
 // concatSlots joins the slots several operands pass to their expression.
-func concatSlots(nodes ...*Node) (slots []*Slot) {
-	for _, node := range nodes {
-		slots = append(slots, exprSlots(node)...)
+// It extends the longest operand's list in place, so a chain nested on
+// either side, such as %.x+%.x+... or a ? b ? c : d : e, stays linear:
+// an operand's list is final once its expression is processed, and only
+// its len is ever read, so appending past it is invisible. Only the order
+// of labels that share a step can differ from jsonata-js.
+func concatSlots(nodes ...*Node) []*Slot {
+	longest, length := -1, 0
+	for i, node := range nodes {
+		if n := len(exprSlots(node)); n > length {
+			longest, length = i, n
+		}
+	}
+	if longest < 0 {
+		return nil
+	}
+	slots := exprSlots(nodes[longest])
+	for i, node := range nodes {
+		if i != longest {
+			slots = append(slots, exprSlots(node)...)
+		}
 	}
 	return slots
 }
