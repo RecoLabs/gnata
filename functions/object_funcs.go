@@ -223,8 +223,9 @@ func makeFnSift(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			return nil, nil
 		}
 		if !evaluator.IsMap(objVal) {
-			// Validation rejects anything else; called unvalidated, through
-			// a partial application, jsonata-js finds no keys in it.
+			// Validation rejects anything else. Called unvalidated, through a
+			// partial application, jsonata-js finds no keys in it, except an
+			// array's indexes, which gnata does not iterate.
 			return nil, nil
 		}
 
@@ -264,8 +265,9 @@ func makeFnEach(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			return nil, nil
 		}
 		if !evaluator.IsMap(objVal) {
-			// Validation rejects anything else; called unvalidated, through
-			// a partial application, jsonata-js finds no keys in it.
+			// Validation rejects anything else. Called unvalidated, through a
+			// partial application, jsonata-js finds no keys in it, except an
+			// array's indexes, which gnata does not iterate.
 			return nil, nil
 		}
 
