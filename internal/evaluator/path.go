@@ -224,7 +224,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 	for _, ctx := range ctxs {
 		appendToSequence(seq, ctx.value)
 	}
-	result := CollapseSequence(seq)
+	result := CollapseAndKeep(seq, node.KeepSingletonArray)
 
 	if node.KeepSingletonArray {
 		switch v := result.(type) {
@@ -901,7 +901,7 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
 		}
 	case *Sequence:
-		collapsed := CollapseSequence(rv)
+		collapsed := CollapseAndKeep(rv, step.KeepArray)
 		if collapsed == nil {
 			return
 		}
@@ -937,7 +937,7 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
 		}
 	case *Sequence:
-		collapsed := CollapseSequence(rv)
+		collapsed := CollapseAndKeep(rv, step.KeepArray)
 		if collapsed == nil {
 			return
 		}
