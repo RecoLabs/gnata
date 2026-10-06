@@ -78,6 +78,15 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 }
 
 func evalObjectConstructor(node *parser.Node, input any, env *Environment) (any, error) {
+	// As jsonata-js evaluateGroupExpression, an object constructor over an
+	// array groups its items, unless the array is the root input jsonata-js
+	// wraps as one item and the constructor does not start a path over it.
+	if seq, ok := input.(*Sequence); ok {
+		input = CollapseSequence(seq)
+	}
+	if items, ok := AsArray(input); ok && (node.RootContext || !isRootInput(items, env)) {
+		return groupItems(objectPairs(node.LHS), items, env)
+	}
 	result := NewOrderedMap()
 	for i := 0; i+1 < len(node.LHS); i += 2 {
 		keyNode := node.LHS[i]
