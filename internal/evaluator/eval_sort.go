@@ -71,12 +71,16 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 	}
 	// jsonata-js collapses the sorted result like a sequence: one item
 	// becomes the item and none undefined, unless [] keeps the array (see
-	// evalSortNode).
+	// evalSortNode). An array item stays wrapped, since a later stage or
+	// step must still see it as one item; jsonata-js collapses that only
+	// as the value leaves the expression.
 	switch len(sorted) {
 	case 0:
 		return nil, nil
 	case 1:
-		return sorted[0], nil
+		if _, isArr := AsArray(sorted[0]); !isArr {
+			return sorted[0], nil
+		}
 	}
 	return sorted, nil
 }

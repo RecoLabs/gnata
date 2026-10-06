@@ -372,6 +372,8 @@ var groupAndSortCases = []exprCase{
 	{expr: `a^(v)`, data: `{"a":[]}`, want: undefined},
 	{expr: `a[]^(v)`, data: `{"a":[{"v":1}]}`, want: `[{"v":1}]`},
 	{expr: `$^(n.%)`, data: `[{"n":"p","v":1}]`, want: `{"n":"p","v":1}`},
+	{expr: `nn^($)[0]`, data: `{"nn":[[1,2]]}`, want: `[1,2]`},
+	{expr: `nn^($)[1]`, data: `{"nn":[[1,2]]}`, want: undefined},
 	{expr: `[{"a":"x"},{"a":1}]^(a)`, code: "T2007"},
 	{expr: `[{"a":2},{"a":1}]^($error("s"))`, code: "D3137"},
 	{expr: `a.[b,c]^($)[]`, data: pairsJSON, code: "T2008"},
