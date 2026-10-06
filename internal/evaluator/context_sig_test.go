@@ -1,8 +1,10 @@
 package evaluator
 
 import (
+	"encoding/json"
 	"errors"
 	"math/rand/v2"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -114,37 +116,74 @@ func TestContextSigInject(t *testing.T) {
 	}
 }
 
+// randomCallValues are argument and focus values for the randomized tests:
+// one of each signature symbol, plus a regex and other value representations.
+var randomCallValues = []any{
+	"s", 1.0, json.Number("2"), true, nil, Null,
+	[]any{1.0},
+	map[string]any{"a": 1.0},
+	NewOrderedMap(),
+	map[string]any{"pattern": "a", "flags": ""},
+	BuiltinFunction(func([]any, any) (any, error) { return nil, nil }),
+}
+
+// randomSig returns a random signature of up to 4 parameters from types,
+// each followed by one of modifiers with probability 1/modifierOdds.
+func randomSig(rng *rand.Rand, types, modifiers string, modifierOdds int) string {
+	var sig strings.Builder
+	for range 1 + rng.IntN(4) {
+		if rng.IntN(8) == 0 {
+			sig.WriteString("(sn)")
+		} else {
+			sig.WriteByte(types[rng.IntN(len(types))])
+		}
+		if rng.IntN(modifierOdds) == 0 {
+			sig.WriteByte(modifiers[rng.IntN(len(modifiers))])
+		}
+	}
+	return sig.String()
+}
+
+// sameValue is DeepEqual, with functions, which DeepEqual never finds
+// equal, compared by identity.
+func sameValue(a, b any) bool {
+	if fa, isFunc := a.(BuiltinFunction); isFunc {
+		fb, isFunc := b.(BuiltinFunction)
+		return isFunc && reflect.ValueOf(fa).Pointer() == reflect.ValueOf(fb).Pointer()
+	}
+	return DeepEqual(a, b)
+}
+
+// randomArgs returns up to maxArgs random values from randomCallValues.
+func randomArgs(rng *rand.Rand, maxArgs int) []any {
+	args := make([]any, rng.IntN(maxArgs+1))
+	for i := range args {
+		args[i] = randomCallValues[rng.IntN(len(randomCallValues))]
+	}
+	return args
+}
+
 // Inject's shortcuts must give what matching gives.
 func TestContextSigShortcutsAgreeWithMatching(t *testing.T) {
 	rng := rand.New(rand.NewPCG(3, 4))
-	values := []any{"s", 1.0, true, nil, Null, []any{1.0}, map[string]any{"a": 1.0}}
 	compared := 0
 	for range 20000 {
-		var sig strings.Builder
-		for range 1 + rng.IntN(4) {
-			sig.WriteByte("snbaxj"[rng.IntN(6)])
-			if rng.IntN(2) == 0 {
-				sig.WriteByte("?-"[rng.IntN(2)])
-			}
-		}
-		compiled, err := compileContextSig(sig.String())
+		sig := randomSig(rng, "snbaxjfol", "?-+", 2)
+		compiled, err := compileContextSig(sig)
 		if err != nil || compiled == nil {
 			continue
 		}
-		args := make([]any, rng.IntN(4))
-		for i := range args {
-			args[i] = values[rng.IntN(len(values))]
-		}
-		focus := values[rng.IntN(len(values))]
+		args := randomArgs(rng, 3)
+		focus := randomCallValues[rng.IntN(len(randomCallValues))]
 		compared++
 		got, gotContext, gotErr := compiled.Inject(args, focus)
 		want, wantContext, wantErr := compiled.injectMatched(args, focus)
-		if (gotErr == nil) != (wantErr == nil) || !slices.EqualFunc(got, want, DeepEqual) {
-			t.Fatalf("<%s> on %v with focus %v: Inject %v %v, matching %v %v", sig.String(), args, focus, got, gotErr, want, wantErr)
+		if (gotErr == nil) != (wantErr == nil) || !slices.EqualFunc(got, want, sameValue) {
+			t.Fatalf("<%s> on %v with focus %v: Inject %v %v, matching %v %v", sig, args, focus, got, gotErr, want, wantErr)
 		}
 		for i := range got {
 			if gotContext.has(i) != wantContext.has(i) {
-				t.Fatalf("<%s> on %v: argument %d context %v, want %v", sig.String(), args, i, gotContext.has(i), wantContext.has(i))
+				t.Fatalf("<%s> on %v: argument %d context %v, want %v", sig, args, i, gotContext.has(i), wantContext.has(i))
 			}
 		}
 	}
@@ -156,31 +195,21 @@ func TestContextSigShortcutsAgreeWithMatching(t *testing.T) {
 // plainlyValid may skip processCallArgs only where it would change nothing.
 func TestPlainlyValidAgreesWithProcessCallArgs(t *testing.T) {
 	rng := rand.New(rand.NewPCG(5, 6))
-	values := []any{"s", 1.0, true, nil, Null, []any{1.0}, map[string]any{"a": 1.0}}
 	skipped := 0
 	for range 100_000 {
-		var sig strings.Builder
-		for range 1 + rng.IntN(4) {
-			sig.WriteByte("snbalojx"[rng.IntN(8)])
-			if rng.IntN(3) == 0 {
-				sig.WriteByte("?-+"[rng.IntN(3)])
-			}
-		}
-		specs, err := parser.ParseSig(sig.String())
+		sig := randomSig(rng, "snbalojxf", "?-+", 3)
+		specs, err := parser.ParseSig(sig)
 		if err != nil {
 			continue
 		}
-		args := make([]any, rng.IntN(5))
-		for i := range args {
-			args[i] = values[rng.IntN(len(values))]
-		}
+		args := randomArgs(rng, 4)
 		if !plainlyValid(specs, args) {
 			continue
 		}
 		skipped++
 		got, undefined, err := processCallArgs(specs, args, contextArgs{})
-		if err != nil || undefined || !slices.EqualFunc(got, args, DeepEqual) {
-			t.Fatalf("<%s> on %v: processCallArgs gives %v %v %v", sig.String(), args, got, undefined, err)
+		if err != nil || undefined || !slices.EqualFunc(got, args, sameValue) {
+			t.Fatalf("<%s> on %v: processCallArgs gives %v %v %v", sig, args, got, undefined, err)
 		}
 	}
 	if skipped < 1000 {

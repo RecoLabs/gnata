@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -448,6 +449,8 @@ var builtinContextCases = []exprCase{
 	{expr: `$keys([[],[[{"z":1,"a":2}]],{"a":3,"y":4}])`, want: `["z","a","y"]`},
 	{expr: `$keys([1,"x",[null]])`, want: undefined},
 	{expr: `[[{"a":1}],{"b":2}].$keys()`, want: `["a","b"]`},
+	// Arrays shared at every level are walked once each, not 2^40 times.
+	{expr: sharedArrays(40) + "$keys($a40))", want: `"k"`},
 	{expr: `$length()`, data: `"abc"`, want: `3`},
 	{expr: `o.$keys().$uppercase()`, data: `{"o":{"a":1,"b":2}}`, want: `["A","B"]`},
 	{expr: `o.($keys())`, data: `{"o":{"a":1}}`, want: `"a"`},
@@ -640,4 +643,15 @@ var functionContextCases = []exprCase{
 
 func TestFunctionContext(t *testing.T) {
 	runExprCases(t, functionContextCases)
+}
+
+// sharedArrays starts a block binding $a0 to $a{levels}, each holding the
+// one before it twice.
+func sharedArrays(levels int) string {
+	var b strings.Builder
+	b.WriteString(`($a0 := [[{"k":1}]]; `)
+	for i := 1; i <= levels; i++ {
+		fmt.Fprintf(&b, "$a%d := [[$a%d],[$a%d]]; ", i, i-1, i-1)
+	}
+	return b.String()
 }

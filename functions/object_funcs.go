@@ -36,10 +36,17 @@ func fnKeys(args []any, _ any) (any, error) {
 
 // arrayKeys returns the keys of the objects in items and, as in jsonata-js,
 // in arrays nested in it, each once in the order first seen. A work stack
-// instead of recursion keeps deeply nested input off the Go stack.
+// instead of recursion keeps deeply nested input off the Go stack, and an
+// array met again adds no keys, so it is not walked twice: shared nested
+// arrays cannot make the walk exponential, nor cyclic ones endless.
 func arrayKeys(items []any) []string {
 	var keys []string
 	seen := make(map[string]bool)
+	type arrayID struct {
+		first *any
+		n     int
+	}
+	walked := make(map[arrayID]bool)
 	for pending := [][]any{items}; len(pending) > 0; {
 		top := pending[len(pending)-1]
 		if len(top) == 0 {
@@ -49,7 +56,12 @@ func arrayKeys(items []any) []string {
 		item := top[0]
 		pending[len(pending)-1] = top[1:]
 		if nested, isArray := evaluator.AsArray(item); isArray {
-			pending = append(pending, nested)
+			if len(nested) > 0 {
+				if id := (arrayID{&nested[0], len(nested)}); !walked[id] {
+					walked[id] = true
+					pending = append(pending, nested)
+				}
+			}
 			continue
 		}
 		if !evaluator.IsMap(item) {
