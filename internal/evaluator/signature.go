@@ -44,16 +44,33 @@ func checkCallArgs(fn any, args []any, focus any) (coercedArgs []any, returnUnde
 	default:
 		return args, false, nil
 	}
-	var isContext []bool
+	var isContext contextArgs
 	if contextSig != nil {
 		if args, isContext, err = contextSig.Inject(args, focus); err != nil {
 			return nil, false, err
 		}
 	}
-	if !validate {
+	if !validate || plainlyValid(specs, args) {
 		return args, false, nil
 	}
 	return processCallArgs(specs, args, isContext)
+}
+
+// plainlyValid reports whether processCallArgs would pass args through
+// unchanged without checking them: one defined argument per parameter, each
+// of a type its parameter accepts, with no array, content type or '+' to
+// coerce or count.
+func plainlyValid(specs []parser.ParamSpec, args []any) bool {
+	if len(args) != len(specs) {
+		return false
+	}
+	for i, spec := range specs {
+		if args[i] == nil || spec.Variadic || spec.ContentType != 0 || sigContainsType(spec.Types, 'a') ||
+			!sigArgMatchesTypes(args[i], spec.Types) {
+			return false
+		}
+	}
+	return true
 }
 
 // processCallArgs handles three pre-call concerns for typed lambdas:
@@ -73,7 +90,7 @@ func checkCallArgs(fn any, args []any, focus any) (coercedArgs []any, returnUnde
 //
 // It returns (coercedArgs, returnUndefined, err).
 // When returnUndefined is true the caller must return (nil, nil) immediately.
-func processCallArgs(specs []parser.ParamSpec, args []any, isContext []bool) (coercedArgs []any, returnUndefined bool, err error) {
+func processCallArgs(specs []parser.ParamSpec, args []any, isContext contextArgs) (coercedArgs []any, returnUndefined bool, err error) {
 	coerced, cloned := args, false
 	for i, spec := range specs {
 		if spec.Variadic {
@@ -82,7 +99,7 @@ func processCallArgs(specs []parser.ParamSpec, args []any, isContext []bool) (co
 		if i >= len(coerced) {
 			break
 		}
-		if isContextArg(isContext, i) {
+		if isContext.has(i) {
 			continue
 		}
 		arg := coerced[i]
@@ -115,9 +132,9 @@ func processCallArgs(specs []parser.ParamSpec, args []any, isContext []bool) (co
 // It returns T0410 on a base-type mismatch or arity error, and T0412 when
 // an array content-type constraint is violated. An argument isContext marks
 // is the context value, which ContextSig has already checked.
-func validateCallArgs(specs []parser.ParamSpec, args []any, isContext []bool) error {
+func validateCallArgs(specs []parser.ParamSpec, args []any, isContext contextArgs) error {
 	checkArg := func(spec parser.ParamSpec, ai int) error {
-		if isContextArg(isContext, ai) {
+		if isContext.has(ai) {
 			return nil
 		}
 		return validateOneCallArg(spec, args[ai], ai+1)
@@ -139,7 +156,7 @@ func validateCallArgs(specs []parser.ParamSpec, args []any, isContext []bool) er
 			}
 			maxConsume := len(args) - mandatoryAfter
 			first := ai
-			for ai < maxConsume && !isContextArg(isContext, ai) {
+			for ai < maxConsume && !isContext.has(ai) {
 				if err := checkArg(spec, ai); err != nil {
 					break
 				}
@@ -183,10 +200,6 @@ func validateCallArgs(specs []parser.ParamSpec, args []any, isContext []bool) er
 	}
 
 	return nil
-}
-
-func isContextArg(isContext []bool, i int) bool {
-	return i < len(isContext) && isContext[i]
 }
 
 func arityError(pos int, reason string) error {

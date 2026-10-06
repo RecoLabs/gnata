@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"errors"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -110,5 +111,79 @@ func TestContextSigInject(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tC.want)
 			}
 		})
+	}
+}
+
+// Inject's shortcuts must give what matching gives.
+func TestContextSigShortcutsAgreeWithMatching(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	values := []any{"s", 1.0, true, nil, Null, []any{1.0}, map[string]any{"a": 1.0}}
+	compared := 0
+	for range 20000 {
+		var sig strings.Builder
+		for range 1 + rng.IntN(4) {
+			sig.WriteByte("snbaxj"[rng.IntN(6)])
+			if rng.IntN(2) == 0 {
+				sig.WriteByte("?-"[rng.IntN(2)])
+			}
+		}
+		compiled, err := compileContextSig(sig.String())
+		if err != nil || compiled == nil {
+			continue
+		}
+		args := make([]any, rng.IntN(4))
+		for i := range args {
+			args[i] = values[rng.IntN(len(values))]
+		}
+		focus := values[rng.IntN(len(values))]
+		compared++
+		got, gotContext, gotErr := compiled.Inject(args, focus)
+		want, wantContext, wantErr := compiled.injectMatched(args, focus)
+		if (gotErr == nil) != (wantErr == nil) || !slices.EqualFunc(got, want, DeepEqual) {
+			t.Fatalf("<%s> on %v with focus %v: Inject %v %v, matching %v %v", sig.String(), args, focus, got, gotErr, want, wantErr)
+		}
+		for i := range got {
+			if gotContext.has(i) != wantContext.has(i) {
+				t.Fatalf("<%s> on %v: argument %d context %v, want %v", sig.String(), args, i, gotContext.has(i), wantContext.has(i))
+			}
+		}
+	}
+	if compared < 5000 {
+		t.Fatalf("compared only %d signatures with a context parameter", compared)
+	}
+}
+
+// plainlyValid may skip processCallArgs only where it would change nothing.
+func TestPlainlyValidAgreesWithProcessCallArgs(t *testing.T) {
+	rng := rand.New(rand.NewPCG(5, 6))
+	values := []any{"s", 1.0, true, nil, Null, []any{1.0}, map[string]any{"a": 1.0}}
+	skipped := 0
+	for range 100_000 {
+		var sig strings.Builder
+		for range 1 + rng.IntN(4) {
+			sig.WriteByte("snbalojx"[rng.IntN(8)])
+			if rng.IntN(3) == 0 {
+				sig.WriteByte("?-+"[rng.IntN(3)])
+			}
+		}
+		specs, err := parser.ParseSig(sig.String())
+		if err != nil {
+			continue
+		}
+		args := make([]any, rng.IntN(5))
+		for i := range args {
+			args[i] = values[rng.IntN(len(values))]
+		}
+		if !plainlyValid(specs, args) {
+			continue
+		}
+		skipped++
+		got, undefined, err := processCallArgs(specs, args, contextArgs{})
+		if err != nil || undefined || !slices.EqualFunc(got, args, DeepEqual) {
+			t.Fatalf("<%s> on %v: processCallArgs gives %v %v %v", sig.String(), args, got, undefined, err)
+		}
+	}
+	if skipped < 1000 {
+		t.Fatalf("only %d calls were plainly valid", skipped)
 	}
 }

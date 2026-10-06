@@ -21,6 +21,9 @@ import (
 type ContextSig struct {
 	params   []contextParam
 	variadic bool // some parameter is '+'
+	// zeroArgs are the symbols of the context parameters, which take the
+	// focus in a call without arguments; nil when such a call does not match.
+	zeroArgs []uint8
 }
 
 type contextParam struct {
@@ -49,7 +52,39 @@ func newContextSig(specs []parser.ParamSpec) *ContextSig {
 			context:  spec.Context,
 		}
 	}
-	return &ContextSig{params: params, variadic: slices.ContainsFunc(params, func(p contextParam) bool { return p.variadic })}
+	sig := &ContextSig{params: params, variadic: slices.ContainsFunc(params, func(p contextParam) bool { return p.variadic })}
+	if !slices.ContainsFunc(params, func(p contextParam) bool { return !p.optional }) {
+		for _, param := range params {
+			if param.context {
+				sig.zeroArgs = append(sig.zeroArgs, param.symbols)
+			}
+		}
+	}
+	return sig
+}
+
+// contextArgs marks the arguments Inject filled from the context.
+type contextArgs struct {
+	low  uint64 // arguments 0 to 63
+	high []bool // arguments from 64 on, for absurdly wide signatures
+}
+
+func (c *contextArgs) set(i int) {
+	if i < 64 {
+		c.low |= 1 << i
+		return
+	}
+	for len(c.high) <= i-64 {
+		c.high = append(c.high, false)
+	}
+	c.high[i-64] = true
+}
+
+func (c *contextArgs) has(i int) bool {
+	if i < 64 {
+		return c.low&(1<<i) != 0
+	}
+	return i-64 < len(c.high) && c.high[i-64]
 }
 
 // sigSymbols are jsonata-js's type symbols, in the order of their bits;
@@ -108,44 +143,104 @@ func scratch[T any](buf []T, n int) []T {
 }
 
 // Inject returns args with the focus inserted where the signature takes the
-// context value, and which of the returned arguments are the focus (nil when
-// none). It returns args unchanged when no context argument is missing or
-// when args do not match the signature, leaving the function to report the
-// mismatch. It raises T0411 when the focus has the wrong type.
-func (s *ContextSig) Inject(args []any, focus any) (injected []any, isContext []bool, err error) {
-	var countsBuf [smallMatch]int
-	counts := scratch(countsBuf[:], len(s.params))
-	counts, ok := s.match(args, counts)
-	if !ok {
-		return args, nil, nil
+// context value, and which of the returned arguments are the focus. It
+// returns args unchanged when no context argument is missing or when args
+// do not match the signature, leaving the function to report the mismatch.
+// It raises T0411 when the focus has the wrong type.
+func (s *ContextSig) Inject(args []any, focus any) ([]any, contextArgs, error) {
+	if len(args) == 0 {
+		return s.injectAlone(focus)
 	}
+	if !s.variadic && (len(args) >= len(s.params) || s.fillsInOrder(args)) {
+		return args, contextArgs{}, nil
+	}
+	return s.injectMatched(args, focus)
+}
+
+// injectMatched is Inject without its shortcuts, matching args against the
+// signature.
+func (s *ContextSig) injectMatched(args []any, focus any) ([]any, contextArgs, error) {
+	var countsBuf [smallMatch]int
+	counts, ok := s.match(args, scratch(countsBuf[:], len(s.params)))
+	if !ok {
+		return args, contextArgs{}, nil
+	}
+	missing := 0
+	for i, param := range s.params {
+		if counts[i] == 0 && param.context {
+			missing++
+		}
+	}
+	if missing == 0 {
+		return args, contextArgs{}, nil
+	}
+	injected := make([]any, 0, len(args)+missing)
+	var isContext contextArgs
 	argIndex := 0
 	for i, param := range s.params {
 		if counts[i] == 0 && param.context {
-			if param.symbols&symbolBit(focusSymbol(focus)) == 0 {
-				return nil, nil, &JSONataError{
-					Code:    "T0411",
-					Message: fmt.Sprintf("context value is not a compatible type with argument %d", argIndex+1),
-				}
+			if err := focusError(param.symbols, focus, argIndex); err != nil {
+				return nil, contextArgs{}, err
 			}
-			if injected == nil {
-				injected = append(make([]any, 0, len(args)+1), args[:argIndex]...)
-				isContext = make([]bool, argIndex, len(args)+1)
-			}
+			isContext.set(len(injected))
 			injected = append(injected, focus)
-			isContext = append(isContext, true)
 			continue
 		}
-		if injected != nil {
-			injected = append(injected, args[argIndex:argIndex+counts[i]]...)
-			isContext = append(isContext, make([]bool, counts[i])...)
-		}
+		injected = append(injected, args[argIndex:argIndex+counts[i]]...)
 		argIndex += counts[i]
 	}
-	if injected == nil {
-		return args, nil, nil
+	return injected, isContext, nil
+}
+
+// fillsInOrder reports whether args, at most one per parameter, match the
+// parameters in order and every parameter after them is optional and not
+// left to the context. The jsonata-js regex, taking each argument greedily,
+// then matches args that way, so the call needs no context. A signature
+// without '+' with as many arguments as parameters never does either: each
+// parameter takes one, or args do not match.
+func (s *ContextSig) fillsInOrder(args []any) bool {
+	for i, arg := range args {
+		if s.params[i].symbols&symbolBit(sigSymbol(arg)) == 0 {
+			return false
+		}
+	}
+	for _, param := range s.params[len(args):] {
+		if param.context || !param.optional {
+			return false
+		}
+	}
+	return true
+}
+
+// injectAlone is Inject for a call without arguments, which matches only
+// when every parameter is optional, and then passes the focus to every
+// context parameter.
+func (s *ContextSig) injectAlone(focus any) ([]any, contextArgs, error) {
+	if len(s.zeroArgs) == 0 {
+		return nil, contextArgs{}, nil
+	}
+	injected := make([]any, len(s.zeroArgs))
+	var isContext contextArgs
+	for i, symbols := range s.zeroArgs {
+		if err := focusError(symbols, focus, 0); err != nil {
+			return nil, contextArgs{}, err
+		}
+		injected[i] = focus
+		isContext.set(i)
 	}
 	return injected, isContext, nil
+}
+
+// focusError raises T0411 when focus cannot take a context parameter
+// accepting symbols, the argument after argIndex arguments.
+func focusError(symbols uint8, focus any, argIndex int) error {
+	if symbols&symbolBit(focusSymbol(focus)) != 0 {
+		return nil
+	}
+	return &JSONataError{
+		Code:    "T0411",
+		Message: fmt.Sprintf("context value is not a compatible type with argument %d", argIndex+1),
+	}
 }
 
 // match appends to counts how many arguments each parameter takes, choosing
