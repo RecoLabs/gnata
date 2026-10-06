@@ -269,7 +269,7 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 // the result to a slice. Returns (left, items, err); left==nil means no match.
 func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any, items []any, _ error) {
 	var err error
-	if node.Left.Type == parser.NodeFunction && !node.Stage {
+	if node.Left.Type == parser.NodeFunction && !node.Stage && node.Index == "" && node.Left.Index == "" {
 		left, err = evalCall(node.Left, input, env)
 	} else {
 		left, err = Eval(node.Left, input, env)
