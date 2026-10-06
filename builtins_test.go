@@ -171,6 +171,7 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$lookup([{"b":[1,2]}], "b")[0]`, want: `1`},
 	{expr: `$lookup([[{"b":1}],{"b":2}], "b")`, want: `[1,2]`},
 	{expr: `$lookup({"a":null}, "a")`, want: `null`},
+	{expr: `$lookup([{"a":null}], "a")`, want: `null`},
 	{expr: `q.$lookup(x, "k")`, data: `{"q":[{"x":[{"k":[1,2]}]},{"x":[{"k":[3]}]}]}`, want: `[1,2,3]`},
 	{expr: `$sort([3,1], function($a,$b){[0]})`, want: `[1,3]`},
 	{expr: `$sort([3,1], function($a,$b){[]})`, want: `[1,3]`},

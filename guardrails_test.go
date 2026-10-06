@@ -146,6 +146,22 @@ func TestWithTimeout_SlowCallsBoundOverrun(t *testing.T) {
 	}
 }
 
+// A $lookup over arrays that share nested arrays visits 2^40 items here, so
+// the walk itself must stop at the deadline.
+func TestWithTimeout_LookupNestedArrays(t *testing.T) {
+	e, err := gnata.Compile(
+		`$lookup($reduce([1..40], function($acc, $i){[[$acc],[$acc]]}, [{"b":1}]), "a")`,
+		gnata.WithTimeout(50*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	_, err = e.Eval(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "D1012") {
+		t.Fatalf("expected D1012, got %v", err)
+	}
+}
+
 func TestWithTimeout_ParentCancellationPreserved(t *testing.T) {
 	e, err := gnata.Compile("1+1", gnata.WithTimeout(time.Minute))
 	if err != nil {
@@ -177,6 +193,7 @@ func TestWithSequence(t *testing.T) {
 			desc: "each exceeds sequence guardrail",
 			expr: "$each({'a':1,'b':2,'c':3,'d':4,'e':5,'f':6,'g':7,'h':8,'i':9,'j':10,'k':11}, function($v,$k){$v})",
 		},
+		{desc: "lookup exceeds sequence guardrail", expr: `$lookup([{"a":[1,2,3,4,5,6]},{"a":[7,8,9,10,11]}], "a")`},
 		{desc: "wildcard exceeds sequence guardrail", expr: "*", data: wideObject},
 		{desc: "descendant exceeds sequence guardrail", expr: "**", data: wideObject},
 	}

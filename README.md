@@ -332,7 +332,7 @@ expr, err := gnata.Compile(userExpr,
 
 `WithTimeout` is enforced by checking a deadline on every function call and periodically between expression nodes, rather than with a timer, so it also applies inside a synchronous call on single-threaded WebAssembly hosts. A single builtin or custom function call is not interrupted, so evaluation can exceed the timeout by at most the duration of the call in progress.
 
-All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds every major sequence-growth path: the range operator, `$append`, `$map`, `$filter`, `$each`, wildcard (`*`), descendant (`**`), and repeated positions in a filter directly after a `#`/`@` binding (`a.b#$i[...]`). Use guardrails when evaluating expressions from an untrusted source.
+All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds every major sequence-growth path: the range operator, `$append`, `$lookup`, `$map`, `$filter`, `$each`, wildcard (`*`), descendant (`**`), and positions a filter repeats (`a[[0,0]]`). Use guardrails when evaluating expressions from an untrusted source.
 
 ### Decimal Precision
 

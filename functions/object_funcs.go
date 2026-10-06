@@ -280,7 +280,7 @@ func fnError(args []any, _ any) (any, error) {
 
 // ── $lookup ───────────────────────────────────────────────────────────────────
 
-func fnLookup(args []any, _ any) (any, error) {
+func fnLookup(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) < 2 {
 		return nil, &evaluator.JSONataError{Code: "D3006", Message: "$lookup: requires 2 arguments"}
 	}
@@ -291,38 +291,71 @@ func fnLookup(args []any, _ any) (any, error) {
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("$lookup: key must be a string, got %T", args[1])}
 	}
-
-	return lookupKey(args[0], key), nil
+	if arr, ok := evaluator.AsArray(args[0]); ok {
+		return lookupArray(arr, key, env)
+	}
+	return fieldOrNull(args[0], key), nil
 }
 
-// lookupKey returns the value of key in an object, or, as jsonata-js lookup
-// does, a sequence of the values in each item of an array, recursively,
-// flattening array values.
-func lookupKey(input any, key string) any {
-	if arr, ok := evaluator.AsArray(input); ok {
-		seq := evaluator.CreateSequence()
-		for _, item := range arr {
-			switch res := lookupKey(item, key).(type) {
-			case nil:
-			case *evaluator.Sequence:
-				seq.Values = append(seq.Values, res.Values...)
-			default:
-				values, isArr := evaluator.AsArray(res)
-				if !isArr {
-					seq.Values = append(seq.Values, res)
-					continue
-				}
-				for _, v := range values {
-					if v == nil {
-						v = evaluator.Null
-					}
-					seq.Values = append(seq.Values, v)
-				}
+// maxLookupSize caps a $lookup result, as $append caps its own: one
+// array value repeated through shared arrays can otherwise allocate far
+// more than the input holds before the deadline is next read.
+const maxLookupSize = 10_000_000
+
+// lookupArray returns, as jsonata-js lookup does, a sequence of the values
+// of key in the objects of arr and of the arrays nested in it, flattening
+// array values. A work stack instead of recursion keeps deeply nested input
+// off the Go stack, and the walk polls Err at every item because arrays
+// shared at several nesting levels can make it exponential in the
+// expression's size.
+func lookupArray(arr []any, key string, env *evaluator.Environment) (any, error) {
+	seq := evaluator.CreateSequence()
+	for pending := [][]any{arr}; len(pending) > 0; {
+		top := pending[len(pending)-1]
+		if len(top) == 0 {
+			pending = pending[:len(pending)-1]
+			continue
+		}
+		item := top[0]
+		pending[len(pending)-1] = top[1:]
+		if err := env.Err(); err != nil {
+			return nil, err
+		}
+		if items, isArray := evaluator.AsArray(item); isArray {
+			pending = append(pending, items)
+			continue
+		}
+		val := fieldOrNull(item, key)
+		values, isArray := evaluator.AsArray(val)
+		switch {
+		case val == nil:
+			continue
+		case !isArray:
+			values = []any{val}
+		}
+		if err := env.CheckSequence(len(seq.Values) + len(values)); err != nil {
+			return nil, err
+		}
+		if len(seq.Values)+len(values) > maxLookupSize {
+			return nil, &evaluator.JSONataError{
+				Code:    "D3010",
+				Message: fmt.Sprintf("$lookup: result array exceeds maximum size of %d elements", maxLookupSize),
 			}
 		}
-		return seq
+		for _, v := range values {
+			if v == nil {
+				v = evaluator.Null
+			}
+			seq.Values = append(seq.Values, v)
+		}
 	}
-	val, ok := evaluator.MapGet(input, key)
+	return seq, nil
+}
+
+// fieldOrNull returns the value of key in an object, with a JSON null field
+// as Null, or nil when obj is not an object or lacks the key.
+func fieldOrNull(obj any, key string) any {
+	val, ok := evaluator.MapGet(obj, key)
 	if ok && val == nil {
 		return evaluator.Null
 	}

@@ -83,10 +83,11 @@ func WithTimeout(d time.Duration) Option {
 }
 
 // WithSequence limits the length of sequences built during evaluation: the
-// range operator (..), $append, $map, $filter, $each, wildcard (*), and
-// descendant (**). Exceeding it returns error D2015, matching jsonata-js's
-// `sequence` guardrail. Without this option, only the built-in 10,000,000
-// element hard caps (D2014 / D3010) apply.
+// range operator (..), $append, $lookup, $map, $filter, $each, wildcard (*),
+// descendant (**), and positions a filter repeats (a[[0,0]]). Exceeding it
+// returns error D2015, matching jsonata-js's `sequence` guardrail. Without
+// this option, only the built-in 10,000,000 element hard caps (D2014 /
+// D3010) apply.
 func WithSequence(n int) Option {
 	return func(o *compileOptions) { o.sequence = n }
 }
