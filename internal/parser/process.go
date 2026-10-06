@@ -162,7 +162,7 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 		// splice its steps.
 		steps, group := []*Node{processed}, takePathGroup(processed)
 		if processed.Type == NodePath {
-			steps, group = processed.Steps, processed.Group
+			steps = processed.Steps
 		}
 		// A quoted step, or one with predicates, is a field name.
 		for _, step := range steps {
