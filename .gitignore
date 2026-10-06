@@ -6,3 +6,6 @@ coverage.out
 # npm package build artifacts
 npm/dist/
 npm/node_modules/
+
+# go test -c / profiling binaries
+*.test
