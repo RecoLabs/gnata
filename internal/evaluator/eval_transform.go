@@ -76,9 +76,10 @@ func evalTransform(node *parser.Node, _ any, env *Environment) (any, error) {
 		} else {
 			doc = focus
 		}
-		// Each call evaluates the clauses on the Go stack, so it uses as much
-		// of the nesting budget as they are deep.
-		return env.callCounter().callNested(max(int(node.Depth), 1), func() (any, error) {
+		// Each call evaluates the clauses on the Go stack, and transforms can
+		// call each other with no lambda call between, so each spends at
+		// least one unit.
+		return env.callCounter().callNested(max(bodyCost(node.Depth), 1), func() (any, error) {
 			return applyTransform(node, doc, env)
 		})
 	}), nil

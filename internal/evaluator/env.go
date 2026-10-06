@@ -61,14 +61,15 @@ const (
 // maxNestedCalls bounds the nesting budget of calls in progress into partial
 // applications, compositions, wrappers of builtin function arguments,
 // transforms, builtins passed as higher-order functions' callbacks, and
-// lambdas with deep bodies (see lambdaFreeDepth). Each calls further functions on the Go stack and the call depth does not
-// count it, so a long chain of them would overflow the Go stack, which cannot
-// be recovered. It is fixed, unlike the call depth WithStack sets. Native
-// builds have room for far more, but under js/wasm in Node with
-// go_js_wasm_exec's 8 MB stack, the stack CI runs, it overflows at about
-// 12,750 $sort comparators that are partial applications, the costliest unit
-// measured, and at about 35,000 plain partial applications. Hosts with a
-// smaller stack, such as Node's default, can overflow below the limit.
+// lambdas with deep bodies (see lambdaFreeDepth). Each calls further
+// functions on the Go stack and the call depth does not count it, so a long
+// chain of them would overflow the Go stack, which cannot be recovered. It
+// is fixed, unlike the call depth WithStack sets. Native builds have room
+// for far more, but under js/wasm in Node with go_js_wasm_exec's 8 MB stack,
+// the stack CI runs, it overflows at about 12,750 $sort comparators that are
+// partial applications, the costliest unit measured, and at about 35,000
+// plain partial applications. Hosts with a smaller stack, such as Node's
+// default, can overflow below the limit.
 const maxNestedCalls = 5_000
 
 // callCounter.nested must hold maxNestedCalls.

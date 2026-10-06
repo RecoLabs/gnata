@@ -67,11 +67,17 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 				strings.Repeat(" : 0)", 300) + `}; $f(99))`,
 			want: float64(0),
 		},
+		{
+			desc: "recursion through a transform with a moderately deep clause",
+			expr: `($f := function($n){$n = 0 ? 0 : ({} ~> | $ | {"a": ` + strings.Repeat("[", 100) + "$f($n-1)" +
+				strings.Repeat("]", 100) + `} |)}; $count($f(98)))`,
+			want: float64(1),
+		},
 		{desc: "recursion through a transform within default stack", expr: recursiveTransform(99), want: float64(2)},
 		{desc: "deep transforms in a group exceed nesting limit", expr: groupedTransforms(10_000, 3_000), code: tooNested},
 		{
 			desc: "inner transform charged when called, not with the outer one",
-			expr: `($f := function($n){$n = 0 ? {} : ({"a":1} ~> | $ | ($ ~> | $ | {"b": $f($n-1), "c": ` + nested(30) +
+			expr: `($f := function($n){$n = 0 ? {} : ({"a":1} ~> | $ | ($ ~> | $ | {"b": $f($n-1), "c": ` + nested(180) +
 				`} |) |)}; $count($keys($f(99))))`,
 			want: float64(3),
 		},

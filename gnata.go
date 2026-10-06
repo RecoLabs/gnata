@@ -69,7 +69,7 @@ type Option func(*compileOptions)
 // arguments, transforms and builtins passed as higher-order functions'
 // callbacks have a separate fixed limit of 5,000 nested calls (U1001), which
 // WithStack does not change. A call to a lambda whose body nests more than 64
-// levels deep also spends one unit per 4 levels beyond from that limit.
+// levels deep also spends one unit per 3 levels beyond from that limit.
 func WithStack(n int) Option {
 	return func(o *compileOptions) { o.stack = n }
 }
