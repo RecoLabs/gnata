@@ -271,6 +271,9 @@ var pathStepCases = []exprCase{
 	// A field with a predicate is a one-step path, which maps over an array
 	// of contexts.
 	{expr: `q.(a[0])`, data: `{"q":[[{"a":[1,2]},{"a":[3]}]]}`, want: `[1,3]`},
+	// A variable or a constructor is evaluated once, against the whole array.
+	{expr: `q.($[0].a)`, data: `{"q":[[{"a":5},{"a":6}]]}`, want: `5`},
+	{expr: `q.([$][0].a)`, data: `{"q":[[[{"a":1}],[{"a":2}]]]}`, want: `1`},
 	{expr: `a.[b, c].*`, data: `{"a":[{"b":[{"x":1},{"y":3}],"c":{"x":2}}]}`, want: `[{"x":1},{"y":3},{"x":2}]`},
 	{expr: `a.[b].*`, data: `{"a":[{"x":1}]}`, want: undefined},
 	{expr: `a.[b].*`, data: `{"a":[{"b":{"x":1}}]}`, want: `{"x":1}`},

@@ -176,11 +176,17 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	if arr, ok := input.([]any); ok && subscriptsName(node) && !isRootArray(arr, env) {
 		// jsonata-js evaluates a field with predicates as a one-step path,
 		// which maps over an array of contexts other than the input.
-		result, _, err := mapPathStep(node, arr, env, false)
-		if _, isArr := result.([]any); err == nil && !isArr && result != nil && (node.KeepArray || hasKeepArrayInChain(node.Left)) {
+		result, lone, err := mapPathStep(node, arr, env, false)
+		if err == nil {
+			err = checkPathStep(input, result, lone, true, env)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if _, isArr := result.([]any); !isArr && result != nil && (node.KeepArray || hasKeepArrayInChain(node.Left)) {
 			return []any{result}, nil
 		}
-		return result, err
+		return result, nil
 	}
 	result, err := evalSubscriptStage(node, input, env)
 	seq, isSeq := result.(*Sequence)

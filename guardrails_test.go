@@ -201,6 +201,7 @@ func TestWithSequence(t *testing.T) {
 		"x":  map[string]any{"a": items},
 		"m":  []any{map[string]any{"b": items}, map[string]any{"c": 1.0}},
 		"oo": []any{[]any{map[string]any{"a": items}}},
+		"qq": []any{[]any{map[string]any{"a": items}, map[string]any{"a": items}}},
 		"w":  oneItemArrays,
 	}
 	testCases := []struct {
@@ -246,6 +247,7 @@ func TestWithSequence(t *testing.T) {
 		{desc: "last field step over a nested array context", expr: "$count(oo.a)", data: data},
 		{desc: "subscripted field over a nested array context", expr: "$count(oo.a[0])", data: data},
 		{desc: "predicated step over many contexts", expr: "$count(w.(a[0]))", data: data},
+		{desc: "predicated field over an array of contexts", expr: "$count(qq.(a[true]))", data: data},
 		{desc: "wildcard appending an array to its values", expr: "$count(v.*)", data: mustDecodeJSON(t, valuesThenArray)},
 	}
 	for _, tC := range testCases {

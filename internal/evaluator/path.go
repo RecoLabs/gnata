@@ -173,9 +173,11 @@ func walkStep(node *parser.Node, i int, input any, env *Environment, prevWasMapp
 	switch {
 	case i > 0 && step.Type == parser.NodeVariable:
 		return evalVariableStep(step, input, env, prevWasCons, i == len(node.Steps)-1)
-	case i == 0 && isSubscript(step) && isContextArray(input, env):
+	case i == 0 && subscriptsName(step) && isContextArray(input, env):
 		// A path over an array other than the input, which jsonata-js
-		// wraps as one context, maps its first step over the items.
+		// wraps as one context, maps a first step of a field with
+		// predicates over the items. A variable or a constructor is
+		// evaluated once, against the whole array.
 		return mapPathStep(step, input.([]any), env, node.KeepSingletonArray)
 	}
 	return evalPathStepLone(step, input, env, prevWasMapper, node.KeepSingletonArray)
