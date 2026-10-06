@@ -50,6 +50,7 @@ type Node struct {
 	Thunk              bool // lambda is a TCO thunk
 	Tuple              bool // sort whose Left binds #$var or @$var, or the path wrapping it (see wrapBoundSort)
 	RootContext        bool // wildcard step starting a path over the root input (see markRootContext)
+	Stage              bool // subscript of a call that is a later path step (see markCallStages)
 
 	// Focus / index variable names (set by @ and # operators)
 	Focus string // variable name bound by @

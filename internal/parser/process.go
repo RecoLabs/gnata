@@ -96,6 +96,7 @@ func processDotBinary(node *Node) (*Node, error) {
 		Group: node.Group, // propagate group-by expression (A.B{key:val})
 	}
 	markUnaryArraySteps(steps)
+	markCallStages(steps)
 
 	// Propagate KeepSingletonArray when any step (or a subscript step's left side)
 	// has KeepArray=true. This covers both A[].B and A[][filter].B patterns.
@@ -249,6 +250,20 @@ func markUnaryArraySteps(steps []*Node) {
 	for i, step := range steps {
 		if (i > 0 || len(steps) == 1) && isUnaryArrayCtor(step) {
 			step.ConsArray = true
+		}
+	}
+}
+
+// markCallStages flags the subscript applied to a call in each step after
+// the first. jsonata-js turns such a predicate into a stage, which filters
+// the call's collapsed result for each context item, while a predicate
+// elsewhere filters the sequence the call returns.
+func markCallStages(steps []*Node) {
+	for _, step := range steps[1:] {
+		for n := step; n.Type == NodeBinary && n.Value == "[" && n.Left != nil; n = n.Left {
+			if n.Left.Type == NodeFunction {
+				n.Stage = true
+			}
 		}
 	}
 }

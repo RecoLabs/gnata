@@ -116,6 +116,9 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$filter([[[1,2]]], function($v){true})[0]`, want: `[[1,2]]`},
 	{expr: `$filter([[]], function($v){true})[0]`, want: `[]`},
 	{expr: `$filter(["a",""], $boolean)`, want: `"a"`},
+	{expr: `$each(q, function($v){$v})[0]`, data: `{"q":{"k":["x","y"]}}`, want: `["x","y"]`},
+	{expr: `q.$each(function($v){$v})[0]`, data: `{"q":{"k":["x","y"]}}`, want: `"x"`},
+	{expr: `a.($each(function($v){$v})[0])`, data: `{"a":[{"k":["x"]},{"k":["y","z"]}]}`, want: `["x","y","z"]`},
 	// jsonata-js gives [[1,2]]: its trampoline passes a builtin tail call's
 	// sequence to $map uncollapsed.
 	{expr: `$map([1], function($i){$filter([[1,2],[3]], function($v){$v[0]=1})})`, want: `[1,2]`},
