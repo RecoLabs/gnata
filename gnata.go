@@ -65,9 +65,10 @@ type Option func(*compileOptions)
 // error D1011. Without this option, gnata still enforces its built-in limit
 // of 100 (error U1001) — WithStack only changes the limit and the resulting
 // error code, matching jsonata-js's `stack` guardrail.
-// Calls through partial applications, compositions, function arguments,
-// transforms and higher-order functions' callbacks have a separate fixed
-// limit of 10,000 nested calls (U1001), which WithStack does not change.
+// Calls through partial applications, compositions, builtin function
+// arguments, transforms and builtins passed as higher-order functions'
+// callbacks have a separate fixed limit of 5,000 nested calls (U1001), which
+// WithStack does not change.
 func WithStack(n int) Option {
 	return func(o *compileOptions) { o.stack = n }
 }

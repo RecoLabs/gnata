@@ -292,7 +292,8 @@ func invokeFunction(fn any, args []any, focus any, env *Environment, checked boo
 		checked = true
 		switch f := fn.(type) {
 		case *SignedBuiltin:
-			if !f.isWrapper() {
+			if _, wrapsLambda := wrappedLambda(f); wrapsLambda || !f.isWrapper() {
+				// The call depth bounds a wrapped lambda argument.
 				return f.Fn(args, focus, env)
 			}
 			return callWrapper(f, args, focus, env, counter)

@@ -59,14 +59,15 @@ const (
 )
 
 // maxNestedCalls bounds the nesting budget of calls in progress into partial
-// applications, compositions, function-argument wrappers, transforms and
-// higher-order functions' callbacks.
+// applications, compositions, wrappers of builtin function arguments,
+// transforms and builtins passed as higher-order functions' callbacks.
 // Each calls further functions on the Go stack and the call depth does not
 // count it, so a long chain of them would overflow the Go stack, which cannot
 // be recovered. It is fixed, unlike the call depth WithStack sets. Native
-// builds have room for far more, but js/wasm hosts such as Node overflow
-// near 50,000 partial applications.
-const maxNestedCalls = 10_000
+// builds have room for far more, but under js/wasm Node overflows at about
+// 12,750 $sort comparators that are partial applications, the costliest
+// unit measured, and at about 35,000 plain partial applications.
+const maxNestedCalls = 5_000
 
 // callCounter.nested must hold maxNestedCalls.
 const _ uint16 = maxNestedCalls
