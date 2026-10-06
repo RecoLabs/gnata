@@ -21,8 +21,8 @@ const pairsJSON = `{"a":[{"b":1,"c":2},{"b":3,"c":4}],"o":{"b":5,"c":6}}`
 // stageJSON gives each item of w arrays for a call in a later path step.
 const stageJSON = `{"w":[{"a":[[1,2],[3]]},{"a":[[1,9]]}]}`
 
-// boundJSON gives a one-item w1 a nested array and a one-item array for
-// [] around #$i and @$x bindings.
+// boundJSON holds one item with a one-item nested array c and a one-item
+// array m, for [] written before or after #$i and @$x.
 const boundJSON = `{"w1":[{"c":[[1,2]],"m":[3]}]}`
 
 // exprCase evaluates expr against data, a JSON document ("" for no input).
@@ -140,6 +140,7 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	// sequence in a $map result still collapses when read.
 	{expr: `$map([{"a":1},{"b":1}], $keys)[0]`, want: `["a"]`},
 	{expr: `$map($map([{"a":1},{"b":1}], $keys), function($v){$v})[0]`, want: `["a"]`},
+	{expr: `($m := $map([{"a":1},{"b":1}], $keys); $m[0])`, want: `["a"]`},
 	{expr: `x.$distinct(a.b)[0]`, data: `{"x":{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}}`, want: `1`},
 	{expr: `$distinct(a.b)#$i[0]`, data: `{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}`, want: `1`},
 	{expr: `$distinct(a.b)[0]#$i`, data: `{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}`, want: `1`},
