@@ -1117,6 +1117,10 @@ func bindingNames(nodes []*parser.Node, env *Environment) []string {
 		for _, step := range n.Steps {
 			walk(step)
 		}
+		// A block a % reaches into carries its last expression's bindings.
+		if n.Type == parser.NodeBlock && n.TupleResult {
+			walk(n.Expressions[len(n.Expressions)-1])
+		}
 		// jsonata-js adds a step's focus to the tuple, then its index and
 		// ancestor.
 		var ancestor string
