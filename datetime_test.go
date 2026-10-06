@@ -8,6 +8,8 @@ import (
 // fromMillisCases format 2018-04-01T13:45:30.123Z, a Sunday in ISO week 13.
 var fromMillisCases = []exprCase{
 	{expr: `$fromMillis(1522590330123, "[Y,2]")`, want: `"18"`},
+	// "NaN" in jsonata-js (README known difference #18).
+	{expr: `$fromMillis(1522590330123, "[Y,2-]")`, want: `"18"`},
 	{expr: `$fromMillis(1522590330123, "[Y,2-2]")`, want: `"18"`},
 	{expr: `$fromMillis(1522590330123, "[Y,0]")`, want: `"2018"`},
 	{expr: `$fromMillis(1522540800000, "[D,+3]")`, want: `"001"`},
@@ -206,6 +208,11 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("2018-04-01T10:00+05:30", "[Y]-[M]-[D]T[H]:[m][Z01:01;c]")`, want: `1522557000000`},
 	{expr: `$toMillis("2018-04-01T10:00+05", "[Y]-[M]-[D]T[H]:[m][Z01;01]")`, want: `1522558800000`},
 	{expr: `$toMillis("2018-04-01T10:00+05;30", "[Y]-[M]-[D]T[H]:[m][Z01;01]")`, want: undefined},
+	{expr: `$toMillis("2018-04-01T10:00+0530", "[Y]-[M]-[D]T[H]:[m][Z01;01]")`, want: `1522557000000`},
+	{expr: `$toMillis("2018-04-01T10:00GMT+05;30", "[Y]-[M]-[D]T[H]:[m][z01;01]")`, want: undefined},
+	{expr: `$toMillis("2018-04-01T10:00+05:30", "[Y]-[M]-[D]T[H]:[m][Z01:01;01]")`, want: `1522557000000`},
+	// Year 2019 where jsonata-js keeps 2018 (README known difference #17).
+	{expr: `$toMillis("2018-366", "[Y]-[d]")`, want: `1546300800000`},
 	{
 		expr: `$toMillis("10:30:05.5` + strings.Repeat("0", 70) + `", "[H01]:[m01]:[s01].[f]` + strings.Repeat("0", 70) + `") % 86400000`,
 		want: `37805500`,
