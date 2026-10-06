@@ -14,7 +14,7 @@ import "slices"
 //
 // gnata keeps a step's predicates as subscript nodes around it, where
 // jsonata-js stores them on the step. A step's own slots therefore live on
-// its base (see stepBase), while subscripts and paths report what
+// its base (see StepBase), while subscripts and paths report what
 // jsonata-js's equivalent node would (see exprSlots).
 
 // errNoParent is jsonata-js's S0217 for a % whose step cannot be derived.
@@ -78,14 +78,14 @@ func seekParent(node *Node, slot *Slot) error {
 // passes its own slots on: jsonata-js drops those of any other first step.
 func resolvePathAncestry(path *Node) error {
 	var seeking []*Slot
-	switch first := stepBase(path.Steps[0]); first.Type {
+	switch first := StepBase(path.Steps[0]); first.Type {
 	case NodeParent:
 		seeking = []*Slot{first.Slot}
 	case NodeSort:
 		seeking = slices.Clone(first.SeekingParent)
 	}
 	for i := 1; i < len(path.Steps); i++ {
-		base := stepBase(path.Steps[i])
+		base := StepBase(path.Steps[i])
 		var err error
 		if seeking, err = climbSteps(path.Steps[:i], ownSlots(base), seeking); err != nil {
 			return err
@@ -107,7 +107,7 @@ func climbSteps(steps []*Node, slots, seeking []*Slot) ([]*Slot, error) {
 			}
 			step := steps[i]
 			i--
-			for i >= 0 && stepBase(step).Focus != "" && stepBase(steps[i]).Focus != "" {
+			for i >= 0 && StepBase(step).Focus != "" && StepBase(steps[i]).Focus != "" {
 				step = steps[i]
 				i--
 			}
@@ -128,7 +128,7 @@ func resolvePredicateAncestry(subscript *Node) error {
 	if len(slots) == 0 {
 		return nil
 	}
-	base := stepBase(subscript.Left)
+	base := StepBase(subscript.Left)
 	for _, slot := range slots {
 		if slot.Level != 1 {
 			slot.Level--
@@ -167,7 +167,7 @@ func resolveSortAncestry(sort *Node) error {
 // stepBase returns the step a subscript chain applies to, looking through a
 // path to its last step. processSubscript records each subscript's, so a
 // long chain is not rescanned at every link.
-func stepBase(node *Node) *Node {
+func StepBase(node *Node) *Node {
 	for {
 		switch {
 		case node.base != nil:
@@ -202,7 +202,7 @@ func exprSlots(node *Node) []*Slot {
 	if isPathLike(node) {
 		return pathSlots(node)
 	}
-	return ownSlots(stepBase(node))
+	return ownSlots(StepBase(node))
 }
 
 // predicateSlots returns the slots a predicate passes to its step:

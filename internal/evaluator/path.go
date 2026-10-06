@@ -201,32 +201,21 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 	return keepSingletonArray(result), nil
 }
 
-// inputTuples returns the tuples a path starts from. A first step binding
-// an ancestor binds each item of an array input, as jsonata-js does, except
-// the root array it wraps as one item (see markRootContext); other steps
-// see the input whole, mapping over it themselves.
+// inputTuples returns the tuples a tuple path starts from. As in jsonata-js
+// evaluatePath, each item of an array input is a tuple unless the first
+// step is a variable, or the input is the root array jsonata-js wraps as
+// one item (see markRootContext).
 func inputTuples(node *parser.Node, input any, env *Environment) []pathCtx {
-	first := stepBase(node.Steps[0])
-	items, ok := input.([]any)
-	if first.Ancestor == nil || !ok || first.RootContext && isRootInput(items, env) {
+	first := parser.StepBase(node.Steps[0])
+	items, ok := AsArray(input)
+	if !ok || first.Type == parser.NodeVariable || first.RootContext && isRootInput(items, env) {
 		return []pathCtx{{value: input, env: env}}
 	}
-	return splitTuples(items, env)
-}
-
-// splitTuples returns one tuple per item.
-func splitTuples(items []any, env *Environment) []pathCtx {
 	ctxs := make([]pathCtx, len(items))
 	for i, item := range items {
 		ctxs[i] = pathCtx{value: item, env: env}
 	}
 	return ctxs
-}
-
-// stepBase returns the step a subscript chain applies to.
-func stepBase(step *parser.Node) *parser.Node {
-	base, _ := splitTupleStages(step)
-	return base
 }
 
 // streamPos says where a walked path sits relative to the tuple stream.
@@ -735,16 +724,7 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 		}
 		return tuples, nil, true, nil
 	case node.Type == parser.NodePath && node.TupleResult && node.Group == nil:
-		ctxs := []pathCtx{{value: val, env: env}}
-		if node.Steps[0].Type != parser.NodeVariable {
-			switch items := val.(type) {
-			case []any:
-				ctxs = splitTuples(items, env)
-			case ConsArray:
-				ctxs = splitTuples(items, env)
-			}
-		}
-		tuples, _, _, err := walkPathTuple(node, ctxs, env, streamOwn)
+		tuples, _, _, err := walkPathTuple(node, inputTuples(node, val, env), env, streamOwn)
 		return tuples, nil, true, err
 	}
 	result, err := Eval(node, val, env)

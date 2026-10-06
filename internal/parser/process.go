@@ -149,7 +149,7 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 		}
 		// A quoted step, or one with predicates, is a field name.
 		for _, step := range steps {
-			if base := stepBase(step); base.Type == NodeString {
+			if base := StepBase(step); base.Type == NodeString {
 				base.Type = NodeName
 			}
 		}
@@ -232,7 +232,7 @@ func processSubscript(node *Node) (*Node, error) {
 		path.Steps[last] = node
 		node.PathStage = last > 0
 	}
-	node.base = stepBase(node.Left)
+	node.base = StepBase(node.Left)
 	if err := resolvePredicateAncestry(node); err != nil {
 		return nil, err
 	}
@@ -499,13 +499,12 @@ func ParseAndProcess(src string) (*Node, error) {
 	return ast, nil
 }
 
-// markRootContext flags the wildcard and ancestor steps that start a path
-// evaluated against the expression's root input. jsonata-js wraps a root
-// array input, so such a step sees the array as one item, while later steps
-// and $ see its items. It runs once on the whole expression. With
-// ancestors false, as under a path's first step, which sees the root
-// array's items, it flags only wildcards.
-func markRootContext(node *Node, ancestors bool) {
+// markRootContext flags the steps that start a path evaluated against the
+// expression's root input. jsonata-js wraps a root array input, so such a
+// step sees the array as one item, while later steps and $ see its items.
+// It runs once on the whole expression. With root false, as under a path's
+// first step, which sees the root array's items, it flags only wildcards.
+func markRootContext(node *Node, root bool) {
 	if node == nil {
 		return
 	}
@@ -513,8 +512,8 @@ func markRootContext(node *Node, ancestors bool) {
 	case NodePath:
 		if len(node.Steps) > 0 {
 			first := node.Steps[0]
-			if base := stepBase(first); ancestors && base.Ancestor != nil {
-				base.RootContext = true
+			if root {
+				StepBase(first).RootContext = true
 			}
 			if first.Type == NodeWildcard {
 				first.RootContext = true
@@ -524,36 +523,36 @@ func markRootContext(node *Node, ancestors bool) {
 		}
 	case NodeBlock:
 		for _, expr := range node.Expressions {
-			markRootContext(expr, ancestors)
+			markRootContext(expr, root)
 		}
 	case NodeUnary:
-		markRootContext(node.Expression, ancestors)
+		markRootContext(node.Expression, root)
 		for _, expr := range node.Expressions {
-			markRootContext(expr, ancestors)
+			markRootContext(expr, root)
 		}
 		for _, expr := range node.LHS {
-			markRootContext(expr, ancestors)
+			markRootContext(expr, root)
 		}
 	case NodeBinary, NodeApply:
-		markRootContext(node.Left, ancestors)
+		markRootContext(node.Left, root)
 		if node.Value != "[" {
-			markRootContext(node.Right, ancestors)
+			markRootContext(node.Right, root)
 		}
 	case NodeCondition:
-		markRootContext(node.Condition, ancestors)
-		markRootContext(node.Then, ancestors)
-		markRootContext(node.Else, ancestors)
+		markRootContext(node.Condition, root)
+		markRootContext(node.Then, root)
+		markRootContext(node.Else, root)
 	case NodeBind:
-		markRootContext(node.Right, ancestors)
+		markRootContext(node.Right, root)
 	case NodeFunction, NodePartial:
 		for _, arg := range node.Arguments {
-			markRootContext(arg, ancestors)
+			markRootContext(arg, root)
 		}
 	case NodeLambda:
 		// A lambda body runs against the input where the lambda is defined.
-		markRootContext(node.Body, ancestors)
+		markRootContext(node.Body, root)
 	case NodeSort:
-		markRootContext(node.Left, ancestors)
+		markRootContext(node.Left, root)
 	}
 }
 
@@ -576,7 +575,7 @@ func wrapBoundStep(node *Node) *Node {
 		node.Left = node.Left.Steps[0]
 		return wrapStep(node, seeking)
 	case node.Type == NodeBinary && node.Value == "[" && len(predicateSlots(node.Right)) > 0 &&
-		isPathLike(node) && stepBase(node).Ancestor != nil:
+		isPathLike(node) && StepBase(node).Ancestor != nil:
 		return wrapStep(node, pathSlots(node))
 	case node.Index != "" || node.Type == NodeName && node.Focus != "":
 		return wrapStep(node, pathSlots(node))

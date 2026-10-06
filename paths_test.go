@@ -143,6 +143,8 @@ var bindingOperatorCases = []exprCase{
 	{expr: `$map([1], $keys)#$i`, want: undefined},
 	{expr: `$map([1], $keys)#$i{"x":$i}`, want: `{}`},
 	{expr: `a@$v[$v.b>1].$v.c`, data: pairsJSON, want: `4`},
+	{expr: `$.(a#$i.$i)`, data: `[[{"a":[1,2]},{"a":[3]}],[{"a":[4]}]]`, want: `[0,1,0,0]`},
+	{expr: `a#$i.$i`, data: `[[{"a":[1,2]},{"a":[3]}],[{"a":[4]}]]`, want: `[0,1,2,3]`},
 	{expr: `$^($)#$i.{"v":$,"i":$i}`, data: `[3,1,4]`, want: `[{"i":0,"v":1},{"i":1,"v":3},{"i":2,"v":4}]`},
 	{expr: `$^(>$).($)#$j.$j`, data: `[3,1,4]`, want: `[0,0,0]`},
 	{expr: `($v := [3,1]; $v^($)#$i.{"v":$,"i":$i})`, want: `[{"i":0,"v":1},{"i":1,"v":3}]`},
