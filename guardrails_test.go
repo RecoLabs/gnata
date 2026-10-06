@@ -320,6 +320,7 @@ func TestWithSequence_FastPaths(t *testing.T) {
 		{desc: "aggregate crossing an array", expr: "$count(a.b)", code: "D2015"},
 		{desc: "existence crossing an array", expr: "$exists(a.b)", code: "D2015"},
 		{desc: "boolean crossing an array", expr: "a.b and true", code: "D2015"},
+		{desc: "binding", expr: "$count(x.a#$i)", code: "D2015"},
 		{desc: "keys, whose result is bounded", expr: "$keys(o)", code: "D2015"},
 		{desc: "boolean of keys", expr: "x.n and $keys(o)", code: "D2015"},
 	}

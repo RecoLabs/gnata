@@ -369,7 +369,7 @@ func collectPaths(node *Node) ([]string, bool) {
 	switch node.Type {
 	case NodeName:
 		// Simple field name — GJSON path is just the name.
-		if len(node.Stages) > 0 || node.Group != nil || node.Focus != "" {
+		if len(node.Stages) > 0 || node.Group != nil || node.Focus != "" || node.Index != "" {
 			return nil, false
 		}
 		escaped, ok := gjsonEscapeName(node.Value)
@@ -379,13 +379,17 @@ func collectPaths(node *Node) ([]string, bool) {
 		return []string{escaped}, true
 
 	case NodePath:
-		// All steps must be simple name nodes with no predicates/stages.
+		// All steps must be simple name nodes with no predicates/stages,
+		// and neither a step nor the path may bind or group a tuple stream.
+		if node.Group != nil {
+			return nil, false
+		}
 		parts := make([]string, 0, len(node.Steps))
 		for _, step := range node.Steps {
 			if step.Type != NodeName {
 				return nil, false
 			}
-			if len(step.Stages) > 0 || step.Group != nil || step.Focus != "" {
+			if len(step.Stages) > 0 || step.Group != nil || step.Focus != "" || step.Index != "" {
 				return nil, false
 			}
 			if step.KeepArray || step.ConsArray {

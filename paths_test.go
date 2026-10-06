@@ -454,3 +454,32 @@ func TestNumericFieldNamesBytes(t *testing.T) {
 		})
 	}
 }
+
+// A path that binds or groups a tuple stream is left to the evaluator, which
+// EvalBytes then matches.
+func TestTuplePathsBytes(t *testing.T) {
+	testCases := []struct {
+		expr string
+		data string
+		want string
+	}{
+		{expr: "$type(a#$j)", data: `{"a":[null]}`, want: `"null"`},
+		{expr: "a#$j", data: `{"a":[[1,2]]}`, want: `[1,2]`},
+		{expr: `P{"k":$}`, data: `{"P":[1,2]}`, want: `{"k":[1,2]}`},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := e.EvalBytes(context.Background(), json.RawMessage(tC.data))
+			if err != nil {
+				t.Fatalf("eval bytes: %v", err)
+			}
+			if r := render(t, got); r != tC.want {
+				t.Fatalf("got %s, want %s", r, tC.want)
+			}
+		})
+	}
+}
