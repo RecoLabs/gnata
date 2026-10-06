@@ -218,7 +218,7 @@ func (s *Signature) fillsInOrder(args []any, plain bool) bool {
 	}
 	for i, arg := range args {
 		param := s.params[i]
-		if param.lazy || param.symbols&argSymbolBits(arg) == 0 || plain && (arg == nil || param.array) {
+		if param.lazy || param.symbols&symbolBit(sigSymbol(arg)) == 0 || plain && (arg == nil || param.array) {
 			return false
 		}
 	}
@@ -413,20 +413,9 @@ func (s *Signature) mismatchError(args []any) error {
 func argSymbols(args []any, buf []uint8) []uint8 {
 	symbols := scratch(buf, len(args))
 	for i, arg := range args {
-		symbols[i] = argSymbolBits(arg)
+		symbols[i] = symbolBit(sigSymbol(arg))
 	}
 	return symbols
-}
-
-// argSymbolBits returns the bits of the symbols arg matches: sigSymbol's,
-// and for a plain map shaped like a regex, which may as well be data, the
-// object symbol too.
-func argSymbolBits(arg any) uint8 {
-	bits := symbolBit(sigSymbol(arg))
-	if m, isMap := arg.(map[string]any); isMap && isRegexValue(m) {
-		bits |= symbolBit('o')
-	}
-	return bits
 }
 
 // fits reports whether matching nArgs arguments needs a table within
@@ -452,11 +441,37 @@ func (s *Signature) match(args []any, counts []int) ([]int, bool) {
 	}
 	var symbolsBuf [smallMatch]uint8
 	symbols := argSymbols(args, symbolsBuf[:])
+	if matched, ok := s.matchSymbols(symbols, counts); ok {
+		return matched, true
+	}
+	// A plain map shaped like a regex may be data: when the arguments do
+	// not match as a regex, try it as an object too.
+	if !widenRegexShaped(args, symbols) {
+		return nil, false
+	}
+	return s.matchSymbols(symbols, counts)
+}
+
+// matchSymbols is match for the arguments' symbols.
+func (s *Signature) matchSymbols(symbols []uint8, counts []int) ([]int, bool) {
 	if !s.variadic {
 		return s.matchFixed(symbols, counts)
 	}
 	counts, _, ok := s.solve(symbols, len(s.params), true, counts)
 	return counts, ok
+}
+
+// widenRegexShaped adds the object symbol to the symbols of the plain maps
+// in args shaped like a regex, reporting whether there were any.
+func widenRegexShaped(args []any, symbols []uint8) bool {
+	widened := false
+	for i, arg := range args {
+		if m, isMap := arg.(map[string]any); isMap && isRegexValue(m) {
+			symbols[i] |= symbolBit('o')
+			widened = true
+		}
+	}
+	return widened
 }
 
 // solve matches the arguments with the given symbols against the first

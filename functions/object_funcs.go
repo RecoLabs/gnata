@@ -223,7 +223,9 @@ func makeFnSift(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			return nil, nil
 		}
 		if !evaluator.IsMap(objVal) {
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$sift: argument 1 must be an object"}
+			// Validation rejects anything else; called unvalidated, through
+			// a partial application, jsonata-js finds no keys in it.
+			return nil, nil
 		}
 
 		result := evaluator.NewOrderedMap()
@@ -262,7 +264,9 @@ func makeFnEach(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			return nil, nil
 		}
 		if !evaluator.IsMap(objVal) {
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$each: argument 1 must be an object"}
+			// Validation rejects anything else; called unvalidated, through
+			// a partial application, jsonata-js finds no keys in it.
+			return nil, nil
 		}
 
 		keys := evaluator.MapKeys(objVal)
