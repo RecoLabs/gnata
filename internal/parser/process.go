@@ -128,6 +128,9 @@ func collectPathSteps(node *Node) ([]*Node, error) {
 		if processed.Type == NodePath {
 			return processed.Steps, nil
 		}
+		if err := checkLiteralStep(processed); err != nil {
+			return nil, err
+		}
 		promoteQuotedPathNames(processed)
 		if processed.Type == NodeString {
 			processed = &Node{Type: NodeName, Value: processed.Value, Pos: processed.Pos}
@@ -158,6 +161,20 @@ func collectPathSteps(node *Node) ([]*Node, error) {
 	}
 
 	return append(leftSteps, rightSteps...), nil
+}
+
+// checkLiteralStep rejects a number, boolean or null literal used as a path
+// step, predicates included, at compile time as jsonata-js does, so the error
+// is raised even when the path is never evaluated.
+func checkLiteralStep(step *Node) error {
+	for step.Type == NodeBinary && step.Value == "[" && step.Left != nil {
+		step = step.Left
+	}
+	if step.Type == NodeNumber || step.Type == NodeValue {
+		return parseError("S0213", step.Value,
+			"the literal value "+step.Value+" cannot be used as a step within a path expression")
+	}
+	return nil
 }
 
 func promoteQuotedPathNames(n *Node) {
