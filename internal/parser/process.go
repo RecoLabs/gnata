@@ -116,7 +116,7 @@ func joinGroups(a, b *GroupExpr) (*GroupExpr, error) {
 // processDotBinary flattens a binary(".") node into a path node.
 func processDotBinary(node *Node) (*Node, error) {
 	// Collect all steps from nested dots.
-	steps, group, err := collectPathSteps(node)
+	steps, group, err := collectPathSteps(node, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -148,10 +148,12 @@ func processDotBinary(node *Node) (*Node, error) {
 	return path, nil
 }
 
-// collectPathSteps recursively collects steps from binary(".") nodes, with
-// the path's group: one on a dot, or on a leading step jsonata-js makes a
-// path (as in a{k: v}.c), which then groups the whole path's result.
-func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
+// collectPathSteps recursively appends the steps of binary(".") nodes to
+// steps, returning the path's group: one on a dot, or on a leading step
+// jsonata-js makes a path (as in a{k: v}.c), which then groups the whole
+// path's result. Dots nest to the right, so appending to one slice keeps a
+// long path linear.
+func collectPathSteps(node *Node, steps []*Node) ([]*Node, *GroupExpr, error) {
 	if node.Type != NodeBinary || node.Value != "." {
 		// Leaf step — process it.
 		processed, err := ProcessAST(node)
@@ -160,24 +162,24 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 		}
 		// If the processed node is itself a path, as a wrapped step is,
 		// splice its steps.
-		steps, group := []*Node{processed}, takePathGroup(processed)
+		leaf, group := []*Node{processed}, takePathGroup(processed)
 		if processed.Type == NodePath {
-			steps = processed.Steps
+			leaf = processed.Steps
 		}
 		// A quoted step, or one with predicates, is a field name.
-		for _, step := range steps {
+		for _, step := range leaf {
 			if base := StepBase(step); base.Type == NodeString {
 				base.Type = NodeName
 			}
 		}
-		return steps, group, nil
+		return append(steps, leaf...), group, nil
 	}
 
-	steps, group, err := collectPathSteps(node.Left)
+	steps, group, err := collectPathSteps(node.Left, steps)
 	if err != nil {
 		return nil, nil, err
 	}
-	rightSteps, rightGroup, err := collectPathSteps(node.Right)
+	steps, rightGroup, err := collectPathSteps(node.Right, steps)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -196,7 +198,6 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 	// The # and @ infix operators set Index/Focus on the binary "." node
 	// itself after a group, as in a.b{k: v}#$i. jsonata-js binds them on
 	// the path's last step, a #$var after its predicates.
-	steps = append(steps, rightSteps...)
 	last := steps[len(steps)-1]
 	if node.Index != "" {
 		last.Index = node.Index

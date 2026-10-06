@@ -11,9 +11,10 @@ import (
 )
 
 // longChainCases guard against compile or evaluation time growing
-// quadratically with the length of a chain of sorts, subscripts or
-// operators.
+// quadratically with the length of a path or of a chain of sorts,
+// subscripts or operators.
 var longChainCases = []exprCase{
+	{expr: `a` + strings.Repeat(`.a`, 20_000), data: `{"a":{"a":1}}`, want: undefined},
 	{expr: `a` + strings.Repeat(`[0]`, 20_000), data: `{"a":[{"c":2},{"c":1}]}`, want: `{"c":2}`},
 	{expr: `a[]` + strings.Repeat(`[0]`, 20_000), data: `{"a":[{"c":2},{"c":1}]}`, want: `[{"c":2}]`},
 	{expr: `a` + strings.Repeat(`[%.c]`, 20_000) + `.x`, data: `{"a":{"x":1},"c":true}`, want: `1`},
