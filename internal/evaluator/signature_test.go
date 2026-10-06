@@ -1,8 +1,10 @@
 package evaluator
 
 import (
+	"encoding/json"
 	"errors"
 	"math/rand/v2"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -140,5 +142,88 @@ func TestMatchFixedAgreesWithSolve(t *testing.T) {
 		if fixedOK != solvedOK || fixedOK && !slices.Equal(fixed, solved) {
 			t.Fatalf("<%s> on %v: matchFixed %v %v, solve %v %v", sig.String(), symbols, fixed, fixedOK, solved, solvedOK)
 		}
+	}
+}
+
+// randomCallValues are argument and focus values for the randomized tests:
+// one of each signature symbol, plus a regex and other value representations.
+var randomCallValues = []any{
+	"s", 1.0, json.Number("2"), true, nil, Null,
+	[]any{1.0},
+	map[string]any{"a": 1.0},
+	NewOrderedMap(),
+	map[string]any{"pattern": "a", "flags": ""},
+	BuiltinFunction(func([]any, any) (any, error) { return nil, nil }),
+}
+
+// randomSig returns a random signature of up to 4 parameters from types,
+// each followed by up to two of modifiers.
+func randomSig(rng *rand.Rand, types, modifiers string) string {
+	var sig strings.Builder
+	for range 1 + rng.IntN(4) {
+		if rng.IntN(8) == 0 {
+			sig.WriteString("(sn)")
+		} else {
+			sig.WriteByte(types[rng.IntN(len(types))])
+		}
+		for range rng.IntN(3) {
+			sig.WriteByte(modifiers[rng.IntN(len(modifiers))])
+		}
+	}
+	return sig.String()
+}
+
+// randomArgs returns up to maxArgs random values from randomCallValues.
+func randomArgs(rng *rand.Rand, maxArgs int) []any {
+	args := make([]any, rng.IntN(maxArgs+1))
+	for i := range args {
+		args[i] = randomCallValues[rng.IntN(len(randomCallValues))]
+	}
+	return args
+}
+
+// sameValue is DeepEqual, with functions, which DeepEqual never finds
+// equal, compared by identity.
+func sameValue(a, b any) bool {
+	if aa, isArray := a.([]any); isArray {
+		ba, isArray := b.([]any)
+		return isArray && slices.EqualFunc(aa, ba, sameValue)
+	}
+	if fa, isFunc := a.(BuiltinFunction); isFunc {
+		fb, isFunc := b.(BuiltinFunction)
+		return isFunc && reflect.ValueOf(fa).Pointer() == reflect.ValueOf(fb).Pointer()
+	}
+	return DeepEqual(a, b)
+}
+
+// Inject's and Validate's shortcuts must give what matching gives.
+func TestSignatureShortcutsAgreeWithMatching(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	compared := 0
+	for range 50_000 {
+		sig := randomSig(rng, "snbaxjfol", "?-+")
+		compiled, err := compileSig(sig)
+		if err != nil {
+			continue
+		}
+		compared++
+		args := randomArgs(rng, 4)
+		focus := randomCallValues[rng.IntN(len(randomCallValues))]
+		check := func(name string, got, want []any, gotErr, wantErr error) {
+			t.Helper()
+			if (gotErr == nil) != (wantErr == nil) || gotErr != nil && gotErr.Error() != wantErr.Error() ||
+				!slices.EqualFunc(got, want, sameValue) {
+				t.Fatalf("<%s> %s on %v with focus %v: %v %v, matching gives %v %v", sig, name, args, focus, got, gotErr, want, wantErr)
+			}
+		}
+		got, gotErr := compiled.Inject(args, focus)
+		want, wantErr := compiled.injectMatched(args, focus)
+		check("Inject", got, want, gotErr, wantErr)
+		got, gotErr = compiled.Validate(args, focus)
+		want, wantErr = compiled.validateMatched(args, focus)
+		check("Validate", got, want, gotErr, wantErr)
+	}
+	if compared < 10_000 {
+		t.Fatalf("compared only %d signatures", compared)
 	}
 }

@@ -61,9 +61,10 @@ func checkCallArgs(fn any, args []any, focus any) ([]any, error) {
 //
 // https://github.com/jsonata-js/jsonata/blob/v2.2.2/src/signature.js
 type Signature struct {
-	params     []sigParam
-	variadic   bool // some parameter is '+'
-	hasContext bool // some parameter is '-'
+	params      []sigParam
+	variadic    bool // some parameter is '+'
+	hasContext  bool // some parameter is '-'
+	zeroMatches bool // a call without arguments matches: every parameter is optional
 }
 
 type sigParam struct {
@@ -93,9 +94,10 @@ func compileSignature(specs []parser.ParamSpec) *Signature {
 		}
 	}
 	return &Signature{
-		params:     params,
-		variadic:   slices.ContainsFunc(params, func(p sigParam) bool { return p.variadic }),
-		hasContext: slices.ContainsFunc(params, func(p sigParam) bool { return p.context }),
+		params:      params,
+		variadic:    slices.ContainsFunc(params, func(p sigParam) bool { return p.variadic }),
+		hasContext:  slices.ContainsFunc(params, func(p sigParam) bool { return p.context }),
+		zeroMatches: !slices.ContainsFunc(params, func(p sigParam) bool { return !p.optional }),
 	}
 }
 
@@ -159,36 +161,73 @@ func scratch[T any](buf []T, n int) []T {
 // missing or when args do not match the signature, leaving the function to
 // report the mismatch. It raises T0411 when the focus has the wrong type.
 func (s *Signature) Inject(args []any, focus any) ([]any, error) {
-	if !s.hasContext || !s.fits(len(args)) {
+	if !s.hasContext || !s.fits(len(args)) || s.fillsInOrder(args, false) {
 		return args, nil
 	}
+	return s.injectMatched(args, focus)
+}
+
+// injectMatched is Inject without its shortcut, matching args against the
+// signature.
+func (s *Signature) injectMatched(args []any, focus any) ([]any, error) {
 	var countsBuf [smallMatch]int
 	counts, ok := s.match(args, scratch(countsBuf[:], len(s.params)))
 	if !ok {
 		return args, nil
 	}
-	var injected []any
+	missing := 0
+	for i, param := range s.params {
+		if counts[i] == 0 && param.context {
+			missing++
+		}
+	}
+	if missing == 0 {
+		return args, nil
+	}
+	injected := make([]any, 0, len(args)+missing)
 	argIndex := 0
 	for i, param := range s.params {
 		if counts[i] == 0 && param.context {
 			if err := checkFocus(param, focus, argIndex); err != nil {
 				return nil, err
 			}
-			if injected == nil {
-				injected = copyPrefix(args, argIndex)
-			}
 			injected = append(injected, focus)
 			continue
 		}
-		if injected != nil {
-			injected = append(injected, args[argIndex:argIndex+counts[i]]...)
-		}
+		injected = append(injected, args[argIndex:argIndex+counts[i]]...)
 		argIndex += counts[i]
 	}
-	if injected == nil {
-		return args, nil
-	}
 	return injected, nil
+}
+
+// fillsInOrder reports whether args, at most one per parameter, match the
+// parameters in order and every parameter after them is optional and not
+// left to the context. Taking each argument greedily, the jsonata-js regex
+// then matches them that way, so neither Inject nor Validate changes them.
+// A lazy parameter would rather take nothing, so none may take one here;
+// with plain set, no argument may be undefined or go to an 'a' parameter
+// either, which Validate would coerce. A signature without '+' with as many
+// arguments as parameters also needs no context: each parameter takes one,
+// or args do not match.
+func (s *Signature) fillsInOrder(args []any, plain bool) bool {
+	if s.variadic || len(args) > len(s.params) {
+		return !s.variadic && !plain
+	}
+	if len(args) == len(s.params) && !plain {
+		return true
+	}
+	for i, arg := range args {
+		param := s.params[i]
+		if param.lazy || param.symbols&symbolBit(sigSymbol(arg)) == 0 || plain && (arg == nil || param.array) {
+			return false
+		}
+	}
+	for _, param := range s.params[len(args):] {
+		if param.context || !param.optional {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate returns the arguments jsonata-js's signature.validate passes to
@@ -199,9 +238,15 @@ func (s *Signature) Inject(args []any, focus any) ([]any, error) {
 // the focus has the wrong type, and T0412 when an array has the wrong
 // content type.
 func (s *Signature) Validate(args []any, focus any) ([]any, error) {
-	if !s.fits(len(args)) {
+	if !s.fits(len(args)) || s.fillsInOrder(args, true) {
 		return args, nil
 	}
+	return s.validateMatched(args, focus)
+}
+
+// validateMatched is Validate without its shortcut, matching args against
+// the signature.
+func (s *Signature) validateMatched(args []any, focus any) ([]any, error) {
 	var countsBuf [smallMatch]int
 	counts, ok := s.match(args, scratch(countsBuf[:], len(s.params)))
 	if !ok {
@@ -378,6 +423,13 @@ func (s *Signature) fits(nArgs int) bool {
 // jsonata-js regex does: each parameter takes as many arguments as it can
 // (as few, for a lazy one) while the rest still match.
 func (s *Signature) match(args []any, counts []int) ([]int, bool) {
+	if len(args) == 0 {
+		if !s.zeroMatches {
+			return nil, false
+		}
+		clear(counts)
+		return counts, true
+	}
 	var symbolsBuf [smallMatch]uint8
 	symbols := argSymbols(args, symbolsBuf[:])
 	if !s.variadic {

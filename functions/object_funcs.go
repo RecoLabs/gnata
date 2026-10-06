@@ -15,31 +15,66 @@ func fnKeys(args []any, _ any) (any, error) {
 		return nil, nil
 	}
 	var keys []string
-	seen := make(map[string]bool)
 	switch v := args[0].(type) {
 	case *evaluator.OrderedMap:
 		keys = v.Keys()
 	case map[string]any:
 		keys = sortedKeyStrings(v)
-	case []any:
-		for _, item := range v {
-			if evaluator.IsMap(item) {
-				for _, k := range evaluator.MapKeys(item) {
-					if !seen[k] {
-						seen[k] = true
-						keys = append(keys, k)
-					}
-				}
-			}
-		}
 	default:
-		return nil, nil
+		items, isArray := evaluator.AsArray(v)
+		if !isArray {
+			return nil, nil
+		}
+		keys = arrayKeys(items)
 	}
 	seq := evaluator.CreateSequence()
 	for _, k := range keys {
 		seq.Values = append(seq.Values, k)
 	}
 	return seq, nil
+}
+
+// arrayKeys returns the keys of the objects in items and, as in jsonata-js,
+// in arrays nested in it, each once in the order first seen. A work stack
+// instead of recursion keeps deeply nested input off the Go stack, and an
+// array met again adds no keys, so it is not walked twice: shared nested
+// arrays cannot make the walk exponential, nor cyclic ones endless.
+func arrayKeys(items []any) []string {
+	var keys []string
+	seen := make(map[string]bool)
+	type arrayID struct {
+		first *any
+		n     int
+	}
+	walked := make(map[arrayID]bool)
+	for pending := [][]any{items}; len(pending) > 0; {
+		top := pending[len(pending)-1]
+		if len(top) == 0 {
+			pending = pending[:len(pending)-1]
+			continue
+		}
+		item := top[0]
+		pending[len(pending)-1] = top[1:]
+		if nested, isArray := evaluator.AsArray(item); isArray {
+			if len(nested) > 0 {
+				if id := (arrayID{&nested[0], len(nested)}); !walked[id] {
+					walked[id] = true
+					pending = append(pending, nested)
+				}
+			}
+			continue
+		}
+		if !evaluator.IsMap(item) {
+			continue
+		}
+		for _, k := range evaluator.MapKeys(item) {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	return keys
 }
 
 func sortedKeyStrings(m map[string]any) []string {
