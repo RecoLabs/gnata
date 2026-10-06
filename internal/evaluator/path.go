@@ -262,9 +262,11 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		inStream := hasBindingStep && stepIdx > tupleStart
 		started = started || startsStream
 		// A first step over the wrapped root array runs once against it,
-		// and it and every later step see it unwrapped.
+		// and it and every later step see it unwrapped, except after a
+		// variable with an @$var focus: jsonata-js keeps the wrapped array
+		// as the context there.
 		rootStep := stepIdx == 0 && len(ctxs) == 1 && startsRootPath(step, ctxs[0].value, ctxs[0].env)
-		if rootStep {
+		if base := parser.StepBase(step); rootStep && (base.Type != parser.NodeVariable || base.Focus == "") {
 			ctxs[0].env = unwrapRoot(ctxs[0].env)
 		}
 

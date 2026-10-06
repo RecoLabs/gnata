@@ -449,6 +449,7 @@ var pathStepCases = []exprCase{
 	{expr: `{n:v}^(n)#$i.$i`, data: rootPairsJSON, want: `0`},
 	{expr: `{n:v}^(n)^(v)#$i.$i`, data: rootPairsJSON, want: `0`},
 	{expr: `n@$x.{"k":$}`, data: `[{"n":"p","v":1}]`, want: `{"k":{"n":"p","v":1}}`},
+	{expr: `$@$x.{"k":$}`, data: `[{"n":"p","v":1}]`, want: `{"k":[{"n":"p","v":1}]}`},
 	{expr: `1#$i`, want: `1`},
 	{expr: `1#$i{"k":$i}`, want: `{"k":0}`},
 	{expr: `a.true`, data: pairsJSON, code: "S0213"},
