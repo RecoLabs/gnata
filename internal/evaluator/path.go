@@ -469,9 +469,10 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 // this sort's terms see raw tuple objects (see rawTupleContext).
 func evalTupleSort(step *parser.Node, ctxs []pathCtx, env *Environment, state streamPos, raw tupleContext) ([]pathCtx, error) {
 	inStream := state == streamRunning
-	// Determine if we need to navigate via step.Left before sorting.
+	// A Left of $ sorts a running stream's tuples in place; anywhere else
+	// it navigates like any Left, so the input's items are sorted.
 	needsNavigation := step.Left != nil &&
-		step.Left.Type != parser.NodeVariable // bare NodeVar "" means sort-in-place
+		(!inStream || step.Left.Type != parser.NodeVariable || step.Left.Value != "")
 
 	var leftSort *parser.Node
 	var leftStages []tupleStage

@@ -128,6 +128,19 @@ func TestStaticParentErrors(t *testing.T) {
 }
 
 var bindingOperatorCases = []exprCase{
+	{expr: `a#$j{"k":$j}`, data: pairsJSON, want: `{"k":[0,1]}`},
+	{expr: `o#$j{"k":$j}`, data: pairsJSON, want: `{"k":0}`},
+	{expr: `a@$v{"k":$v.b}`, data: pairsJSON, want: `{"k":[1,3]}`},
+	{expr: `a^(>b)#$i{"k":$i}`, data: pairsJSON, want: `{"k":[0,1]}`},
+	{expr: `a[0]#$i{"k":$i}`, data: pairsJSON, want: `{"k":0}`},
+	{expr: `a#$i{"k":$i}[0]`, data: pairsJSON, want: `{"k":0}`},
+	{expr: `(a)#$i{"k":$i}[0]`, data: pairsJSON, want: `{"k":0}`},
+	{expr: `$map([1], $keys)#$i`, want: undefined},
+	{expr: `$map([1], $keys)#$i{"x":$i}`, want: `{}`},
+	{expr: `a@$v[$v.b>1].$v.c`, data: pairsJSON, want: `4`},
+	{expr: `$^($)#$i.{"v":$,"i":$i}`, data: `[3,1,4]`, want: `[{"i":0,"v":1},{"i":1,"v":3},{"i":2,"v":4}]`},
+	{expr: `$^(>$).($)#$j.$j`, data: `[3,1,4]`, want: `[0,0,0]`},
+	{expr: `($v := [3,1]; $v^($)#$i.{"v":$,"i":$i})`, want: `[{"i":0,"v":1},{"i":1,"v":3}]`},
 	{
 		expr: `Account.Order#$i.Product.{"i":$i, "n":Name}`, data: accountJSON,
 		want: `[{"i":0,"n":"Hat"},{"i":0,"n":"Cap"},{"i":1,"n":"Bag"}]`,

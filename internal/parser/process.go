@@ -11,8 +11,9 @@ import "slices"
 //   - Marks array-constructor steps as ConsArray (jsonata-js consarray).
 //   - Attaches a group on a path, or on anything jsonata-js makes a path,
 //     to the whole path: it applies after all its steps and sorts.
-//   - Flags sorts whose Left binds #$var, @$var or an ancestor (Tuple) and
-//     wraps them, with any subscripts, in a one-step path (see wrapBoundStep).
+//   - Wraps a step that binds outside a path, as in a#$i or a sort whose
+//     Left binds #$var, @$var or an ancestor (Tuple), with any subscripts,
+//     in a one-step path (see wrapBoundStep).
 //   - Resolves each % to the step whose input it reads (see ancestry.go).
 //   - Recursively processes all child nodes.
 func ProcessAST(node *Node) (*Node, error) {
@@ -25,17 +26,21 @@ func ProcessAST(node *Node) (*Node, error) {
 			return nil, err
 		}
 	}
+	processed, err := processNode(node)
+	if err != nil {
+		return nil, err
+	}
+	return wrapBoundStep(processed), nil
+}
 
+// processNode processes node's children by node type.
+func processNode(node *Node) (*Node, error) {
 	switch node.Type {
 	case NodeBinary:
 		if node.Value == "." {
 			return processDotBinary(node)
 		}
-		processed, err := processBinaryChildren(node)
-		if err != nil {
-			return nil, err
-		}
-		return wrapBoundStep(processed), nil
+		return processBinaryChildren(node)
 
 	case NodeUnary:
 		return processUnaryChildren(node)
@@ -59,11 +64,7 @@ func ProcessAST(node *Node) (*Node, error) {
 		return processTransformChildren(node)
 
 	case NodeSort:
-		processed, err := processSortChildren(node)
-		if err != nil {
-			return nil, err
-		}
-		return wrapBoundStep(processed), nil
+		return processSortChildren(node)
 
 	case NodePath:
 		return processPathChildren(node)
@@ -133,19 +134,21 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		// If the processed node is itself a path, splice its steps.
+		// If the processed node is itself a path, as a wrapped step is,
+		// splice its steps.
+		steps, group := []*Node{processed}, (*GroupExpr)(nil)
 		if processed.Type == NodePath {
-			return processed.Steps, processed.Group, nil
-		}
-		promoteQuotedPathNames(processed)
-		if processed.Type == NodeString {
-			processed.Type = NodeName
-		}
-		var group *GroupExpr
-		if processed.Group != nil && processed.Group.OnPath {
+			steps, group = processed.Steps, processed.Group
+		} else if processed.Group != nil && processed.Group.OnPath {
 			group, processed.Group = processed.Group, nil
 		}
-		return []*Node{processed}, group, nil
+		for _, step := range steps {
+			promoteQuotedPathNames(step)
+			if step.Type == NodeString {
+				step.Type = NodeName
+			}
+		}
+		return steps, group, nil
 	}
 
 	steps, group, err := collectPathSteps(node.Left)
@@ -566,14 +569,17 @@ func markRootContext(node *Node, ancestors bool) {
 }
 
 // wrapBoundStep wraps a step that only path evaluation can run, since it
-// tracks a tuple stream, in a one-step path (see wrapStep): a sort whose
-// Left binds #$var, @$var or an ancestor, as in a#$j^(b), or a subscripted
-// name that binds an ancestor, as in a[%.b] outside a path. A subscript on
-// a wrapped step, as in a#$j^(b)[0], filters that stream, so it replaces the
-// step in the path; a chain [p1][p2] extends the same path, keeping each
-// wrap O(1).
+// tracks a tuple stream, in a one-step path (see wrapStep): a step with a
+// #$var, as jsonata-js makes any step a path for it, a name with an @$var,
+// a sort whose Left binds #$var, @$var or an ancestor, as in a#$j^(b), or a
+// subscripted name that binds an ancestor, as in a[%.b] outside a path. A
+// subscript on a wrapped step, as in a#$j^(b)[0], filters that stream, so
+// it replaces the step in the path; a chain [p1][p2] extends the same path,
+// keeping each wrap O(1).
 func wrapBoundStep(node *Node) *Node {
 	switch {
+	case node.Type == NodePath:
+		return node
 	case node.Type == NodeSort && node.Tuple:
 		return wrapStep(node)
 	case node.Type == NodeBinary && node.Value == "[" && IsStepPath(node.Left):
@@ -584,6 +590,8 @@ func wrapBoundStep(node *Node) *Node {
 		return path
 	case node.Type == NodeBinary && node.Value == "[" && len(predicateSlots(node.Right)) > 0 &&
 		isPathLike(node) && stepBase(node).Ancestor != nil:
+		return wrapStep(node)
+	case node.Index != "" || node.Type == NodeName && node.Focus != "":
 		return wrapStep(node)
 	}
 	return node
