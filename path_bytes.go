@@ -74,10 +74,28 @@ func stepSingle(step string, r *gjson.Result) (any, bool) {
 // flattening one level of nested-array results into the output — matching
 // JSONata's array auto-mapping semantics.
 func stepArray(step string, arr []gjson.Result) (any, bool) {
+	return stepArrayItems(step, arr, true)
+}
+
+// stepArrayItems is stepArray. With walk, a nested array that is valid JSON
+// is walked once by stepNestedArray; any other nested array is split with
+// gjson, and so are the arrays inside it, without validating them again.
+func stepArrayItems(step string, arr []gjson.Result, walk bool) (any, bool) {
 	flat := make([]gjson.Result, 0, len(arr))
 	fieldFound := false
 	for i := range arr {
-		val, ok := stepSingle(step, &arr[i])
+		var (
+			val any
+			ok  bool
+		)
+		switch item := &arr[i]; {
+		case !item.IsArray():
+			val, ok = stepSingle(step, item)
+		case walk && validJSON(item.Raw):
+			val, ok = stepNestedArray(step, item.Raw)
+		default:
+			val, ok = stepArrayItems(step, item.Array(), false)
+		}
 		if !ok {
 			continue
 		}
