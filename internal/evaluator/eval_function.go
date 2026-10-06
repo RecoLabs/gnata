@@ -92,6 +92,7 @@ func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
 	return &Lambda{
 		Params:        params,
 		Body:          node.Body,
+		BodyHeight:    node.BodyHeight,
 		Closure:       env,
 		Thunk:         node.Thunk,
 		Sig:           sig,
@@ -196,11 +197,15 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 				}
 				args = coerced
 			}
-			counter.depth++
-			if counter.depth > counter.max {
-				counter.depth--
+			if counter.depth >= counter.max {
 				return nil, stackOverflowError(counter)
 			}
+			if int(counter.nesting)+int(f.BodyHeight) > maxCallNesting {
+				return nil, &JSONataError{Code: "U1001", Message: fmt.Sprintf(
+					"stack overflow error: nested calls exceed %d levels of expression nesting", maxCallNesting)}
+			}
+			counter.depth++
+			counter.nesting += int32(f.BodyHeight)
 			childEnv := NewChildEnvironment(f.Closure)
 			childEnv.calls = counter
 			for i, param := range f.Params {
@@ -216,6 +221,7 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 			}
 			result, err := Eval(f.Body, bodyFocus, childEnv)
 			counter.depth--
+			counter.nesting -= int32(f.BodyHeight)
 			if err != nil {
 				return nil, err
 			}

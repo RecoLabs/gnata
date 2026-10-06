@@ -432,14 +432,18 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 	if err := p.consume(lexer.TokenLBrace); err != nil {
 		return nil, err
 	}
+	outer := p.height
+	p.height = 0
 	body, err := p.expression(0)
 	if err != nil {
 		return nil, err
 	}
+	bodyHeight := p.height
+	p.height = max(outer, bodyHeight)
 	if err := p.consume(lexer.TokenRBrace); err != nil {
 		return nil, err
 	}
-	return &Node{Type: NodeLambda, Arguments: params, Body: body, Signature: sig, Pos: pos}, nil
+	return &Node{Type: NodeLambda, Arguments: params, Body: body, BodyHeight: int16(bodyHeight), Signature: sig, Pos: pos}, nil //nolint:gosec // bodyHeight <= MaxDepth
 }
 
 // parseSignatureString reads tokens until the matching >.

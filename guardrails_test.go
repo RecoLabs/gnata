@@ -97,6 +97,42 @@ func TestNestingDepthLimit(t *testing.T) {
 	})
 }
 
+func TestRecursionThroughDeepBody(t *testing.T) {
+	// Each call re-enters a body nested 5,000 levels deep.
+	body := strings.Repeat(`{"a":`, 5000) + `($n = 0 ? 0 : $f($n - 1))` + strings.Repeat("}", 5000)
+	recurse := func(n int) string {
+		return fmt.Sprintf("($f := function($n){%s}; $f(%d))", body, n)
+	}
+	testCases := []struct {
+		desc string
+		expr string
+		opts []gnata.Option
+		code string
+	}{
+		{desc: "within the nesting budget", expr: recurse(10)},
+		{desc: "past the nesting budget", expr: recurse(50), code: "U1001"},
+		{desc: "past the budget with a raised call limit", expr: recurse(500), opts: []gnata.Option{gnata.WithStack(100_000)}, code: "U1001"},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr, tC.opts...)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			_, err = e.Eval(context.Background(), nil)
+			if tC.code == "" {
+				if err != nil {
+					t.Fatalf("eval: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tC.code) {
+				t.Fatalf("want %s, got %v", tC.code, err)
+			}
+		})
+	}
+}
+
 func TestEvalKeepsGuardrailCodes(t *testing.T) {
 	const factorial = "$factorial := function($n){$n = 0 ? 1 : $n * $factorial($n - 1)}"
 	testCases := []struct {
