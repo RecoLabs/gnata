@@ -40,68 +40,125 @@ func stepValue(step string, cur any) (any, bool) {
 }
 
 func stepSingle(step string, r *gjson.Result) (any, bool) {
-	switch {
-	case r.IsObject():
-		// A literal-key scan via ForEach, not r.Get(step): Get treats its
-		// argument as a full gjson path expression, where '.', '*', '?',
-		// '#', '|', '!', brackets, and backslash are syntactically
-		// significant. A field name containing any of those (e.g. "a.b")
-		// would otherwise be silently misinterpreted as a nested/wildcard
-		// path instead of the literal key JSONata means. ForEach with an
-		// early exit avoids building the full key/value map just to read
-		// one entry.
-		var val gjson.Result
-		found := false
-		r.ForEach(func(key, value gjson.Result) bool {
-			if key.Str == step {
-				val, found = value, true
-				return false
-			}
-			return true
-		})
-		if !found {
-			return nil, false
-		}
-		return val, true
-	case r.IsArray():
+	if r.IsArray() {
 		return stepArray(step, r.Array())
-	default:
+	}
+	return objectField(step, r)
+}
+
+// objectField returns the value of field step in r, if r is an object.
+func objectField(step string, r *gjson.Result) (any, bool) {
+	if !r.IsObject() {
 		return nil, false
 	}
+	// A literal-key scan via ForEach, not r.Get(step): Get treats its
+	// argument as a full gjson path expression, where '.', '*', '?',
+	// '#', '|', '!', brackets, and backslash are syntactically
+	// significant. A field name containing any of those (e.g. "a.b")
+	// would otherwise be silently misinterpreted as a nested/wildcard
+	// path instead of the literal key JSONata means. ForEach with an
+	// early exit avoids building the full key/value map just to read
+	// one entry.
+	var val gjson.Result
+	found := false
+	r.ForEach(func(key, value gjson.Result) bool {
+		if key.Str == step {
+			val, found = value, true
+			return false
+		}
+		return true
+	})
+	if !found {
+		return nil, false
+	}
+	return val, true
 }
 
 // stepArray applies a field-lookup step across every element of an array,
 // flattening one level of nested-array results into the output — matching
 // JSONata's array auto-mapping semantics.
 func stepArray(step string, arr []gjson.Result) (any, bool) {
-	flat := make([]gjson.Result, 0, len(arr))
-	fieldFound := false
-	for i := range arr {
-		val, ok := stepSingle(step, &arr[i])
-		if !ok {
+	frame := newStepFrame(arr)
+	for frame.index < len(frame.items) {
+		item := &frame.items[frame.index]
+		frame.index++
+		if item.IsArray() {
+			return stepNested(step, &frame, item.Array())
+		}
+		frame.add(objectField(step, item))
+	}
+	return frame.result()
+}
+
+// stepNested continues stepArray from frame once an item of it is the array
+// nested, keeping the frames of enclosing arrays on an explicit stack rather
+// than recursing, so deep nesting cannot overflow the goroutine stack.
+func stepNested(step string, frame *stepFrame, nested []gjson.Result) (any, bool) {
+	var buf [4]stepFrame
+	stack := append(buf[:0], *frame, newStepFrame(nested))
+	for {
+		top := &stack[len(stack)-1]
+		if top.index == len(top.items) {
+			val, ok := top.result()
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return val, ok
+			}
+			stack[len(stack)-1].add(val, ok)
 			continue
 		}
-		fieldFound = true
-		switch inner := val.(type) {
-		case gjson.Result:
-			if inner.IsArray() {
-				flat = append(flat, inner.Array()...)
-			} else {
-				flat = append(flat, inner)
-			}
-		case []gjson.Result:
-			flat = append(flat, inner...)
+		item := &top.items[top.index]
+		top.index++
+		if item.IsArray() {
+			stack = append(stack, newStepFrame(item.Array()))
+			continue
 		}
+		top.add(objectField(step, item))
 	}
+}
+
+// stepFrame is an array stepArray is mapping a field lookup over: its
+// items, the index of the next one, and the values found so far.
+type stepFrame struct {
+	items []gjson.Result
+	index int
+	flat  []gjson.Result
+	found bool
+}
+
+func newStepFrame(items []gjson.Result) stepFrame {
+	return stepFrame{items: items, flat: make([]gjson.Result, 0, len(items))}
+}
+
+// add adds the lookup's value for one item to the frame.
+func (f *stepFrame) add(val any, ok bool) {
+	if !ok {
+		return
+	}
+	f.found = true
+	switch inner := val.(type) {
+	case gjson.Result:
+		if inner.IsArray() {
+			f.flat = append(f.flat, inner.Array()...)
+		} else {
+			f.flat = append(f.flat, inner)
+		}
+	case []gjson.Result:
+		f.flat = append(f.flat, inner...)
+	}
+}
+
+// result is the lookup's value over the frame's array.
+func (f *stepFrame) result() (any, bool) {
 	switch {
-	case len(flat) == 0 && fieldFound:
+	case len(f.flat) == 0 && f.found:
 		return []gjson.Result{}, true
-	case len(flat) == 0:
+	case len(f.flat) == 0:
 		return nil, false
-	case len(flat) == 1:
-		return flat[0], true
+	case len(f.flat) == 1:
+		return f.flat[0], true
 	default:
-		return flat, true
+		return f.flat, true
 	}
 }
 

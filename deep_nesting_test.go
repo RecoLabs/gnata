@@ -3,6 +3,7 @@ package gnata_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -144,6 +145,27 @@ func TestDeepNestingNormalize(t *testing.T) {
 	}
 	if !gnata.DeepEqual(gnata.NormalizeValue(built), deepObject()) {
 		t.Fatal("normalized object differs")
+	}
+}
+
+// EvalBytes resolves a plain field path on the raw JSON, without decoding it.
+// gjson scans each nested array's raw JSON again, which is quadratic in the
+// depth, so the test uses fewer levels and a smaller stack, which a walk
+// recursing per level still overflows.
+func TestDeepNestingFieldPathBytes(t *testing.T) {
+	const depth = 20_000
+	limitStackTo(t, 2<<20)
+	e, err := gnata.Compile("a")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	data := strings.Repeat("[", depth) + `{"a":1}` + strings.Repeat("]", depth)
+	got, err := e.EvalBytes(context.Background(), json.RawMessage(data))
+	if err != nil {
+		t.Fatalf("eval bytes: %v", err)
+	}
+	if fmt.Sprint(got) != "1" {
+		t.Fatalf("got %v, want 1", got)
 	}
 }
 
