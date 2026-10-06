@@ -586,7 +586,7 @@ func wrapBoundStep(node *Node) *Node {
 		node.Left = node.Left.Steps[0]
 		return wrapStep(node, seeking)
 	case node.Type == NodeBinary && node.Value == "[" && len(predicateSlots(node.Right)) > 0 &&
-		isPathLike(node) && StepBase(node).Ancestor != nil:
+		StepBase(node).Type == NodeName && StepBase(node).Ancestor != nil:
 		return wrapStep(node, pathSlots(node))
 	case node.Index != "" || node.Type == NodeName && node.Focus != "":
 		return wrapStep(node, pathSlots(node))

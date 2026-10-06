@@ -18,6 +18,8 @@ var longChainCases = []exprCase{
 	{expr: `a` + strings.Repeat(`[0]`, 20_000), data: `{"a":[{"c":2},{"c":1}]}`, want: `{"c":2}`},
 	{expr: `a[]` + strings.Repeat(`[0]`, 20_000), data: `{"a":[{"c":2},{"c":1}]}`, want: `[{"c":2}]`},
 	{expr: `a` + strings.Repeat(`[%.c]`, 20_000) + `.x`, data: `{"a":{"x":1},"c":true}`, want: `1`},
+	{expr: `x.*` + strings.Repeat(`[%.c]`, 20_000), data: `{"x":{"a":1,"c":true}}`, want: `[1,true]`},
+	{expr: `$count(a.((b)` + strings.Repeat(`[%.c]`, 20_000) + `))`, data: `{"a":{"b":1,"c":true}}`, want: `1`},
 	{expr: `a.(%.x` + strings.Repeat(`+%.x`, 20_000) + `)`, data: `{"a":{"x":1},"x":1}`, want: `20001`},
 	{
 		expr: `a.(` + strings.Repeat(`%.x ? `, 20_000) + `1` + strings.Repeat(` : 0`, 20_000) + `)`,
