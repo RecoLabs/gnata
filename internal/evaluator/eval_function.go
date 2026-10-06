@@ -72,7 +72,7 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 		if lambda, applied := wrappedLambda(fn); applied {
 			return &TailCall{Fn: lambda, Args: args, Focus: Null}, nil
 		}
-		if _, isLambda := fn.(*Lambda); isLambda {
+		if isLambda(fn) {
 			return &TailCall{Fn: fn, Args: args, Focus: callFocus}, nil
 		}
 	}
@@ -233,7 +233,6 @@ func isCallable(v any) bool {
 	return false
 }
 
-// isLambda reports whether fn is a lambda.
 func isLambda(fn any) bool {
 	_, ok := fn.(*Lambda)
 	return ok
@@ -245,8 +244,8 @@ func wrappedLambda(fn any) (*Lambda, bool) {
 	if !isSigned {
 		return nil, false
 	}
-	lambda, isLambda := sb.Argument.(*Lambda)
-	return lambda, isLambda
+	lambda, ok := sb.Argument.(*Lambda)
+	return lambda, ok
 }
 
 // stackOverflowError reports the recursion-depth error for the given counter,
