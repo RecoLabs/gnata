@@ -146,7 +146,7 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 				if err != nil {
 					return 0, err
 				}
-				if evaluator.ToBoolean(result) {
+				if jsTruthy(result) {
 					return -1, nil
 				}
 				return 0, nil

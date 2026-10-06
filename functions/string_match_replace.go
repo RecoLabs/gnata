@@ -127,22 +127,6 @@ func isMatcherResult(m any) bool {
 	return false
 }
 
-// isFalsyJS reports whether jsonata-js would treat a matcher's return value as
-// falsy (JavaScript truthiness, under which empty arrays and objects are true).
-func isFalsyJS(v any) bool {
-	if v == nil || evaluator.IsNull(v) {
-		return true
-	}
-	switch x := v.(type) {
-	case bool:
-		return !x
-	case string:
-		return x == ""
-	}
-	f, isNumber := evaluator.ToFloat64(v)
-	return isNumber && f == 0
-}
-
 func matchResultSeq(result []any) any {
 	return &evaluator.Sequence{Values: result}
 }
@@ -172,7 +156,7 @@ func matchWithCustomMatcher(s string, matcherFn any, limit int, evalFn EvalFn, e
 // match, and anything else must be a match structure.
 func callMatcher(fn any, args []any, evalFn EvalFn, env *evaluator.Environment) (any, error) {
 	res, err := evalFn(fn, args, nil, env)
-	if err != nil || isFalsyJS(res) {
+	if err != nil || !jsTruthy(res) {
 		return nil, err
 	}
 	if !isMatcherResult(res) {

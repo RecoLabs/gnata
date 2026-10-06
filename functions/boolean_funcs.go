@@ -40,3 +40,17 @@ func fnExists(args []any, _ any) (any, error) {
 	}
 	return args[0] != nil, nil
 }
+
+// jsTruthy reports JavaScript truthiness, which jsonata-js applies to a
+// matcher's and a $sort comparator's result instead of $boolean: any array,
+// object or function is true.
+func jsTruthy(v any) bool {
+	if _, isArr := evaluator.AsArray(v); isArr || evaluator.IsMap(v) {
+		return true
+	}
+	switch v.(type) {
+	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+		return true
+	}
+	return evaluator.ToBoolean(v)
+}
