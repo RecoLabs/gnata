@@ -392,6 +392,11 @@ var transformCases = []exprCase{
 }
 
 var pathStepCases = []exprCase{
+	{expr: `1#$i`, want: `1`},
+	{expr: `1#$i{"k":$i}`, want: `{"k":0}`},
+	{expr: `a.true`, data: pairsJSON, code: "S0213"},
+	{expr: `$x.1`, code: "S0213"},
+	{expr: `null#$i.x`, code: "S0213"},
 	{
 		expr: `Account.Order.Product.{"n":Name,"acc":$$.Account.Name}`, data: accountJSON,
 		want: `[{"acc":"Firefly","n":"Hat"},{"acc":"Firefly","n":"Cap"},{"acc":"Firefly","n":"Bag"}]`,

@@ -852,12 +852,9 @@ func evalPathStep(
 	// Steps that already handle array inputs natively (field lookup, wildcard,
 	// descendant, variable, literals, sort) are delegated directly.
 	switch step.Type {
-	case parser.NodeNumber:
-		// S0213: a numeric literal is not a valid path step (use [n] subscript notation instead).
-		return nil, &JSONataError{Code: "S0213", Token: step.Value, Message: "invalid step in path: numeric literal is not a field name"}
 	case parser.NodeWildcard:
 		return evalPathStepWildcard(step, input, env)
-	case parser.NodeName, parser.NodeParent,
+	case parser.NodeName, parser.NodeParent, parser.NodeNumber,
 		parser.NodeVariable, parser.NodeString, parser.NodeValue,
 		parser.NodeSort: // Sort steps must be applied to the full accumulated input, not mapped per-element.
 		return Eval(step, input, env)
