@@ -570,20 +570,16 @@ func bindSortIndex(step *parser.Node, sorted []pathCtx) {
 	}
 	for k := range sorted {
 		sorted[k].env = NewChildEnvironment(sorted[k].env)
-		sorted[k].env.Bind(tupleKey, true)
+		sorted[k].env.tuple = true
 		sorted[k].env.Bind(step.Index, float64(k))
 	}
 }
-
-// tupleKey marks the environments that hold one tuple's bindings (see
-// mergeGroupEnvs). No variable name can spell it.
-const tupleKey = "%%"
 
 // newTupleEnv returns the environment for a tuple a step yields from the
 // context value input, binding the step's ancestor slot, if any, to input.
 func newTupleEnv(step *parser.Node, input any, env *Environment) *Environment {
 	e := NewChildEnvironment(env)
-	e.Bind(tupleKey, true)
+	e.tuple = true
 	if step.Ancestor != nil {
 		e.Bind(step.Ancestor.Label, input)
 	}
@@ -731,7 +727,9 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 			return nil, settleRaw(result, node.KeepArray), err
 		}
 		if blockEnv != env {
-			rebaseTuples(tuples, blockEnv, env)
+			if err := rebaseTuples(tuples, blockEnv, env); err != nil {
+				return nil, nil, err
+			}
 		}
 		return tuples, nil, nil
 	case node.Type == parser.NodePath && node.TupleResult && node.Group == nil:
@@ -744,19 +742,26 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 
 // rebaseTuples moves the bindings each tuple holds below from onto a child
 // of env: the variables a block binds stay inside it, as jsonata-js keeps
-// them in the block's frame rather than in its tuples.
-func rebaseTuples(tuples []pathCtx, from, env *Environment) {
+// them in the block's frame rather than in its tuples. Every tuple's env
+// descends from from. Nested blocks copy the bindings again at each level,
+// as jsonata-js does, so the deadline is polled per tuple.
+func rebaseTuples(tuples []pathCtx, from, env *Environment) error {
 	for i, tuple := range tuples {
+		if err := env.Err(); err != nil {
+			return err
+		}
 		var chain []*Environment
-		for e := tuple.env; e != nil && e != from; e = e.Parent() {
+		for e := tuple.env; e != from; e = e.Parent() {
 			chain = append(chain, e)
 		}
 		rebased := NewChildEnvironment(env)
+		rebased.tuple = true
 		for _, e := range slices.Backward(chain) {
 			e.Range(func(name string, val any) { rebased.Bind(name, val) })
 		}
 		tuples[i].env = rebased
 	}
+	return nil
 }
 
 // evalTupleGroup evaluates a group expression against a tuple stream (see
@@ -785,14 +790,12 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 	merged := NewChildEnvironment(envs[0].Parent())
 	merged.decimalPrecision = envs[0].decimalPrecision
 
-	// Collect variable names from tuple-specific envs only (stop at envs
-	// that lack tupleKey — those are shared ancestors with built-in bindings).
+	// Collect variable names from tuple-specific envs only (stop at the
+	// first env that is not a tuple's: a shared ancestor with built-in
+	// bindings).
 	varNames := map[string]struct{}{}
 	for _, env := range envs {
-		for e := env; e != nil; e = e.Parent() {
-			if _, has := e.LookupDirect(tupleKey); !has {
-				break
-			}
+		for e := env; e != nil && e.tuple; e = e.Parent() {
 			e.Range(func(name string, _ any) {
 				varNames[name] = struct{}{}
 			})
@@ -800,11 +803,8 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 	}
 
 	// For each variable, collect values from each env via Lookup (full chain).
+	merged.tuple = true
 	for name := range varNames {
-		if name == tupleKey {
-			merged.Bind(name, true)
-			continue
-		}
 		var vals []any
 		for _, env := range envs {
 			if v, ok := env.Lookup(name); ok {

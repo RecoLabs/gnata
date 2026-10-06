@@ -82,6 +82,10 @@ type Environment struct {
 	// evaluation starts, and child environments inherit it. It sits beside
 	// inlineN to reuse that field's padding.
 	hasDeadline bool
+	// tuple marks an environment holding one tuple's bindings in a path's
+	// tuple stream (see mergeGroupEnvs). It also fits in inlineN's padding,
+	// leaving the inline slots to the tuple's own bindings.
+	tuple bool
 	// decimalPrecision is the significant digits set via WithDecimalPrecision
 	// (0 = float64 only), inherited by children. At most 100, so it fits in
 	// the padding after hasDeadline.

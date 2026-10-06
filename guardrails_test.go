@@ -162,6 +162,33 @@ func TestWithTimeout_LookupNestedArrays(t *testing.T) {
 	}
 }
 
+// TestWithTimeout_NestedTupleBlocks checks the deadline holds while blocks
+// a % reaches into copy their tuples' bindings, which nested blocks with
+// leading expressions repeat at every level.
+func TestWithTimeout_NestedTupleBlocks(t *testing.T) {
+	var indexes strings.Builder
+	for k := range 100 {
+		fmt.Fprintf(&indexes, ".$#$i%d", k)
+	}
+	expr := `$count(a.(` + strings.Repeat(`1; (`, 100) + `items` + indexes.String() + `.v` + strings.Repeat(`)`, 100) + `).%)`
+	e, err := gnata.Compile(expr, gnata.WithTimeout(100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	items := make([]any, 10_000)
+	for i := range items {
+		items[i] = map[string]any{"v": i}
+	}
+	start := time.Now()
+	_, err = e.Eval(context.Background(), map[string]any{"a": map[string]any{"items": items}})
+	if err == nil || !strings.Contains(err.Error(), "D1012") {
+		t.Fatalf("expected D1012, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("timeout took %v to fire", elapsed)
+	}
+}
+
 func TestWithTimeout_ParentCancellationPreserved(t *testing.T) {
 	e, err := gnata.Compile("1+1", gnata.WithTimeout(time.Minute))
 	if err != nil {
