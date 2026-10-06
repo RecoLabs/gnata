@@ -76,10 +76,10 @@ func evalTransform(node *parser.Node, _ any, env *Environment) (any, error) {
 		} else {
 			doc = focus
 		}
-		// Each call evaluates the clauses on the Go stack, and transforms can
-		// call each other with no lambda call between, so each spends at
-		// least one unit.
-		return env.callCounter().callNested(max(bodyCost(node.Depth), 1), func() (any, error) {
+		// Each call evaluates the clauses on the Go stack. Unlike a lambda's
+		// body, they get no free depth: transforms can call each other with
+		// no lambda call between, so the call depth does not bound them.
+		return env.callCounter().callNested(1+int(node.Depth)/levelsPerNestedCall, func() (any, error) {
 			return applyTransform(node, doc, env)
 		})
 	}), nil

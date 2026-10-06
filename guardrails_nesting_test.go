@@ -44,6 +44,10 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		body := strings.Repeat("$string(", depth) + "$f($n-1)" + strings.Repeat(")", depth)
 		return `($f := function($n){$n = 0 ? 0 : ` + body + `}; $f(99))`
 	}
+	transformChain := func(n, depth int) string {
+		return fmt.Sprintf(`$reduce([1..%d], function($f,$i){| $ | ({"a":`, n) + strings.Repeat(`{"a":`, depth) + "$f($)" +
+			strings.Repeat("}", depth+1) + `; {}) |}, | $ | {} |)({"k":1})`
+	}
 	nested := func(depth int) string { return strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth) }
 	const tooNested = "U1001: stack overflow error: nested calls exceeded the nesting budget of 5000"
 	runNestingCases(t, []nestingCase{
@@ -53,6 +57,8 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		{desc: "compositions exceed nesting limit", expr: compositions(5_001), code: tooNested},
 		{desc: "transforms within nesting limit", expr: transforms(1_000), want: map[string]any{"k": float64(1)}},
 		{desc: "transforms exceed nesting limit", expr: transforms(3_000_000), code: tooNested},
+		{desc: "transforms with shallow clauses within nesting limit", expr: transformChain(200, 60), want: map[string]any{"k": float64(1)}},
+		{desc: "transforms with shallow clauses exceed nesting limit", expr: transformChain(4_999, 60), code: tooNested},
 		{desc: "deep transforms exceed nesting limit", expr: deepTransforms(1_000, 3_000), code: tooNested},
 		{desc: "builtin callbacks within nesting limit", expr: sortsBySort(4_999), want: float64(2)},
 		{desc: "builtin callbacks exceed nesting limit", expr: sortsBySort(1_000_000), code: tooNested},
@@ -77,7 +83,7 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		{desc: "deep transforms in a group exceed nesting limit", expr: groupedTransforms(10_000, 3_000), code: tooNested},
 		{
 			desc: "inner transform charged when called, not with the outer one",
-			expr: `($f := function($n){$n = 0 ? {} : ({"a":1} ~> | $ | ($ ~> | $ | {"b": $f($n-1), "c": ` + nested(180) +
+			expr: `($f := function($n){$n = 0 ? {} : ({"a":1} ~> | $ | ($ ~> | $ | {"b": $f($n-1), "c": ` + nested(110) +
 				`} |) |)}; $count($keys($f(99))))`,
 			want: float64(3),
 		},
