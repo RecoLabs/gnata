@@ -266,7 +266,7 @@ func (s *Signature) validateMatched(args []any, focus any) ([]any, error) {
 				argIndex++
 				return
 			}
-			out = copyPrefix(args, argIndex)
+			out = copyPrefix(args, argIndex, len(args)+len(s.params))
 		}
 		out = append(out, v)
 		argIndex++
@@ -277,7 +277,7 @@ func (s *Signature) validateMatched(args []any, focus any) ([]any, error) {
 				return nil, err
 			}
 			if out == nil {
-				out = copyPrefix(args, argIndex)
+				out = copyPrefix(args, argIndex, len(args)+len(s.params))
 			}
 			out = append(out, focus)
 			continue
@@ -316,9 +316,9 @@ func argAt(args []any, i int) any {
 }
 
 // copyPrefix returns a copy of args[:n], with undefined for indexes past the
-// end of args, with room for the rest of args.
-func copyPrefix(args []any, n int) []any {
-	out := append(make([]any, 0, max(len(args), n)+1), args[:min(n, len(args))]...)
+// end of args, with room for size arguments in all.
+func copyPrefix(args []any, n, size int) []any {
+	out := append(make([]any, 0, max(size, n)), args[:min(n, len(args))]...)
 	for len(out) < n {
 		out = append(out, nil)
 	}
