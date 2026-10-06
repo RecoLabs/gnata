@@ -162,7 +162,7 @@ func consArrayGroup(step *parser.Node, input any, env *Environment) (any, error)
 // walking it as a tuple stream (see walkPathTuple), then applies its group
 // or collects the tuples' values.
 func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) {
-	ctxs, finalGroup, rawContext, err := walkPathTuple(node, inputTuples(node, input, env), env, streamOwn)
+	ctxs, finalGroup, rawContext, started, err := walkPathTuple(node, inputTuples(node, input, env), env, streamOwn)
 	if err != nil {
 		return nil, err
 	}
@@ -173,11 +173,17 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 		grp = node.Group
 	}
 	if grp != nil {
-		if rawContext != nil {
-			ctxs = slices.Clone(ctxs)
+		// jsonata-js groups a path that emptied before its tuple stream
+		// started, or a stream sorted into raw tuples, as plain items.
+		switch {
+		case !started:
+			return groupItems(groupPairs(grp.Pairs), nil, env)
+		case rawContext != nil:
+			items := make([]any, len(ctxs))
 			for i, ctx := range ctxs {
-				ctxs[i].value, ctxs[i].env = rawContext(ctx)
+				items[i], _ = rawContext(ctx)
 			}
+			return groupItems(groupPairs(grp.Pairs), items, env)
 		}
 		return evalTupleGroup(grp, ctxs)
 	}
@@ -245,10 +251,11 @@ const (
 // Product{key:val}), stripped from its step so the caller applies it with the
 // per-tuple envs. rawContext is non-nil when the last step was a sort that
 // jsonata-js leaves as a plain array of tuples (see rawTupleContext): a group
-// then sees raw tuple objects.
+// then sees raw tuple objects. started reports whether the walk reached the
+// step that starts the tuple stream.
 func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 	node *parser.Node, ctxs []pathCtx, env *Environment, state streamPos,
-) (_ []pathCtx, _ *parser.GroupExpr, rawContext tupleContext, _ error) {
+) (_ []pathCtx, _ *parser.GroupExpr, rawContext tupleContext, started bool, _ error) {
 	tupleStart := firstBindingStep(node.Steps)
 	if state == streamRunning {
 		tupleStart = -1
@@ -259,9 +266,11 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 	// Step-level groups are applied after all contexts have been collected.
 	var finalGroup *parser.GroupExpr
 
+	reached := -1
 	for stepIdx, step := range node.Steps {
+		reached = stepIdx
 		if err := env.Err(); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, false, err
 		}
 		var nextCtxs []pathCtx
 		rawContext = nil
@@ -300,7 +309,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			raw := rawTupleContext(node.Steps[:stepIdx+1], env)
 			sorted, err := evalTupleSort(sortStep, ctxs, env, leftState, raw)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, false, err
 			}
 			if startsStream && !sortStep.Tuple {
 				bindSortIndex(sortStep, sorted)
@@ -314,7 +323,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			}
 			rawContext = contextOf
 			if ctxs, err = applyTupleStages(stages, sorted, contextOf); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, false, err
 			}
 			continue
 		}
@@ -327,12 +336,12 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			for _, ctx := range ctxs {
 				var err error
 				if stream, err = appendTupleResult(stream, base, ctx); err != nil {
-					return nil, nil, nil, err
+					return nil, nil, nil, false, err
 				}
 			}
 			var err error
 			if ctxs, err = applyTupleStages(stages, stream, nil); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, false, err
 			}
 			if len(ctxs) == 0 {
 				break
@@ -353,7 +362,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			postFilterIndex := evalStep.Index
 			var err error
 			if nextCtxs, err = evalJoinFilter(ctxs, nextCtxs, leftNode, predicate, focusVar, indexVar); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, false, err
 			}
 			if postFilterIndex != "" {
 				for k := range nextCtxs {
@@ -382,7 +391,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			indexVar := leftNode.Index
 			var err error
 			if nextCtxs, err = evalJoinFilter(ctxs, nextCtxs, leftNode, predicate, focusVar, indexVar); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, false, err
 			}
 
 			// Apply the outer subscript to the collected tuples.
@@ -390,7 +399,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			if len(nextCtxs) > 0 {
 				outerResult, err := Eval(outerExpr, nextCtxs[0].value, nextCtxs[0].env)
 				if err != nil {
-					return nil, nil, nil, err
+					return nil, nil, nil, false, err
 				}
 				if idx, ok := ToFloat64(outerResult); ok {
 					i := ToIntClamped(idx)
@@ -415,7 +424,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		if base, stages := splitTupleStages(evalStep); (startsStream || inStream) && len(stages) > 0 && isPlainTupleBase(base) {
 			var err error
 			if ctxs, err = evalTupleStages(base, stages, ctxs, node.KeepSingletonArray); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, false, err
 			}
 			if len(ctxs) == 0 {
 				break
@@ -439,7 +448,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 
 			result, err := evalTupleContextStep(evalStep, val, ctx.env, node.KeepSingletonArray, beforeStream)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, false, err
 			}
 			if result == nil {
 				continue
@@ -455,9 +464,9 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 	}
 
 	if err := env.Err(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
-	return ctxs, finalGroup, rawContext, nil
+	return ctxs, finalGroup, rawContext, hasBindingStep && reached >= tupleStart, nil
 }
 
 // evalTupleSort applies a sort step to a slice of pathCtx in tuple-stream mode.
@@ -515,7 +524,7 @@ func evalTupleSort(step *parser.Node, ctxs []pathCtx, env *Environment, state st
 		switch {
 		case step.Left.Type == parser.NodePath && len(step.Left.Steps) > 0 && step.Left.Group == nil && !pathHasStepGroup(step.Left):
 			var err error
-			if expanded, _, _, err = walkPathTuple(step.Left, ctxs, env, state); err != nil {
+			if expanded, _, _, _, err = walkPathTuple(step.Left, ctxs, env, state); err != nil {
 				return nil, err
 			}
 		case step.Left.Type == parser.NodePath && len(step.Left.Steps) > 0:
@@ -566,6 +575,7 @@ func bindSortIndex(step *parser.Node, sorted []pathCtx) {
 	}
 	for k := range sorted {
 		sorted[k].env = NewChildEnvironment(sorted[k].env)
+		sorted[k].env.Bind(tupleKey, true)
 		sorted[k].env.Bind(step.Index, float64(k))
 	}
 }
@@ -747,7 +757,7 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 				ctxs = splitTuples(items, env)
 			}
 		}
-		tuples, _, _, err := walkPathTuple(node, ctxs, env, streamOwn)
+		tuples, _, _, _, err := walkPathTuple(node, ctxs, env, streamOwn)
 		return tuples, nil, true, err
 	}
 	result, err := Eval(node, val, env)
@@ -807,76 +817,21 @@ func expandPathTuple(steps []*parser.Node, ctxs []pathCtx, beforeStream bool) ([
 	return ctxs, nil
 }
 
-// evalTupleGroup evaluates a group expression against a tuple context list.
-//
-// JSONata group-by semantics: records are grouped by key, then the value
-// expression is evaluated once per group with the context set to the array
-// of all group members (or a single value when the group has one member).
-// This allows aggregate functions like $join or $sum to operate on the
-// full group rather than individual records.
+// evalTupleGroup evaluates a group expression against a tuple stream (see
+// groupBy): each tuple is keyed in its own environment, and a group's value
+// sees its tuples' bindings merged.
 func evalTupleGroup(group *parser.GroupExpr, ctxs []pathCtx) (any, error) {
-	result := NewOrderedMap()
-
-	for _, pair := range group.Pairs {
-		// Phase 1: group ctxs by key.
-		type groupEntry struct {
-			values []any
-			envs   []*Environment
-		}
-		var keyOrder []string
-		groups := map[string]*groupEntry{}
-
-		for _, ctx := range ctxs {
-			keyVal, err := Eval(pair[0], ctx.value, ctx.env)
-			if err != nil {
-				return nil, err
-			}
-			if keyVal == nil {
-				continue
-			}
-			key, ok := keyVal.(string)
-			if !ok {
-				return nil, &JSONataError{Code: "T1003", Message: "key expression must evaluate to a string"}
-			}
-			g, exists := groups[key]
-			if !exists {
-				g = &groupEntry{}
-				groups[key] = g
-				keyOrder = append(keyOrder, key)
-			}
-			g.values = append(g.values, ctx.value)
-			g.envs = append(g.envs, ctx.env)
-		}
-
-		// Phase 2: evaluate value expression per group.
-		for _, key := range keyOrder {
-			g := groups[key]
-			var groupCtx any
-			var groupEnv *Environment
-			if len(g.values) == 1 {
-				groupCtx = g.values[0]
-				groupEnv = g.envs[0]
-			} else {
-				groupCtx = groupContext(g.values)
-				groupEnv = mergeGroupEnvs(g.envs)
-			}
-			val, err := Eval(pair[1], groupCtx, groupEnv)
-			if err != nil {
-				return nil, err
-			}
-			if val == nil {
-				continue
-			}
-			result.Set(key, val)
-		}
+	values := make([]any, len(ctxs))
+	envs := make([]*Environment, len(ctxs))
+	for i, ctx := range ctxs {
+		values[i], envs[i] = ctx.value, ctx.env
 	}
-
-	return result, nil
+	return groupBy(groupPairs(group.Pairs), values, envs, nil)
 }
 
-// mergeGroupEnvs creates a merged environment for a group of records.
-// Variables that differ across records are collected into arrays so that
-// path navigation in the value expression can operate on all values.
+// mergeGroupEnvs creates a merged environment for a group of records, as
+// jsonata-js reduceTupleStream does: each variable a record binds holds
+// every record's value, folded as fn.append does (see groupContext).
 func mergeGroupEnvs(envs []*Environment) *Environment {
 	if len(envs) == 0 {
 		return nil
@@ -914,23 +869,7 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 				vals = append(vals, v)
 			}
 		}
-		if len(vals) == 1 {
-			merged.Bind(name, vals[0])
-		} else if len(vals) > 0 {
-			// Check if all values are identical — if so, keep single value.
-			allSame := true
-			for _, v := range vals[1:] {
-				if !DeepEqualPrec(v, vals[0], merged.DecimalPrecision()) {
-					allSame = false
-					break
-				}
-			}
-			if allSame {
-				merged.Bind(name, vals[0])
-			} else {
-				merged.Bind(name, vals)
-			}
-		}
+		merged.Bind(name, groupContext(vals))
 	}
 	return merged
 }
