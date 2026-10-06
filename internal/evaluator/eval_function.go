@@ -164,6 +164,27 @@ func stackOverflowError(counter *callCounter) error {
 	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 }
 
+// enterCall records a call into a lambda whose body is bodyHeight levels deep,
+// or returns the error that stops it.
+func (c *callCounter) enterCall(bodyHeight int16) error {
+	if c.depth >= c.max {
+		return stackOverflowError(c)
+	}
+	if int(c.nesting)+int(bodyHeight) > maxCallNesting {
+		return &JSONataError{Code: "U1001", Message: fmt.Sprintf(
+			"stack overflow error: nested calls exceed %d levels of expression nesting", maxCallNesting)}
+	}
+	c.depth++
+	c.nesting += int32(bodyHeight)
+	return nil
+}
+
+// exitCall undoes enterCall once the body has been evaluated.
+func (c *callCounter) exitCall(bodyHeight int16) {
+	c.depth--
+	c.nesting -= int32(bodyHeight)
+}
+
 func callFunction(fn any, args []any, focus any, env *Environment) (any, error) {
 	if fn == nil {
 		return nil, &JSONataError{Code: "T1006", Message: "attempted to invoke undefined function"}
@@ -197,15 +218,9 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 				}
 				args = coerced
 			}
-			if counter.depth >= counter.max {
-				return nil, stackOverflowError(counter)
+			if err := counter.enterCall(f.BodyHeight); err != nil {
+				return nil, err
 			}
-			if int(counter.nesting)+int(f.BodyHeight) > maxCallNesting {
-				return nil, &JSONataError{Code: "U1001", Message: fmt.Sprintf(
-					"stack overflow error: nested calls exceed %d levels of expression nesting", maxCallNesting)}
-			}
-			counter.depth++
-			counter.nesting += int32(f.BodyHeight)
 			childEnv := NewChildEnvironment(f.Closure)
 			childEnv.calls = counter
 			for i, param := range f.Params {
@@ -220,8 +235,7 @@ func callFunction(fn any, args []any, focus any, env *Environment) (any, error) 
 				bodyFocus = f.CapturedFocus
 			}
 			result, err := Eval(f.Body, bodyFocus, childEnv)
-			counter.depth--
-			counter.nesting -= int32(f.BodyHeight)
+			counter.exitCall(f.BodyHeight)
 			if err != nil {
 				return nil, err
 			}
