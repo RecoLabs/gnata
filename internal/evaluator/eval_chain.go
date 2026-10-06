@@ -70,6 +70,13 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 	switch piped.(type) {
 	case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin:
 		return BuiltinFunction(func(args []any, focus any) (any, error) {
+			// A composition built in a loop can be arbitrarily deep, so each
+			// step counts toward the nesting limit.
+			counter := env.callCounter()
+			if err := counter.enterNesting(1); err != nil {
+				return nil, err
+			}
+			defer counter.exitNesting(1)
 			intermediate, err := callFunction(piped, args, focus, env)
 			if err != nil {
 				return nil, err

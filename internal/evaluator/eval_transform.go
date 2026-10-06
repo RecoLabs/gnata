@@ -38,6 +38,13 @@ func evalTransform(node *parser.Node, _ any, env *Environment) (any, error) {
 		} else {
 			doc = focus
 		}
+		// A transform can call itself through a variable, so each use counts
+		// as a call of its clauses' height.
+		counter := env.callCounter()
+		if err := counter.enterCall(node.BodyHeight); err != nil {
+			return nil, err
+		}
+		defer counter.exitCall(node.BodyHeight)
 		return applyTransform(node, doc, env)
 	}), nil
 }

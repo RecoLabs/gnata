@@ -17,8 +17,9 @@ const defaultMaxCallDepth = 100
 // maxCallNesting bounds the summed nesting height of the lambda bodies being
 // evaluated at once. parser.MaxDepth bounds one expression, but each recursive
 // call re-enters its body, so a deeply nested body recursing to the call limit
-// could still exhaust Go's stack, which is fatal. Evaluation uses up to about
-// 1.5 KB of stack per level, so this stays near 150 MB.
+// could still exhaust Go's stack, which is fatal. At roughly 1.5 KB of stack
+// per level, as measured, this is about 150 MB, well under Go's 1 GB default
+// maximum goroutine stack.
 const maxCallNesting = 10 * parser.MaxDepth
 
 // inlineBindingCap is the number of variable bindings an Environment stores
@@ -27,7 +28,8 @@ const maxCallNesting = 10 * parser.MaxDepth
 // path index variable), so this avoids a map allocation on the common path.
 const inlineBindingCap = 2
 
-// callCounter tracks the current recursive call depth across all child environments.
+// callCounter tracks the recursive call depth and the summed nesting of active
+// call bodies across all child environments.
 // A pointer is shared so all nested envs increment/decrement the same counter.
 type callCounter struct {
 	// Small integer fields keep the struct compact; it is allocated per

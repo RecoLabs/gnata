@@ -443,7 +443,7 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 	if err := p.consume(lexer.TokenRBrace); err != nil {
 		return nil, err
 	}
-	return &Node{Type: NodeLambda, Arguments: params, Body: body, BodyHeight: int16(bodyHeight), Signature: sig, Pos: pos}, nil //nolint:gosec // bodyHeight <= MaxDepth
+	return &Node{Type: NodeLambda, Arguments: params, Body: body, BodyHeight: int16(bodyHeight), Signature: sig, Pos: pos}, nil
 }
 
 // parseSignatureString reads tokens until the matching >.
@@ -560,6 +560,8 @@ func (p *Parser) parseTransform(pos int) (*Node, error) {
 	if err := p.advanceInfix(); err != nil {
 		return nil, err
 	}
+	outer := p.height
+	p.height = 0
 	pattern, err := p.expression(0)
 	if err != nil {
 		return nil, err
@@ -584,7 +586,12 @@ func (p *Parser) parseTransform(pos int) (*Node, error) {
 	if err := p.consume(lexer.TokenPipe); err != nil {
 		return nil, err
 	}
-	return &Node{Type: NodeTransform, Pattern: pattern, Update: update, Delete: del, Pos: pos}, nil
+	height := p.height
+	p.height = max(outer, height)
+	return &Node{
+		Type: NodeTransform, Pattern: pattern, Update: update, Delete: del, Pos: pos,
+		BodyHeight: int16(height),
+	}, nil
 }
 
 // led is the left denotation (infix handler).

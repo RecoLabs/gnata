@@ -164,25 +164,39 @@ func stackOverflowError(counter *callCounter) error {
 	return &JSONataError{Code: "U1001", Message: fmt.Sprintf("stack overflow error: evaluation exceeded stack depth %d", counter.max)}
 }
 
-// enterCall records a call into a lambda whose body is bodyHeight levels deep,
-// or returns the error that stops it.
+// enterCall records a call into a lambda or transform whose body is
+// bodyHeight levels deep, or returns the error that stops it.
 func (c *callCounter) enterCall(bodyHeight int16) error {
 	if c.depth >= c.max {
 		return stackOverflowError(c)
 	}
-	if int(c.nesting)+int(bodyHeight) > maxCallNesting {
-		return &JSONataError{Code: "U1001", Message: fmt.Sprintf(
-			"stack overflow error: nested calls exceed %d levels of expression nesting", maxCallNesting)}
+	if err := c.enterNesting(bodyHeight); err != nil {
+		return err
 	}
 	c.depth++
-	c.nesting += int32(bodyHeight)
 	return nil
 }
 
 // exitCall undoes enterCall once the body has been evaluated.
 func (c *callCounter) exitCall(bodyHeight int16) {
 	c.depth--
-	c.nesting -= int32(bodyHeight)
+	c.exitNesting(bodyHeight)
+}
+
+// enterNesting adds levels of evaluation nesting that are not a counted call,
+// such as one step of a composed function, or returns the error that stops it.
+func (c *callCounter) enterNesting(levels int16) error {
+	if int(c.nesting)+int(levels) > maxCallNesting {
+		return &JSONataError{Code: "U1001", Message: fmt.Sprintf(
+			"stack overflow error: nested calls exceed %d levels of expression nesting", maxCallNesting)}
+	}
+	c.nesting += int32(levels)
+	return nil
+}
+
+// exitNesting undoes enterNesting.
+func (c *callCounter) exitNesting(levels int16) {
+	c.nesting -= int32(levels)
 }
 
 func callFunction(fn any, args []any, focus any, env *Environment) (any, error) {

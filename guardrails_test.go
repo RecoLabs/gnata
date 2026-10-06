@@ -97,11 +97,15 @@ func TestNestingDepthLimit(t *testing.T) {
 	})
 }
 
-func TestRecursionThroughDeepBody(t *testing.T) {
-	// Each call re-enters a body nested 5,000 levels deep.
+func TestRecursionNestingLimit(t *testing.T) {
+	// Each call of $f re-enters a body nested 5,000 levels deep.
 	body := strings.Repeat(`{"a":`, 5000) + `($n = 0 ? 0 : $f($n - 1))` + strings.Repeat("}", 5000)
 	recurse := func(n int) string {
 		return fmt.Sprintf("($f := function($n){%s}; $f(%d))", body, n)
+	}
+	// compose builds $string ~> $string ~> ... n steps long with tail calls.
+	compose := func(n int) string {
+		return fmt.Sprintf("($build := function($n, $f){ $n = 0 ? $f : $build($n - 1, $f ~> $string) }; $build(%d, $string)(1))", n)
 	}
 	testCases := []struct {
 		desc string
@@ -112,6 +116,9 @@ func TestRecursionThroughDeepBody(t *testing.T) {
 		{desc: "within the nesting budget", expr: recurse(10)},
 		{desc: "past the nesting budget", expr: recurse(50), code: "U1001"},
 		{desc: "past the budget with a raised call limit", expr: recurse(500), opts: []gnata.Option{gnata.WithStack(100_000)}, code: "U1001"},
+		{desc: "transform calling itself", expr: `($t := |$|{"x": $ ~> $t}|; {"a": 1} ~> $t)`, code: "U1001"},
+		{desc: "short composition", expr: compose(50)},
+		{desc: "composition built in a loop", expr: compose(200_000), code: "U1001"},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {

@@ -50,9 +50,9 @@ type Node struct {
 	Thunk              bool // lambda is a TCO thunk
 	Tuple              bool // step participates in a tuple stream
 
-	// BodyHeight is a lambda body's nesting height, at most MaxDepth; the
-	// evaluator sums it over active calls to bound recursion depth. int16
-	// fits in the padding after the flags above.
+	// BodyHeight is the nesting height of a lambda's body or a transform's
+	// clauses, at most MaxDepth; the evaluator sums it over active calls to
+	// bound recursion depth. int16 fits in the padding after the flags above.
 	BodyHeight int16
 
 	// Focus / index variable names (set by @ and # operators)
