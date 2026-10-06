@@ -151,7 +151,8 @@ func processDotBinary(node *Node) (*Node, error) {
 // collectPathSteps recursively appends the steps of binary(".") nodes to
 // steps, returning the path's group: one on a dot, or on a leading step
 // jsonata-js makes a path (as in a{k: v}.c), which then groups the whole
-// path's result.
+// path's result. Dots nest to the right, so appending to one slice keeps
+// a long path linear.
 func collectPathSteps(node *Node, steps []*Node) ([]*Node, *GroupExpr, error) {
 	if node.Type != NodeBinary || node.Value != "." {
 		// Leaf step — process it.

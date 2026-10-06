@@ -782,7 +782,6 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 	// Find the common ancestor to use as parent of the merged env.
 	merged := NewChildEnvironment(envs[0].Parent())
 	merged.decimalPrecision = envs[0].decimalPrecision
-
 	merged.tuple = true
 
 	// Collect variable names from tuple-specific envs only (stop at the
