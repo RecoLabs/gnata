@@ -251,7 +251,6 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		if err := env.Err(); err != nil {
 			return nil, nil, false, err
 		}
-		var nextCtxs []pathCtx
 		rawContext = nil
 		// jsonata-js evaluates the steps before the first binding as plain
 		// steps; the binding step starts the tuple stream.
@@ -259,19 +258,6 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		startsStream := hasBindingStep && stepIdx == tupleStart
 		inStream := hasBindingStep && stepIdx > tupleStart
 		started = started || startsStream
-
-		// A step's own group, which only a leading step can have, applies
-		// to the step's result, so the step is evaluated whole per tuple.
-		if step.Group != nil {
-			var err error
-			if ctxs, err = mapTupleStep(step, ctxs, stepIdx == 0, node.KeepSingletonArray, beforeStream); err != nil {
-				return nil, nil, false, err
-			}
-			if len(ctxs) == 0 {
-				break
-			}
-			continue
-		}
 
 		// Sort steps must be applied globally to ALL tuples simultaneously so that
 		// tuple ordering is preserved (e.g. Account.Order#$o.Product^(ProductID)).
@@ -346,15 +332,14 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			indexVar := leftNode.Index
 			postFilterIndex := step.Index
 			var err error
-			if nextCtxs, err = evalJoinFilter(ctxs, nextCtxs, leftNode, predicate, focusVar, indexVar); err != nil {
+			if ctxs, err = evalJoinFilter(ctxs, leftNode, predicate, focusVar, indexVar); err != nil {
 				return nil, nil, false, err
 			}
 			if postFilterIndex != "" {
-				for k := range nextCtxs {
-					nextCtxs[k].env.Bind(postFilterIndex, float64(k))
+				for k := range ctxs {
+					ctxs[k].env.Bind(postFilterIndex, float64(k))
 				}
 			}
-			ctxs = nextCtxs
 			if len(ctxs) == 0 {
 				break
 			}
@@ -375,7 +360,8 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			focusVar := leftNode.Focus
 			indexVar := leftNode.Index
 			var err error
-			if nextCtxs, err = evalJoinFilter(ctxs, nextCtxs, leftNode, predicate, focusVar, indexVar); err != nil {
+			nextCtxs, err := evalJoinFilter(ctxs, leftNode, predicate, focusVar, indexVar)
+			if err != nil {
 				return nil, nil, false, err
 			}
 
@@ -464,15 +450,16 @@ func mapTupleStep(step *parser.Node, ctxs []pathCtx, first, keepSingleton, befor
 //  2. Collect all (child, parentEnv) tuples across all contexts.
 //  3. Sort all collected tuples globally by the sort terms.
 //
-// If there is no Left navigation (bare sort e.g. ^($)), sort the existing ctxs
-// directly by their own values. state places the sort relative to the tuple
-// stream; before it starts, Left's constructed arrays are sorted as single
-// items.
+// A $ Left within a running stream sorts the existing ctxs by their own
+// values. state places the sort relative to the tuple stream; before it
+// starts, Left's constructed arrays are sorted as single items.
 //
-// A Left that is itself a sort, as in a#$j^(x)^(y), sorts first. When a
-// stream already existed before that sort (inStream, or bindings in its
-// Left), jsonata-js leaves a plain array of tuples, so its predicates and
-// this sort's terms see raw tuple objects (see rawTupleContext).
+// A Left that is itself a sort, as in a#$j^(x)^(y), sorts first. Sorting
+// an existing stream of more than one tuple (inStream, or bindings in the
+// Left) leaves a plain array of raw tuples in jsonata-js, which rawResult
+// reports: the predicates and terms that follow see raw tuple objects (see
+// rawTupleContext). started reports whether the sort's stream started, as
+// for walkPathTuple.
 func evalTupleSort(
 	step *parser.Node, ctxs []pathCtx, env *Environment, state streamPos, raw tupleContext,
 ) (sorted []pathCtx, rawResult, started bool, _ error) {
@@ -589,9 +576,9 @@ func newTupleEnv(step *parser.Node, input any, env *Environment) *Environment {
 // evalJoinFilter evaluates a join-filter step: it walks ctxs, evaluates
 // leftNode against each context value, resolves the result into individual
 // items, binds focusVar (and optionally indexVar) in a child environment,
-// then keeps only contexts whose predicate evaluates to true.
-// Matching contexts are appended to dst and the updated slice is returned.
-func evalJoinFilter(ctxs, dst []pathCtx, leftNode, predicate *parser.Node, focusVar, indexVar string) ([]pathCtx, error) {
+// then returns the contexts whose predicate evaluates to true.
+func evalJoinFilter(ctxs []pathCtx, leftNode, predicate *parser.Node, focusVar, indexVar string) ([]pathCtx, error) {
+	var dst []pathCtx
 	for _, ctx := range ctxs {
 		val := ctx.value
 		if seq, ok := val.(*Sequence); ok {

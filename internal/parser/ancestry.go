@@ -187,7 +187,7 @@ func resolveSortAncestry(sort *Node) error {
 	return nil
 }
 
-// stepBase returns the step a subscript chain applies to, looking through a
+// StepBase returns the step a subscript chain applies to, looking through a
 // path to its last step. processSubscript records each subscript's, so a
 // long chain is not rescanned at every link.
 func StepBase(node *Node) *Node {
