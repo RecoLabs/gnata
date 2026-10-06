@@ -34,12 +34,13 @@ type ConsArray []any
 // o.(b[]) is 5.
 type KeptArray []any
 
-// RawSequence is a one-item result sequence of a built-in that a
-// higher-order function holds as an item, as in $map([{"a":1}], $keys).
-// jsonata-js collapses a result sequence once, when an expression returns
-// it, so such an item reads as an array (that result is ["a"]) and a path
-// step flattens it, but an expression returning the item itself, such as a
-// variable, block or numeric subscript, collapses it to its value.
+// RawSequence is a result sequence of a built-in, with at most one item,
+// that a higher-order function holds as an item, as in
+// $map([{"a":1}], $keys). jsonata-js collapses a result sequence once, when
+// an expression returns it, so such an item reads as an array (that result
+// is ["a"]; $map([1], $keys) is []) and a path step flattens it, but an
+// expression returning the item itself, such as a variable, block or
+// numeric subscript, collapses it to its value or to undefined.
 type RawSequence []any
 
 // AsArray returns the slice behind a []any or a typed array (see typedArray).
@@ -65,16 +66,18 @@ func typedArray(v any) ([]any, bool) {
 }
 
 // settleRaw returns the result of an expression that evaluated to v: a
-// RawSequence collapses to its item, or with keepArray (the [] suffix)
-// becomes a KeptArray, as jsonata-js collapses a returned sequence. Every
-// evaluator that can return a child's value unchanged (variable, block,
-// condition, bind, ?:, ??, a number-literal subscript) applies it; a
-// function call applies it through CollapseAndKeep.
+// RawSequence collapses to its item, or undefined when empty, or with
+// keepArray (the [] suffix) becomes a KeptArray, as jsonata-js collapses a
+// returned sequence. Every evaluator that can return a child's value
+// unchanged (variable, block, condition, bind, ?:, ??, a number-literal
+// subscript) applies it; a function call applies it through CollapseAndKeep.
 func settleRaw(v any, keepArray bool) any {
 	raw, ok := v.(RawSequence)
 	switch {
 	case !ok:
 		return v
+	case len(raw) == 0:
+		return nil
 	case keepArray:
 		return KeptArray(raw)
 	}
@@ -203,15 +206,17 @@ func CollapseAndKeep(result any, keepArray bool) any {
 }
 
 // holdResult normalizes a function result a higher-order function holds as
-// an item: unlike CollapseAndKeep, it keeps a one-item sequence as a
-// RawSequence.
+// an item: unlike CollapseAndKeep, it keeps an empty or one-item sequence as
+// a RawSequence.
 func holdResult(result any) any {
 	seq, ok := result.(*Sequence)
 	switch {
 	case !ok:
 		return result
-	case len(seq.Values) == 1:
-		return RawSequence{seq.Values[0]}
+	case seq.Values == nil:
+		return make(RawSequence, 0, 1) // capacity lets sameArray recognize it
+	case len(seq.Values) <= 1:
+		return RawSequence(seq.Values)
 	}
 	return CollapseSequence(seq)
 }

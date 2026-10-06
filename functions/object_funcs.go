@@ -33,7 +33,7 @@ func fnKeys(args []any, _ any) (any, error) {
 			}
 		}
 	default:
-		return nil, nil
+		return evaluator.CreateSequence(), nil
 	}
 	seq := evaluator.CreateSequence()
 	for _, k := range keys {
@@ -125,7 +125,7 @@ func fnSpread(args []any, _ any) (any, error) {
 			}
 		}
 		if result == nil {
-			return nil, nil
+			return evaluator.CreateSequence(), nil
 		}
 		return result, nil
 	}

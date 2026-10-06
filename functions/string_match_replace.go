@@ -144,9 +144,6 @@ func isFalsyJS(v any) bool {
 }
 
 func matchResultSeq(result []any) any {
-	if len(result) == 0 {
-		return nil
-	}
 	return &evaluator.Sequence{Values: result}
 }
 

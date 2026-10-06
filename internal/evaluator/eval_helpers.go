@@ -339,8 +339,15 @@ func lookupItem(node *parser.Node, item any) (any, error) {
 		return evalName(node, item, nil)
 	}
 	val, ok := MapGet(item, node.Value)
-	if ok && val == nil {
-		return Null, nil
+	switch v := val.(type) {
+	case nil:
+		if ok {
+			return Null, nil
+		}
+	case RawSequence:
+		if len(v) == 0 {
+			return nil, nil
+		}
 	}
 	return val, nil
 }

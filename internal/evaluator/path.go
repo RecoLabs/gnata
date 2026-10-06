@@ -161,14 +161,15 @@ func unnestCons(v any) any {
 	return v
 }
 
-// flattenKept returns the item of a KeptArray or RawSequence, which a path
-// step flattens like any sequence: o.(b[]) is 5.
+// flattenKept flattens a KeptArray or RawSequence as a path step flattens
+// any sequence, returning its item (o.(b[]) is 5), or undefined for an
+// empty RawSequence.
 func flattenKept(v any) any {
 	switch a := v.(type) {
 	case KeptArray:
 		return a[0]
 	case RawSequence:
-		return a[0]
+		return settleRaw(a, false)
 	}
 	return v
 }
@@ -1501,6 +1502,12 @@ func filterTupleStream(predicate *parser.Node, stream []pathCtx, contextOf tuple
 // truthy. kept is the number of items already kept, checked against the
 // sequence limit when repeated positions grow the result past length.
 func filterMatches(res any, pos, length, kept int, env *Environment) (int, error) {
+	if b, ok := res.(bool); ok {
+		if b {
+			return 1, nil
+		}
+		return 0, nil
+	}
 	matches, positional, err := positionMatches(res, pos, length)
 	if err != nil {
 		return 0, err

@@ -50,7 +50,10 @@ func fnAppend(args []any, _ any, env *evaluator.Environment) (any, error) {
 			Message: fmt.Sprintf("$append: result array exceeds maximum size of %d elements", maxAppendSize),
 		}
 	}
-	return slices.Concat(a, b), nil
+	if out := slices.Concat(a, b); out != nil {
+		return out, nil
+	}
+	return []any{}, nil
 }
 
 func wrapArray(v any) []any {

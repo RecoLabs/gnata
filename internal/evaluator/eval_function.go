@@ -208,14 +208,20 @@ func callBuiltin(args []any, call func([]any) (any, error)) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if arr, ok := result.([]any); ok && len(arr) > 0 {
+	if arr, ok := result.([]any); ok {
 		for _, arg := range args {
-			if typed, ok := typedArray(arg); ok && len(typed) == len(arr) && &typed[0] == &arr[0] {
+			if typed, ok := typedArray(arg); ok && sameArray(typed, arr) {
 				return arg, nil
 			}
 		}
 	}
 	return result, nil
+}
+
+// sameArray reports whether a and b are the same slice, even when empty:
+// $reverse of an empty raw sequence returns that sequence.
+func sameArray(a, b []any) bool {
+	return len(a) == len(b) && cap(a) > 0 && cap(b) > 0 && &a[:1][0] == &b[:1][0]
 }
 
 // plainArrayArgs returns args with each top-level typed array as a plain

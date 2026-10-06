@@ -328,6 +328,23 @@ var tailAndCollapseCases = []exprCase{
 	{expr: `($f := function(){$keys({"a":1})[] ?: 0}; $f())`, want: `"a"`},
 	{expr: `$map([1], function($v){$zz ?? $keys({"a":1})})`, want: `["a"]`},
 	{expr: `($f := function($n){$n > 0 ? ($zz ?? $f($n-1)) : "d"}; $f(300))`, want: `"d"`},
+	{expr: `$map([1,2], function($v){$keys(5)})`, want: `[[],[]]`},
+	{expr: `$map([1,2], $keys)`, want: `[[],[]]`},
+	{expr: `$map([1,2], function($v){$filter([1], function($w){false})})`, want: `[[],[]]`},
+	{expr: `{"k": $map([1], function($v){$keys(5)})}`, want: `{"k":[]}`},
+	{expr: `$map([1], function($v){$keys(5)})[]`, want: `[[]]`},
+	{expr: `$count($map([1,2], function($v){$keys(5)}))`, want: `2`},
+	{expr: `($m := $map([1], function($v){$keys(5)}); $m)`, want: undefined},
+	{expr: `($m := $map([1], function($v){$keys(5)}); $m[])`, want: undefined},
+	{expr: `$keys(5)`, want: undefined},
+	{expr: `$exists([{"k": $map([1], $keys)}].k)`, want: `false`},
+	{expr: `$reverse($map([1], $keys))`, want: undefined},
+	{expr: `$map([1,2], function($v){$append([], [])})`, want: `[[],[]]`},
+	{expr: `$map([1,2], function($v){$match("a", /b/)})`, want: `[[],[]]`},
+	{expr: `$map([[]], $spread)`, want: `[]`},
+	{expr: `$append([], [])`, want: `[]`},
+	{expr: `$map([1], $keys)^($)`, want: undefined},
+	{expr: `$map($map([1,2], function($v){$match("a", /b/)}), $reverse)[0]`, want: undefined},
 }
 
 func TestBuiltinResults(t *testing.T) {
