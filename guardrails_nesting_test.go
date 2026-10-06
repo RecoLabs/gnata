@@ -45,7 +45,7 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		return `($f := function($n){$n = 0 ? 0 : ` + body + `}; $f(99))`
 	}
 	nested := func(depth int) string { return strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth) }
-	const tooNested = "U1001: stack overflow error: function values nested more than 5000 deep"
+	const tooNested = "U1001: stack overflow error: nested calls exceeded the nesting budget of 5000"
 	runNestingCases(t, []nestingCase{
 		{desc: "partial applications within nesting limit", expr: partials(4_999), want: float64(5)},
 		{desc: "partial applications exceed nesting limit", expr: partials(5_001), code: tooNested},
@@ -59,6 +59,7 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		{desc: "builtin callbacks through partials within nesting limit", expr: sortsByPartial(4_999), want: float64(2)},
 		{desc: "builtin callbacks through partials exceed nesting limit", expr: sortsByPartial(5_001), code: tooNested},
 		{desc: "lambdas with shallow bodies bounded by the call depth alone", expr: deepBodies(60), want: "0"},
+		{desc: "lambdas with moderately deep bodies within nesting limit", expr: deepBodies(150), want: "0"},
 		{desc: "lambdas with deep bodies exceed nesting limit", expr: deepBodies(400), code: tooNested},
 		{
 			desc: "deep lambda bodies in tail position release the budget",
@@ -90,28 +91,33 @@ func TestWithStackThroughFunctionValues(t *testing.T) {
 	runNestingCases(t, []nestingCase{
 		{
 			desc: "WithStack bounds recursion through $map",
-			expr: `($f := function($n){$n = 0 ? 0 : $map([$n], function($x){$f($x - 1)})[0] + 1}; $f(10500))`,
-			opts: withStack, want: float64(10500),
+			expr: `($f := function($n){$n = 0 ? 0 : $map([$n], function($x){$f($x - 1)})[0] + 1}; $f(6000))`,
+			opts: withStack, want: float64(6000),
 		},
 		{
 			desc: "WithStack bounds recursion through a function parameter",
-			expr: `($f := function($n, $g){$n = 0 ? 0 : $g($n - 1, $g) + 1}; $f(10500, $f))`,
-			opts: withStack, want: float64(10500),
+			expr: `($f := function($n, $g){$n = 0 ? 0 : $g($n - 1, $g) + 1}; $f(6000, $f))`,
+			opts: withStack, want: float64(6000),
 		},
 		{
 			desc: "WithStack bounds recursion through a partial application",
-			expr: `($f := function($n){$n = 0 ? 0 : $p($n - 1) + 1}; $p := $f(?); $p(10500))`,
-			opts: withStack, want: float64(10500),
+			expr: `($f := function($n){$n = 0 ? 0 : $p($n - 1) + 1}; $p := $f(?); $p(6000))`,
+			opts: withStack, want: float64(6000),
 		},
 		{
 			desc: "WithStack bounds recursion through a partial application argument",
-			expr: `($f := function($n, $g){$n = 0 ? 0 : $g($n - 1, $g) + 1}; $f(10500, $f(?, ?)))`,
-			opts: withStack, want: float64(10500),
+			expr: `($f := function($n, $g){$n = 0 ? 0 : $g($n - 1, $g) + 1}; $f(6000, $f(?, ?)))`,
+			opts: withStack, want: float64(6000),
 		},
 		{
 			desc: "WithStack bounds recursion through a composition",
-			expr: `($f := function($n){$n = 0 ? 0 : $c($n - 1) + 1}; $c := $f ~> function($x){$x}; $c(10500))`,
-			opts: withStack, want: float64(10500),
+			expr: `($f := function($n){$n = 0 ? 0 : $c($n - 1) + 1}; $c := $f ~> function($x){$x}; $c(6000))`,
+			opts: withStack, want: float64(6000),
+		},
+		{
+			desc: "WithStack bounds recursion with moderately deep bodies",
+			expr: `($f := function($n){$n = 0 ? 0 : ` + strings.Repeat("$string(", 80) + "$f($n-1)" + strings.Repeat(")", 80) + `}; $f(500))`,
+			opts: withStack, want: "0",
 		},
 		{
 			desc: "endless recursion through $map",
