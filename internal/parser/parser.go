@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/recolabs/gnata/internal/lexer"
@@ -59,6 +60,7 @@ type Parser struct {
 	infix   bool
 	src     string
 	initErr error // error from initial lexer prime
+	parents int   // % operators parsed so far, numbering their slots
 }
 
 // NewParser creates a new Parser for the given source string.
@@ -270,7 +272,9 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		return &Node{Type: NodeParent, Value: "%", Pos: tok.Pos}, nil
+		slot := &Slot{Label: "!" + strconv.Itoa(p.parents), Level: 1}
+		p.parents++
+		return &Node{Type: NodeParent, Value: "%", Pos: tok.Pos, Slot: slot}, nil
 
 	case lexer.TokenLBracket:
 		// Array constructor.

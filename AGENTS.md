@@ -36,7 +36,7 @@ Lexer → Parser → AST Processing → Fast-Path Analysis → Expression
 
 1. **Lexer** (`internal/lexer/`) — Tokenizes JSONata expression strings
 2. **Parser** (`internal/parser/`) — Pratt (top-down operator precedence) parser producing AST nodes
-3. **AST Processing** (`parser.ProcessAST`) — Normalizes and optimizes the AST. `parser.ParseAndProcess` runs steps 2–3 plus a pass that marks wildcard steps reading the root input; every entry point (`Compile`, `$eval`) must use it
+3. **AST Processing** (`parser.ProcessAST`) — Normalizes and optimizes the AST, and resolves each `%` to the path step whose input it reads. `parser.ParseAndProcess` runs steps 2–3, rejects a `%` with no such step (S0217), and marks the wildcard and ancestor steps reading the root input; every entry point (`Compile`, `$eval`) must use it
 4. **Fast-Path Analysis** (`parser.AnalyzeFastPath`) — Classifies expressions into:
    - Pure-path fast path (e.g., `Account.Name`) — uses GJSON zero-copy
    - Comparison fast path (e.g., `a.b = "x"`) — zero allocations

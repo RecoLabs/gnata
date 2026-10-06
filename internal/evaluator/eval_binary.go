@@ -173,16 +173,6 @@ func evalDefaultLeft(node *parser.Node, input any, env *Environment) (left, resu
 }
 
 func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) {
-	// When Left is a Block containing a single path expression and the
-	// predicate references % (parent), evaluate the inner path in tuple mode
-	// so each item retains its parent context for the % operator.
-	if node.Left != nil && node.Left.Type == parser.NodeBlock &&
-		nodeHasParentRef(node.Right) &&
-		len(node.Left.Expressions) == 1 &&
-		node.Left.Expressions[0].Type == parser.NodePath {
-		return evalSubscriptBlockParent(node, input, env)
-	}
-
 	left, items, err := evalSubscriptLeft(node, input, env)
 	if err != nil || left == nil {
 		return nil, err
@@ -201,7 +191,7 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	if node.Left != nil {
 		indexVar = node.Left.Index
 	}
-	filtered, err := filterByPredicate(node.Right, items, input, indexVar, env)
+	filtered, err := filterByPredicate(node.Right, items, indexVar, env)
 	if err != nil {
 		return nil, err
 	}
@@ -229,12 +219,10 @@ func pickItem(index *parser.Node, items []any, keepArray bool, env *Environment)
 }
 
 // filterByPredicate evaluates predicate against each item and keeps it as
-// filterMatches says. It binds %% → parent (for the % operator) and
-// optionally indexVar to the item's position.
-func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar string, env *Environment) (*Sequence, error) {
+// filterMatches says, binding indexVar, if any, to the item's position.
+func filterByPredicate(predicate *parser.Node, items []any, indexVar string, env *Environment) (*Sequence, error) {
 	seq := CreateSequence()
 	filterEnv := NewChildEnvironment(env)
-	filterEnv.Bind(parentKey, parent)
 	if contextFree(predicate, indexVar) {
 		res, err := Eval(predicate, items[0], filterEnv)
 		if err != nil {
@@ -430,28 +418,4 @@ func evalArithFloat64(l, r float64, op string) (any, error) {
 		return nil, &JSONataError{Code: "D1001", Message: fmt.Sprintf("Number out of range: %g", result)}
 	}
 	return result, nil
-}
-
-func evalSubscriptBlockParent(node *parser.Node, input any, env *Environment) (any, error) {
-	innerPath := node.Left.Expressions[0]
-	tupleCtxs, err := expandPathTuple(innerPath.Steps, []pathCtx{{value: input, env: env}}, false)
-	if err != nil {
-		return nil, err
-	}
-	if len(tupleCtxs) == 0 {
-		return nil, nil
-	}
-
-	keepArray := node.KeepArray || parser.ChainKeepsArray(node.Left)
-	seq := CreateSequence()
-	for _, tctx := range tupleCtxs {
-		predResult, err := Eval(node.Right, tctx.value, tctx.env)
-		if err != nil {
-			return nil, err
-		}
-		if ToBoolean(predResult) {
-			seq.Values = append(seq.Values, tctx.value)
-		}
-	}
-	return CollapseAndKeep(seq, keepArray), nil
 }

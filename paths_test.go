@@ -1,6 +1,11 @@
 package gnata_test
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/recolabs/gnata"
+)
 
 const (
 	accountJSON = `{"Account":{"Name":"Firefly","Order":[` +
@@ -10,6 +15,8 @@ const (
 		`"loans":[{"isbn":"1","customer":"c1"},{"isbn":"2","customer":"c2"},{"isbn":"1","customer":"c3"}]}}`
 	nestedJSON = `{"x":[1,2],"y":[[1,2],[3]],"z":[{"a":1},2,[3,[4]]],"m":{"a":[1,[2]],"b":{"c":3}}}`
 	tripleJSON = `{"a":[{"b":1,"c":2},{"b":3,"c":4},{"b":2,"c":9}]}`
+	// parentArrayJSON is a root array, which jsonata-js wraps as one item.
+	parentArrayJSON = `[{"k":[1,2],"m":[1]},{"k":4,"m":[2,3]}]`
 )
 
 var parentOperatorCases = []exprCase{
@@ -21,7 +28,7 @@ var parentOperatorCases = []exprCase{
 	{expr: `Account.Order.Product.%.%.Name`, data: accountJSON, want: `["Firefly","Firefly","Firefly"]`},
 	{expr: `(Account.Order.Product)[%.OrderID="o1"].Name`, data: accountJSON, want: `["Hat","Cap"]`},
 	{expr: `Account.(Order.Product).{"o": %.OrderID}`, data: accountJSON, want: `[{"o":"o1"},{"o":"o1"},{"o":"o2"}]`},
-	{expr: `Account.Order.Product{%.OrderID: $sum(Price)}`, data: accountJSON, want: `{"o1":15,"o2":20}`},
+	{expr: `Account.Order.Product{%.OrderID: $sum(Price)}`, data: accountJSON, want: `{}`},
 	{expr: `Account.Order.Product^(%.OrderID, Price).Name`, data: accountJSON, want: `["Cap","Hat","Bag"]`},
 	{
 		expr: `library.loans@$l.{"c":$l.customer, "p": %.books[0].title}`, data: libraryJSON,
@@ -36,9 +43,88 @@ var parentOperatorCases = []exprCase{
 	{expr: `Account.Order.Product.%[1]#$i.{"i":$i,"o":OrderID}`, data: accountJSON, want: `{"i":0,"o":"o1"}`},
 	{expr: `Account.Order.Product.%#$i.$i`, data: accountJSON, want: `[0,0,0]`},
 	{expr: `a.%`, data: `{"a":{"b":1}}`, want: `{"a":{"b":1}}`},
-	{expr: `%`, code: "S0217"},
-	{expr: `%.a`, code: "S0217"},
-	{expr: `a.b.%.%.%.x`, data: `{"a":{"b":1}}`, code: "S0217"},
+	{expr: `$count(k.%)`, data: parentArrayJSON, want: `6`},
+	{expr: `$count((k.%))`, data: parentArrayJSON, want: `6`},
+	{expr: `$count((k).%)`, data: parentArrayJSON, want: `3`},
+	{expr: `$count($$.k.%)`, data: parentArrayJSON, want: `3`},
+	{expr: `$count(k[0].%)`, data: parentArrayJSON, want: `2`},
+	{expr: `$count(*.%)`, data: parentArrayJSON, want: `4`},
+	{expr: `(k.%).k`, data: parentArrayJSON, want: `[1,2,1,2,4]`},
+	{expr: `k.%#$i.$i`, data: parentArrayJSON, want: `[0,1,0,1,0,1]`},
+	{expr: `(k).%#$i.$i`, data: parentArrayJSON, want: `[0,0,0]`},
+	{expr: `k#$i.%.$i`, data: parentArrayJSON, want: `[0,0,1,1,2,2]`},
+	{expr: `k@$a.%.$a`, data: parentArrayJSON, want: `[1,1,2,2,4,4]`},
+	{expr: `Account.Order.Product.$sum(%.Product.Price)`, data: accountJSON, want: `[15,15,20]`},
+	{expr: `Account.Order.Product.Name.$string(%.Price)`, data: accountJSON, want: `["10","5","20"]`},
+	{expr: `Account.Order.Product.Name[0].%.Price`, data: accountJSON, want: `10`},
+	{expr: `Account.Order.Product[0][%.OrderID="o2"].Name`, data: accountJSON, want: undefined},
+	{expr: `Account.Order.Product.(%.Product)[0].Name`, data: accountJSON, want: `"Hat"`},
+	{expr: `Account.Order.(Product)[0].%.OrderID`, data: accountJSON, want: `"o1"`},
+	{expr: `Account.Order.Product.((Name).%).%.OrderID`, data: accountJSON, want: `["o1","o1","o2"]`},
+	{expr: `Account.Order.Product.Name.(%.%).OrderID`, data: accountJSON, want: `["o1","o1","o2"]`},
+	{
+		expr: `Account.Order#$o.(Product#$i).%.{"o":$o,"i":$i}`, data: accountJSON,
+		want: `[{"i":0,"o":0},{"i":1,"o":0},{"i":0,"o":1}]`,
+	},
+	{expr: `Account.Order#$o.(Product#$i).{"o":$o,"i":$i}`, data: accountJSON, want: `[{"o":0},{"o":0},{"o":1}]`},
+	{expr: `Account.Order.($x := 1; Product).%.{"x":$x}`, data: accountJSON, want: `[{},{},{}]`},
+	{expr: `Account.Order.(Product{Name:Price}).%.OrderID`, data: accountJSON, want: undefined},
+	{
+		expr: `Account.Order.Product@$p.%.{"o":OrderID,"n":$p.Name}`, data: accountJSON,
+		want: `[{"n":"Hat","o":"o1"},{"n":"Cap","o":"o1"},{"n":"Bag","o":"o2"}]`,
+	},
+	{
+		expr: `Account.Order.Product#$i.%.{"o":OrderID,"i":$i}`, data: accountJSON,
+		want: `[{"i":0,"o":"o1"},{"i":1,"o":"o1"},{"i":0,"o":"o2"}]`,
+	},
+	{expr: `Account.Order@$o.Product@$p.%.OrderID`, data: accountJSON, want: undefined},
+	{expr: `Account.Order.Product^(%.OrderID)[Name="Hat"]`, data: accountJSON, want: undefined},
+	{expr: `Account.Order.Product^(%.OrderID)[$keys($)[1]="!0"].Name`, data: accountJSON, want: `["Hat","Cap","Bag"]`},
+	{expr: `Account.Order{OrderID: Product.%.OrderID}`, data: accountJSON, want: `{"o1":["o1","o1"],"o2":"o2"}`},
+	{expr: `Account.Order.Product{Name: $count(%)}`, data: accountJSON, want: `{"Bag":0,"Cap":0,"Hat":0}`},
+	{expr: `Account[%]`, data: accountJSON, want: undefined},
+	{expr: `Account.(*).%`, data: accountJSON, want: undefined},
+	{expr: `Account.Order.Product.$map([1], function($v){%})`, data: accountJSON, want: undefined},
+	{expr: `Account.Order.Product.(%.OrderID ~> $uppercase())`, data: accountJSON, want: undefined},
+	{expr: `Account.Order.(Product).%.OrderID`, want: undefined},
+	{expr: `a.[{"x":b},{"x":c}].(x).%`, data: pairsJSON, want: `[{"x":1},{"x":2},{"x":3},{"x":4}]`},
+	{expr: `a.().%`, data: pairsJSON, want: undefined},
+	{expr: `a.($error("boom"); b).%`, data: pairsJSON, code: "D3137"},
+	{expr: `library.loans@$l.%.$l.customer`, data: libraryJSON, want: `["c1","c2","c3"]`},
+	{expr: `library.(loans@$l).%.$l.customer`, data: libraryJSON, want: `["c1","c2","c3"]`},
+	{
+		expr: `library.loans#$i.(%)#$j.{"i":$i,"j":$j}`, data: libraryJSON,
+		want: `[{"i":0,"j":0},{"i":1,"j":0},{"i":2,"j":0}]`,
+	},
+}
+
+// staticParentCases are % operators whose step jsonata-js cannot derive,
+// which Compile rejects with S0217 before any input is seen.
+var staticParentCases = []string{
+	`%`,
+	`%.a`,
+	`a.b.%.%.%.x`,
+	`$string(%)`,
+	`Account.Order.Product^(Price).%.OrderID`,
+	`Account.Order.(Product^(Price)).%`,
+	`Account.Order.Product.$.%`,
+	`Account.Order.**.%`,
+	`a.[b,c].%`,
+	`k#$j.%.%`,
+	`(Account)[%.x]`,
+	`*[%.x]`,
+	`a."b"[%.x]`,
+	`a.$^(%.b)`,
+}
+
+func TestStaticParentErrors(t *testing.T) {
+	for _, expr := range staticParentCases {
+		t.Run(expr, func(t *testing.T) {
+			if _, err := gnata.Compile(expr); err == nil || !strings.Contains(err.Error(), "S0217") {
+				t.Fatalf("Compile(%s): want S0217, got %v", expr, err)
+			}
+		})
+	}
 }
 
 var bindingOperatorCases = []exprCase{
@@ -81,10 +167,7 @@ var bindingOperatorCases = []exprCase{
 	{expr: `Account.Order.Product#$i{$i: Name}`, data: accountJSON, code: "T1003"},
 	{expr: `Account.Order#$i.Product{Name: $error("g")}`, data: accountJSON, code: "D3137"},
 	{expr: `Account.Order.Product@$p{$p.Name: $p.Price}`, data: accountJSON, want: `{"Bag":20,"Cap":5,"Hat":10}`},
-	{
-		expr: `Account.Order@$o.$o.Product{%.OrderID: Name}`, data: accountJSON,
-		want: `{"o1":["Hat","Cap"],"o2":"Bag"}`,
-	},
+	{expr: `Account.Order@$o.$o.Product{%.OrderID: Name}`, data: accountJSON, want: `{}`},
 	{
 		expr: `Account.Order.Product[Price>5]#$i.{"n":Name,"i":$i}`, data: accountJSON,
 		want: `[{"i":0,"n":"Hat"},{"i":1,"n":"Bag"}]`,

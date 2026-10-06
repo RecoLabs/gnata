@@ -2,7 +2,6 @@ package evaluator
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/recolabs/gnata/internal/parser"
 )
@@ -63,13 +62,10 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodeTransform:
 		return evalTransform(node, input, env)
 	case parser.NodeParent:
-		// % retrieves the parent context value stored by evalPathTuple when it
-		// expanded a path step. The parent is stored under parentKey ("%%") in
-		// the child environment created by appendTupleResults.
-		if val, ok := env.Lookup(parentKey); ok {
-			return val, nil
-		}
-		return nil, &JSONataError{Code: "S0217", Message: "% operator used outside of a valid path context"}
+		// The step the parser resolved % to binds its slot's label to its
+		// input; a % no step resolved, as in a lambda, is undefined.
+		val, _ := env.Lookup(node.Slot.Label)
+		return val, nil
 	default:
 		return nil, fmt.Errorf("unknown node type: %s", node.Type)
 	}
@@ -79,16 +75,10 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 // a step of its left path, so a [] there or on the sort applies to the
 // sorted result: o.b[]^($) is [5].
 func evalSortNode(node *parser.Node, input any, env *Environment) (any, error) {
-	sortFn := evalSort
-	// If any sort term references %, we need tuple-aware path evaluation so
-	// that each item carries its parent context during sorting.
-	if slices.ContainsFunc(node.Terms, func(t parser.SortTerm) bool { return nodeHasParentRef(t.Expression) }) {
-		sortFn = evalSortWithParentTracking
-	}
 	if parser.ChainKeepsArray(node) {
-		return keepStepResult(sortFn(node, input, env))
+		return keepStepResult(evalSort(node, input, env))
 	}
-	return sortFn(node, input, env)
+	return evalSort(node, input, env)
 }
 
 // keepStepResult applies a [] suffix to a name or sort outside a path, which

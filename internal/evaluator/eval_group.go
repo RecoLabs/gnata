@@ -13,10 +13,9 @@ type groupEntry struct {
 }
 
 func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
-	// For paths with #$var position bindings or % references (in steps or in the
-	// group expression itself), delegate directly to evalPathTuple which handles
-	// the group expression with per-tuple environments.
-	if node.Type == parser.NodePath && (pathHasTupleStep(node.Steps) || groupHasParentRef(node.Group)) {
+	// A path with #$var, @$var or ancestor bindings runs as a tuple stream,
+	// whose evalPathTuple applies the group with per-tuple environments.
+	if node.Type == parser.NodePath && pathHasTupleStep(node.Steps) {
 		return evalPathTuple(node, input, env)
 	}
 

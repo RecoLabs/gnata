@@ -10,8 +10,9 @@ import "slices"
 //   - Propagates KeepSingletonArray when any step has KeepArray=true.
 //   - Marks array-constructor steps as ConsArray (jsonata-js consarray).
 //   - Attaches group expressions from path-step binary("{") to the path.
-//   - Flags sorts whose Left binds #$var or @$var (Tuple) and wraps them,
-//     with any subscripts, in a one-step path (see wrapBoundSort).
+//   - Flags sorts whose Left binds #$var, @$var or an ancestor (Tuple) and
+//     wraps them, with any subscripts, in a one-step path (see wrapBoundStep).
+//   - Resolves each % to the step whose input it reads (see ancestry.go).
 //   - Recursively processes all child nodes.
 func ProcessAST(node *Node) (*Node, error) {
 	if node == nil {
@@ -27,7 +28,7 @@ func ProcessAST(node *Node) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		return wrapBoundSort(processed), nil
+		return wrapBoundStep(processed), nil
 
 	case NodeUnary:
 		return processUnaryChildren(node)
@@ -55,7 +56,7 @@ func ProcessAST(node *Node) (*Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		return wrapBoundSort(processed), nil
+		return wrapBoundStep(processed), nil
 
 	case NodePath:
 		return processPathChildren(node)
@@ -97,6 +98,9 @@ func processDotBinary(node *Node) (*Node, error) {
 	}
 	markUnaryArraySteps(steps)
 	markSubscriptStages(steps)
+	if err := resolvePathAncestry(path); err != nil {
+		return nil, err
+	}
 
 	// Propagate KeepSingletonArray when any step (or a subscript step's left side)
 	// has KeepArray=true. This covers both A[].B and A[][filter].B patterns.
@@ -196,6 +200,15 @@ func processBinaryChildren(node *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	switch node.Value {
+	case "[":
+		if err := resolvePredicateAncestry(node); err != nil {
+			return nil, err
+		}
+	case "~>":
+	default:
+		node.SeekingParent = concatSlots(node.Left, node.Right)
+	}
 	return node, nil
 }
 
@@ -220,6 +233,7 @@ func processUnaryChildren(node *Node) (*Node, error) {
 			return nil, err
 		}
 	}
+	node.SeekingParent = concatSlots(append(append([]*Node{node.Expression}, node.Expressions...), node.LHS...)...)
 	return node, nil
 }
 
@@ -236,6 +250,7 @@ func processBlockChildren(node *Node) (*Node, error) {
 			node.ConsArray = true
 		}
 	}
+	node.SeekingParent = concatSlots(node.Expressions...)
 	return node, nil
 }
 
@@ -284,6 +299,7 @@ func processFunctionChildren(node *Node) (*Node, error) {
 			return nil, err
 		}
 	}
+	node.SeekingParent = concatSlots(node.Arguments...)
 	return node, nil
 }
 
@@ -315,6 +331,7 @@ func processConditionChildren(node *Node) (*Node, error) {
 			return nil, err
 		}
 	}
+	node.SeekingParent = concatSlots(node.Condition, node.Then, node.Else)
 	return node, nil
 }
 
@@ -329,6 +346,7 @@ func processBindChildren(node *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	node.SeekingParent = exprSlots(node.Right)
 	return node, nil
 }
 
@@ -394,7 +412,9 @@ func processSortChildren(node *Node) (*Node, error) {
 			return nil, err
 		}
 	}
-	node.Tuple = hasBinding(node.Left)
+	if err := resolveSortAncestry(node); err != nil {
+		return nil, err
+	}
 	return node, nil
 }
 
@@ -437,81 +457,106 @@ func ParseAndProcess(src string) (*Node, error) {
 	if ast, err = ProcessAST(ast); err != nil {
 		return nil, err
 	}
-	markRootContext(ast)
+	if ast.Type == NodeParent || len(exprSlots(ast)) > 0 {
+		return nil, errNoParent(ast)
+	}
+	markRootContext(ast, true)
 	return ast, nil
 }
 
-// markRootContext flags the wildcard steps that start a path evaluated
-// against the expression's root input. jsonata-js wraps a root array input,
-// so such a step sees the array as one item, while later steps and $ see its
-// items. It runs once on the whole expression.
-func markRootContext(node *Node) {
+// markRootContext flags the wildcard and ancestor steps that start a path
+// evaluated against the expression's root input. jsonata-js wraps a root
+// array input, so such a step sees the array as one item, while later steps
+// and $ see its items. It runs once on the whole expression. With
+// ancestors false, as under a path's first step, which sees the root
+// array's items, it flags only wildcards.
+func markRootContext(node *Node, ancestors bool) {
 	if node == nil {
 		return
 	}
 	switch node.Type {
 	case NodePath:
 		if len(node.Steps) > 0 {
-			if first := node.Steps[0]; first.Type == NodeWildcard {
+			first := node.Steps[0]
+			if base := stepBase(first); ancestors && base.Ancestor != nil {
+				base.RootContext = true
+			}
+			if first.Type == NodeWildcard {
 				first.RootContext = true
 			} else {
-				markRootContext(first)
+				markRootContext(first, false)
 			}
 		}
 	case NodeBlock:
 		for _, expr := range node.Expressions {
-			markRootContext(expr)
+			markRootContext(expr, ancestors)
 		}
 	case NodeUnary:
-		markRootContext(node.Expression)
+		markRootContext(node.Expression, ancestors)
 		for _, expr := range node.Expressions {
-			markRootContext(expr)
+			markRootContext(expr, ancestors)
 		}
 		for _, expr := range node.LHS {
-			markRootContext(expr)
+			markRootContext(expr, ancestors)
 		}
 	case NodeBinary, NodeApply:
-		markRootContext(node.Left)
+		markRootContext(node.Left, ancestors)
 		if node.Value != "[" {
-			markRootContext(node.Right)
+			markRootContext(node.Right, ancestors)
 		}
 	case NodeCondition:
-		markRootContext(node.Condition)
-		markRootContext(node.Then)
-		markRootContext(node.Else)
+		markRootContext(node.Condition, ancestors)
+		markRootContext(node.Then, ancestors)
+		markRootContext(node.Else, ancestors)
 	case NodeBind:
-		markRootContext(node.Right)
+		markRootContext(node.Right, ancestors)
 	case NodeFunction, NodePartial:
 		for _, arg := range node.Arguments {
-			markRootContext(arg)
+			markRootContext(arg, ancestors)
 		}
 	case NodeLambda:
 		// A lambda body runs against the input where the lambda is defined.
-		markRootContext(node.Body)
+		markRootContext(node.Body, ancestors)
 	case NodeSort:
-		markRootContext(node.Left)
+		markRootContext(node.Left, ancestors)
 	}
 }
 
-// wrapBoundSort wraps a sort whose Left binds #$var or @$var, as in
-// a#$j^(b), in a one-step path, since only path evaluation tracks its tuple
-// stream. A subscript on it, as in a#$j^(b)[0], filters that stream, so it
-// replaces the sort as the path's step; a chain [p1][p2] extends the same
-// path, keeping each wrap O(1).
-func wrapBoundSort(node *Node) *Node {
+// wrapBoundStep wraps a step that only path evaluation can run, since it
+// tracks a tuple stream, in a one-step path (see wrapStep): a sort whose
+// Left binds #$var, @$var or an ancestor, as in a#$j^(b), or a subscripted
+// name that binds an ancestor, as in a[%.b] outside a path. A subscript on
+// a wrapped step, as in a#$j^(b)[0], filters that stream, so it replaces the
+// step in the path; a chain [p1][p2] extends the same path, keeping each
+// wrap O(1).
+func wrapBoundStep(node *Node) *Node {
 	switch {
 	case node.Type == NodeSort && node.Tuple:
-		return &Node{Type: NodePath, Steps: []*Node{node}, Pos: node.Pos, Tuple: true, KeepSingletonArray: ChainKeepsArray(node)}
-	case node.Type == NodeBinary && node.Value == "[" && IsBoundSortPath(node.Left):
+		return wrapStep(node)
+	case node.Type == NodeBinary && node.Value == "[" && IsStepPath(node.Left):
 		keep := node.KeepArray || node.Left.KeepSingletonArray
 		node.Left = node.Left.Steps[0]
-		return &Node{Type: NodePath, Steps: []*Node{node}, Pos: node.Pos, Tuple: true, KeepSingletonArray: keep}
+		path := wrapStep(node)
+		path.KeepSingletonArray = keep
+		return path
+	case node.Type == NodeBinary && node.Value == "[" && len(predicateSlots(node.Right)) > 0 &&
+		isPathLike(node) && stepBase(node).Ancestor != nil:
+		return wrapStep(node)
 	}
 	return node
 }
 
-// IsBoundSortPath reports whether node is a path wrapBoundSort made.
-func IsBoundSortPath(node *Node) bool {
+// wrapStep returns a one-step path running step, as jsonata-js makes any
+// step it evaluates as a tuple stream a path.
+func wrapStep(step *Node) *Node {
+	return &Node{
+		Type: NodePath, Steps: []*Node{step}, Pos: step.Pos, Tuple: true,
+		KeepSingletonArray: ChainKeepsArray(step), SeekingParent: pathSlots(step),
+	}
+}
+
+// IsStepPath reports whether node is a path wrapStep made.
+func IsStepPath(node *Node) bool {
 	return node != nil && node.Type == NodePath && node.Tuple && len(node.Steps) == 1
 }
 
@@ -527,14 +572,14 @@ func ChainKeepsArray(node *Node) bool {
 }
 
 // hasBinding reports whether node or any node in its Left, Right or Steps
-// subtrees has a #$var or @$var binding. A processed sort or wrapBoundSort
-// path answers from its Tuple flag, so a chain of sorts is checked in linear
-// time.
+// subtrees has a #$var, @$var or ancestor binding. A processed sort or
+// wrapStep path answers from its Tuple flag, so a chain of sorts is checked
+// in linear time.
 func hasBinding(node *Node) bool {
 	if node == nil {
 		return false
 	}
-	if node.Index != "" || node.Focus != "" || node.Tuple {
+	if node.Index != "" || node.Focus != "" || node.Tuple || node.Ancestor != nil || node.TupleResult {
 		return true
 	}
 	if node.Type == NodeSort {

@@ -10,9 +10,10 @@ import (
 	"testing"
 )
 
-// longChainCases guard against compile time growing quadratically with the
-// length of a chain of sorts.
+// longChainCases guard against compile or evaluation time growing
+// quadratically with the length of a chain of sorts.
 var longChainCases = []exprCase{
+	{expr: `a` + strings.Repeat(`.$^(c)`, 20_000), data: `{"a":[{"c":2},{"c":1}]}`, want: `[{"c":1},{"c":2}]`},
 	{expr: `a` + strings.Repeat(`^($)`, 20_000), data: `{"a":[3,1,2]}`, want: `[1,2,3]`},
 	{expr: `a#$j` + strings.Repeat(`^($)[0]`, 20_000) + `.$j`, data: `{"a":[3,1,2]}`, want: `1`},
 	{expr: `a#$j` + strings.Repeat(`^($)`, 20_000) + `.$j`, data: `{"a":[3,1,2]}`, code: "T2008"},

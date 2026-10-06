@@ -48,17 +48,20 @@ type Node struct {
 	KeepSingletonArray bool // path has at least one keepArray step
 	ConsArray          bool // step is an array constructor used as a path step
 	Thunk              bool // call, or ?: or ?? operator, in a lambda's tail position
-	Tuple              bool // sort whose Left binds #$var or @$var, or the path wrapping it (see wrapBoundSort)
-	RootContext        bool // wildcard step starting a path over the root input (see markRootContext)
+	Tuple              bool // sort whose Left binds #$var, @$var or an ancestor, or the step path wrapping it (see wrapStep)
+	RootContext        bool // wildcard or ancestor step starting a path over the root input (see markRootContext)
 	PathStage          bool // subscript applied as a stage of a path step (see markSubscriptStages)
 	NoBinds            bool // transform whose pattern, update and delete bind no variable
+	TupleResult        bool // block or path a % reaches into, which yields its tuples (see seekParent)
 
 	// Focus / index variable names (set by @ and # operators)
 	Focus string // variable name bound by @
 	Index string // variable name bound by #
 
-	// Ancestor slot (set by % operator)
-	Slot *Slot
+	// Slot is the ancestor a % reads (type="parent"); Ancestor is the slot a
+	// name or wildcard step binds to its input for a later % (see ancestry.go).
+	Slot     *Slot
+	Ancestor *Slot
 
 	// Stages: predicates and index bindings attached to a step
 	Stages []Stage
@@ -66,7 +69,8 @@ type Node struct {
 	// Group expression attached to a path or step
 	Group *GroupExpr
 
-	// SeekingParent: unresolved parent slots in this subtree
+	// SeekingParent holds the % slots this node passes to the expression
+	// around it (see ancestry.go).
 	SeekingParent []*Slot
 
 	// NextFunction: name of the next function (for T1005 error)
@@ -93,11 +97,12 @@ type GroupExpr struct {
 	Pos   int
 }
 
-// Slot represents an ancestor reference created by the % operator.
+// Slot is the ancestor a % operator reads, as in jsonata-js: the evaluator
+// binds Label, which no variable name can spell, to the input of the step
+// resolution picked.
 type Slot struct {
-	Label string // "!N" where N is the ancestry index
-	Level int    // always 1
-	Index int    // sequential index across all parent operators
+	Label string // "!N" for the expression's Nth %, or a label it shares
+	Level int    // steps still to climb; 0 once resolved
 }
 
 // Signature is the parsed type signature of a lambda or built-in function.
