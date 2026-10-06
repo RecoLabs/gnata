@@ -349,7 +349,36 @@ func processTransformChildren(node *Node) (*Node, error) {
 			return nil, err
 		}
 	}
+	node.NoBinds = !containsBind(node.Pattern) && !containsBind(node.Update) && !containsBind(node.Delete)
 	return node, nil
+}
+
+// containsBind reports whether node or any node under it binds a variable.
+func containsBind(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Type == NodeBind {
+		return true
+	}
+	if slices.ContainsFunc([]*Node{
+		node.Left, node.Right, node.Expression, node.Condition, node.Then, node.Else,
+		node.Procedure, node.Body, node.Pattern, node.Update, node.Delete,
+	}, containsBind) {
+		return true
+	}
+	for _, children := range [][]*Node{node.Steps, node.Expressions, node.LHS, node.Arguments} {
+		if slices.ContainsFunc(children, containsBind) {
+			return true
+		}
+	}
+	if slices.ContainsFunc(node.Terms, func(t SortTerm) bool { return containsBind(t.Expression) }) ||
+		slices.ContainsFunc(node.Stages, func(st Stage) bool { return containsBind(st.Expression) }) {
+		return true
+	}
+	return node.Group != nil && slices.ContainsFunc(node.Group.Pairs, func(p [2]*Node) bool {
+		return containsBind(p[0]) || containsBind(p[1])
+	})
 }
 
 // processSortChildren recursively processes a sort node.

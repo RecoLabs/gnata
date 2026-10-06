@@ -23,7 +23,16 @@ type OrderedMap struct {
 	// NormalizedView). Maps from the public DecodeJSON are never frozen, since
 	// callers may keep and mutate them.
 	frozen bool
-	norm   atomic.Pointer[map[string]any]
+	// goMap marks a transform's clone of a Go map, which the public Eval
+	// boundary returns as a map[string]any again (see StripTypedArrays).
+	goMap bool
+	// clone identifies the transform that made this map as a copy of its
+	// input, the only maps a transform changes (see applyTransform); 0 for
+	// any other map. It sits in padding, so OrderedMap stays 48 bytes, and
+	// is atomic because the public boundary clears it on results, which
+	// callers may share.
+	clone atomic.Uint32
+	norm  atomic.Pointer[map[string]any]
 }
 
 func NewOrderedMap() *OrderedMap {

@@ -94,67 +94,188 @@ func evalSettled(node *parser.Node, input any, env *Environment, keepArray bool)
 }
 
 // StripTypedArrays converts the evaluator's internal array types to []any,
-// recursively, including inside objects the evaluator built. Used at the
-// public Eval boundary so callers see ordinary slices.
+// recursively, including inside objects the evaluator built, and returns a
+// transform's clone of a Go map as a map[string]any. Used at the public
+// Eval boundary so callers see ordinary values. It also clears the clone
+// mark of transform objects it returns (see cloneIDs).
 func StripTypedArrays(v any) any {
-	stripped, _ := stripTypedArrays(v)
+	var s stripper
+	stripped, _ := s.strip(v)
 	return stripped
 }
 
-// stripTypedArrays returns v without internal array types in one pass,
-// copying a container only when something inside it changed. A frozen map
-// is decoded input, which never holds one.
-func stripTypedArrays(v any) (any, bool) {
+// stripMemoAfter is how many containers stripper visits before it memoizes
+// them, so a result that shares subtrees, as {"a": $x, "b": $x} nested again
+// and again does, is walked once per container rather than once per path.
+const stripMemoAfter = 256
+
+// stripper strips internal array types in one pass, copying a container
+// only when something inside it changed. A frozen map is decoded input,
+// which never holds one.
+type stripper struct {
+	visits int
+	done   map[any]stripped // by *OrderedMap or sliceKey
+}
+
+type stripped struct {
+	value   any
+	changed bool
+}
+
+// sliceKey identifies a non-empty slice by its storage and length.
+type sliceKey struct {
+	first *any
+	n     int
+}
+
+func (s *stripper) strip(v any) (any, bool) {
 	if arr, ok := typedArray(v); ok {
-		if out, changed := stripSlice(arr); changed {
+		if out, changed := s.slice(arr); changed {
 			return out, true
 		}
 		return arr, true
 	}
 	switch a := v.(type) {
 	case []any:
-		if out, changed := stripSlice(a); changed {
+		if out, changed := s.slice(a); changed {
 			return out, true
 		}
 	case *OrderedMap:
 		if a.frozen {
-			return v, false
+			break
 		}
-		var out *OrderedMap
-		for i, k := range a.keys {
-			val, changed := stripTypedArrays(a.data[k])
-			if changed && out == nil {
-				out = NewOrderedMapWithCapacity(len(a.keys))
-				for _, prev := range a.keys[:i] {
-					out.Set(prev, a.data[prev])
-				}
-			}
-			if out != nil {
-				out.Set(k, val)
-			}
+		if !worthMemo(a) {
+			return s.object(a)
 		}
-		if out != nil {
-			return out, true
-		}
+		return s.memo(a, func() (any, bool) { return s.object(a) })
 	}
 	return v, false
 }
 
-// stripSlice strips each element of s, returning a copy and true when one
-// changed, or nil and false.
-func stripSlice(s []any) ([]any, bool) {
-	var out []any
-	for i, e := range s {
-		val, changed := stripTypedArrays(e)
+// memoMinLen is the length from which a container is worth memoizing for
+// its own size, so a large object or array shared by many parents is walked
+// once.
+const memoMinLen = 16
+
+// worthMemo reports whether the object or array v is worth memoizing: a
+// large one, one holding two or more containers, where the paths through
+// shared subtrees multiply, or one heading a chain of single-child
+// containers, so a long chain shared by many parents is walked once. Any
+// other container ends, within chainLookahead small levels, in a leaf or in
+// a container memoized itself, so walking it again costs a constant.
+func worthMemo(v any) bool {
+	for level := range chainLookahead + 1 {
+		n, containers, only := 0, 0, any(nil)
+		anyChild(v, func(c any) bool {
+			n++
+			if isContainer(c) {
+				containers++
+				only = c
+			}
+			return n >= memoMinLen || containers >= 2
+		})
+		switch {
+		case n >= memoMinLen || containers >= 2:
+			// A chain container like this is memoized itself.
+			return level == 0
+		case containers == 0:
+			return false
+		}
+		v = only
+	}
+	return true
+}
+
+// chainLookahead is how many levels of single-child containers below a
+// container worthMemo follows before it memoizes the container.
+const chainLookahead = 3
+
+// isContainer reports whether v is an object or array that can change or
+// hold internal types (see containerKey), without allocating its key.
+func isContainer(v any) bool {
+	if om, ok := v.(*OrderedMap); ok {
+		return !om.frozen
+	}
+	arr, ok := AsArray(v)
+	return ok && len(arr) > 0
+}
+
+// memo returns walk's result for the container key, computing it once
+// after stripMemoAfter visits (see worthMemo).
+func (s *stripper) memo(key any, walk func() (any, bool)) (any, bool) {
+	s.visits++
+	if s.visits > stripMemoAfter && s.done == nil {
+		s.done = make(map[any]stripped)
+	}
+	if s.done == nil {
+		return walk()
+	}
+	if r, ok := s.done[key]; ok {
+		return r.value, r.changed
+	}
+	value, changed := walk()
+	s.done[key] = stripped{value: value, changed: changed}
+	return value, changed
+}
+
+func (s *stripper) object(a *OrderedMap) (any, bool) {
+	if a.clone.Load() != 0 {
+		a.clone.Store(0)
+	}
+	if a.goMap {
+		out := make(map[string]any, len(a.keys))
+		for _, k := range a.keys {
+			out[k], _ = s.strip(a.data[k])
+		}
+		return out, true
+	}
+	var out *OrderedMap
+	for i, k := range a.keys {
+		val, changed := s.strip(a.data[k])
 		if changed && out == nil {
-			out = make([]any, len(s))
-			copy(out, s[:i])
+			out = NewOrderedMapWithCapacity(len(a.keys))
+			for _, prev := range a.keys[:i] {
+				out.Set(prev, a.data[prev])
+			}
 		}
 		if out != nil {
-			out[i] = val
+			out.Set(k, val)
 		}
 	}
-	return out, out != nil
+	if out != nil {
+		return out, true
+	}
+	return a, false
+}
+
+// slice strips each element of a, returning a copy and true when one
+// changed, or nil and false.
+func (s *stripper) slice(a []any) ([]any, bool) {
+	walk := func() (any, bool) {
+		var out []any
+		for i, e := range a {
+			val, changed := s.strip(e)
+			if changed && out == nil {
+				out = make([]any, len(a))
+				copy(out, a[:i])
+			}
+			if out != nil {
+				out[i] = val
+			}
+		}
+		return out, out != nil
+	}
+	var out any
+	var changed bool
+	if worthMemo(a) {
+		out, changed = s.memo(containerKey(a), walk)
+	} else {
+		out, changed = walk()
+	}
+	if !changed {
+		return nil, false
+	}
+	return out.([]any), true
 }
 
 // Sequence is the core multi-value container used throughout evaluation.

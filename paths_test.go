@@ -231,6 +231,20 @@ var transformCases = []exprCase{
 	{expr: `$ ~> |Account|{}, 5|`, data: `{"Account":{"Name":"Firefly"}}`, code: "T2012"},
 	{expr: `$ ~> |Account|$error("u")|`, data: `{"Account":{"Name":"Firefly"}}`, code: "D3137"},
 	{expr: `$ ~> |Account|{}, $error("d")|`, data: `{"Account":{"Name":"Firefly"}}`, code: "D3137"},
+	{expr: `({"x": o.b[]} ~> |x|{"z":1}|; o.b)`, data: `{"o":{"b":{"c":1}}}`, want: `{"c":1}`},
+	{expr: `($o := {"z": $map([1], $keys)}; ($o ~> |$|{}|).z)`, want: `[]`},
+	{expr: `$ ~> |o|{}, $map([1], $keys)|`, data: pairsJSON, want: `{"a":[{"b":1,"c":2},{"b":3,"c":4}],"o":{"b":5,"c":6}}`},
+	{expr: `$ ~> |o|{}, $map([{"b":1}], $keys)|`, data: pairsJSON, want: `{"a":[{"b":1,"c":2},{"b":3,"c":4}],"o":{"c":6}}`},
+	{expr: `$ ~> |o|{}, ["b"].[$]|`, data: pairsJSON, want: `{"a":[{"b":1,"c":2},{"b":3,"c":4}],"o":{"c":6}}`},
+	{
+		expr: `$ ~> |**[a]|{"p": a}|`, data: `{"x":{"a":{"a":{"v":1}}}}`,
+		want: `{"x":{"a":{"a":{"v":1},"p":{"v":1}},"p":{"a":{"v":1},"p":{"v":1}}}}`,
+	},
+	{expr: `($ ~> |x.a|{"self": $}|).x.a.self.a.v`, data: `{"x":{"a":{"a":{"v":1}}}}`, want: `1`},
+	{expr: `$ ~> |x|{}, [1]|`, data: `{"x":{"a":1}}`, code: "T2012"},
+	{expr: `$ ~> |x|{}, ["a", null]|`, data: `{"x":{"a":1}}`, code: "T2012"},
+	{expr: `({"a":[1, function(){1}]} ~> |$|{}|).a`, want: `[1,""]`},
+	{expr: `({"o":{"f": function(){1}}} ~> |o|{"z":1}|)`, want: `{"o":{"f":"","z":1}}`},
 }
 
 var pathStepCases = []exprCase{

@@ -51,6 +51,7 @@ type Node struct {
 	Tuple              bool // sort whose Left binds #$var or @$var, or the path wrapping it (see wrapBoundSort)
 	RootContext        bool // wildcard step starting a path over the root input (see markRootContext)
 	PathStage          bool // subscript applied as a stage of a path step (see markSubscriptStages)
+	NoBinds            bool // transform whose pattern, update and delete bind no variable
 
 	// Focus / index variable names (set by @ and # operators)
 	Focus string // variable name bound by @
