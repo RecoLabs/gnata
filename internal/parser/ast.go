@@ -95,6 +95,9 @@ type Stage struct {
 type GroupExpr struct {
 	Pairs [][2]*Node // [key-expr, value-expr] pairs
 	Pos   int
+	// OnPath is set for a group applied to something jsonata-js makes a
+	// path, which groups the whole path's result (see ProcessAST).
+	OnPath bool
 }
 
 // Slot is the ancestor a % operator reads, as in jsonata-js: the evaluator

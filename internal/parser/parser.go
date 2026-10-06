@@ -890,7 +890,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 		if err := p.advance(); err != nil { // consume }
 			return nil, err
 		}
-		group := &GroupExpr{Pairs: pairsToGroupPairs(pairs), Pos: pos}
+		group := &GroupExpr{Pairs: pairsToGroupPairs(pairs), Pos: pos, OnPath: isPathLike(left)}
 		left.Group = group
 		return left, nil
 
@@ -954,10 +954,6 @@ func (p *Parser) parseFunctionCall(callee *Node, pos int) (*Node, error) {
 
 // parseSubscript parses [ expr ] in infix position.
 func (p *Parser) parseSubscript(left *Node, pos int) (*Node, error) {
-	// S0209: A predicate/subscript cannot follow a group-by expression.
-	if left.Group != nil {
-		return nil, parseError("S0209", "[", "a predicate cannot follow a grouping expression in a step")
-	}
 	if err := p.advancePrefix(); err != nil { // consume [, subscript content is prefix
 		return nil, err
 	}
@@ -969,6 +965,12 @@ func (p *Parser) parseSubscript(left *Node, pos int) (*Node, error) {
 		}
 		left.KeepArray = true
 		return left, nil
+	}
+	// S0209: A predicate cannot follow a step's group-by expression. A group
+	// on a path, as in a{k: v}[0], applies after all of it instead (see
+	// ProcessAST).
+	if left.Group != nil && !left.Group.OnPath {
+		return nil, parseError("S0209", "[", "a predicate cannot follow a grouping expression in a step")
 	}
 	expr, err := p.expression(0)
 	if err != nil {

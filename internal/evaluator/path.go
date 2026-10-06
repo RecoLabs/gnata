@@ -162,17 +162,12 @@ func consArrayGroup(step *parser.Node, input any, env *Environment) (any, error)
 // walking it as a tuple stream (see walkPathTuple), then applies its group
 // or collects the tuples' values.
 func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) {
-	ctxs, finalGroup, rawContext, started, err := walkPathTuple(node, inputTuples(node, input, env), env, streamOwn)
+	ctxs, rawContext, started, err := walkPathTuple(node, inputTuples(node, input, env), env, streamOwn)
 	if err != nil {
 		return nil, err
 	}
 
-	// Determine which group expression to apply (step-level or path-level).
-	grp := finalGroup
-	if node.Group != nil {
-		grp = node.Group
-	}
-	if grp != nil {
+	if grp := node.Group; grp != nil {
 		// jsonata-js groups a path that emptied before its tuple stream
 		// started, or a stream sorted into raw tuples, as plain items.
 		switch {
@@ -244,33 +239,29 @@ const (
 )
 
 // walkPathTuple runs a path's steps over a tuple stream of (value, env)
-// contexts, so a #$var or @$var bound at one step stays visible in later
-// steps. An index binds the position in the step's output, as in jsonata-js.
+// contexts, so a #$var, @$var or ancestor bound at one step stays visible in
+// later steps. An index binds the position in the step's output, as in
+// jsonata-js. A step with its own group, as a leading block can have, is
+// evaluated whole, group included; the path's group is left to the caller.
 //
-// It returns the resulting contexts and the first step-level group (as in
-// Product{key:val}), stripped from its step so the caller applies it with the
-// per-tuple envs. rawContext is non-nil when the last step was a sort that
-// jsonata-js leaves as a plain array of tuples (see rawTupleContext): a group
-// then sees raw tuple objects. started reports whether the walk reached the
-// step that starts the tuple stream.
+// It returns the resulting contexts. rawContext is non-nil when the last
+// step was a sort that jsonata-js leaves as a plain array of tuples (see
+// rawTupleContext): a group then sees raw tuple objects. started reports
+// whether the walk reached the step that starts the tuple stream.
 func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 	node *parser.Node, ctxs []pathCtx, env *Environment, state streamPos,
-) (_ []pathCtx, _ *parser.GroupExpr, rawContext tupleContext, started bool, _ error) {
+) (_ []pathCtx, rawContext tupleContext, started bool, _ error) {
 	tupleStart := firstBindingStep(node.Steps)
 	if state == streamRunning {
 		tupleStart = -1
 	}
 	hasBindingStep := tupleStart < len(node.Steps) || state == streamPending
 
-	// finalGroup accumulates the first step-level Group expression encountered.
-	// Step-level groups are applied after all contexts have been collected.
-	var finalGroup *parser.GroupExpr
-
 	reached := -1
 	for stepIdx, step := range node.Steps {
 		reached = stepIdx
 		if err := env.Err(); err != nil {
-			return nil, nil, nil, false, err
+			return nil, nil, false, err
 		}
 		var nextCtxs []pathCtx
 		rawContext = nil
@@ -279,17 +270,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		beforeStream := hasBindingStep && stepIdx < tupleStart
 		startsStream := hasBindingStep && stepIdx == tupleStart
 		inStream := hasBindingStep && stepIdx > tupleStart
-
-		// If this step has an inline Group (e.g. Product{key:val}), strip it so
-		// that evalPathStep evaluates the base node without group-by reduction.
-		// The group will be applied at the end via evalTupleGroup.
-		evalStep := step
-		if step.Group != nil && finalGroup == nil {
-			finalGroup = step.Group
-			cp := *step
-			cp.Group = nil
-			evalStep = &cp
-		}
+		grouped := step.Group != nil
 
 		// Sort steps must be applied globally to ALL tuples simultaneously so that
 		// tuple ordering is preserved (e.g. Account.Order#$o.Product^(ProductID)).
@@ -298,7 +279,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// Before the tuple stream starts, a sort with predicates is a plain
 		// step, evaluated below like any other.
 		sortStep, stages := splitTupleStages(step)
-		if sortStep.Type == parser.NodeSort && (len(stages) == 0 || startsStream || inStream) {
+		if !grouped && sortStep.Type == parser.NodeSort && (len(stages) == 0 || startsStream || inStream) {
 			leftState := streamOwn
 			switch {
 			case inStream:
@@ -309,7 +290,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			raw := rawTupleContext(node.Steps[:stepIdx+1], env)
 			sorted, err := evalTupleSort(sortStep, ctxs, env, leftState, raw)
 			if err != nil {
-				return nil, nil, nil, false, err
+				return nil, nil, false, err
 			}
 			if startsStream && !sortStep.Tuple {
 				bindSortIndex(sortStep, sorted)
@@ -323,7 +304,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			}
 			rawContext = contextOf
 			if ctxs, err = applyTupleStages(stages, sorted, contextOf); err != nil {
-				return nil, nil, nil, false, err
+				return nil, nil, false, err
 			}
 			continue
 		}
@@ -331,17 +312,17 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// A block a % reaches into yields its last expression's tuples,
 		// which carry the bindings made inside; predicates on the block
 		// then filter the whole stream.
-		if base, stages := splitTupleStages(evalStep); base.Type == parser.NodeBlock && base.TupleResult {
+		if base, stages := splitTupleStages(step); !grouped && base.Type == parser.NodeBlock && base.TupleResult {
 			var stream []pathCtx
 			for _, ctx := range ctxs {
 				var err error
 				if stream, err = appendTupleResult(stream, base, ctx); err != nil {
-					return nil, nil, nil, false, err
+					return nil, nil, false, err
 				}
 			}
 			var err error
 			if ctxs, err = applyTupleStages(stages, stream, nil); err != nil {
-				return nil, nil, nil, false, err
+				return nil, nil, false, err
 			}
 			if len(ctxs) == 0 {
 				break
@@ -353,16 +334,16 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// e.g., Contact@$c[$c.ssn = $e.SSN]. We evaluate the Left to get
 		// elements, bind each to $focus_var, then apply the predicate with
 		// access to both the focus variable and previously bound variables.
-		if evalStep.Type == parser.NodeBinary && evalStep.Value == "[" &&
-			evalStep.Left != nil && evalStep.Left.Focus != "" {
-			predicate := evalStep.Right
-			leftNode := evalStep.Left
+		if !grouped && step.Type == parser.NodeBinary && step.Value == "[" &&
+			step.Left != nil && step.Left.Focus != "" {
+			predicate := step.Right
+			leftNode := step.Left
 			focusVar := leftNode.Focus
 			indexVar := leftNode.Index
-			postFilterIndex := evalStep.Index
+			postFilterIndex := step.Index
 			var err error
 			if nextCtxs, err = evalJoinFilter(ctxs, nextCtxs, leftNode, predicate, focusVar, indexVar); err != nil {
-				return nil, nil, nil, false, err
+				return nil, nil, false, err
 			}
 			if postFilterIndex != "" {
 				for k := range nextCtxs {
@@ -380,26 +361,26 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// binary "[" with Left.Focus set. E.g., books@$b[pred][1] or
 		// books@$b[pred][]. Process the inner join-filter first to collect
 		// tuples, then apply the outer subscript to the entire tuple collection.
-		if evalStep.Type == parser.NodeBinary && evalStep.Value == "[" &&
-			evalStep.Left != nil && evalStep.Left.Type == parser.NodeBinary && evalStep.Left.Value == "[" &&
-			evalStep.Left.Left != nil && evalStep.Left.Left.Focus != "" {
+		if !grouped && step.Type == parser.NodeBinary && step.Value == "[" &&
+			step.Left != nil && step.Left.Type == parser.NodeBinary && step.Left.Value == "[" &&
+			step.Left.Left != nil && step.Left.Left.Focus != "" {
 			// Process the inner join-filter as if it were a standalone step.
-			innerStep := evalStep.Left
+			innerStep := step.Left
 			predicate := innerStep.Right
 			leftNode := innerStep.Left
 			focusVar := leftNode.Focus
 			indexVar := leftNode.Index
 			var err error
 			if nextCtxs, err = evalJoinFilter(ctxs, nextCtxs, leftNode, predicate, focusVar, indexVar); err != nil {
-				return nil, nil, nil, false, err
+				return nil, nil, false, err
 			}
 
 			// Apply the outer subscript to the collected tuples.
-			outerExpr := evalStep.Right
+			outerExpr := step.Right
 			if len(nextCtxs) > 0 {
 				outerResult, err := Eval(outerExpr, nextCtxs[0].value, nextCtxs[0].env)
 				if err != nil {
-					return nil, nil, nil, false, err
+					return nil, nil, false, err
 				}
 				if idx, ok := ToFloat64(outerResult); ok {
 					i := ToIntClamped(idx)
@@ -421,10 +402,10 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			continue
 		}
 
-		if base, stages := splitTupleStages(evalStep); (startsStream || inStream) && len(stages) > 0 && isPlainTupleBase(base) {
+		if base, stages := splitTupleStages(step); !grouped && (startsStream || inStream) && len(stages) > 0 && isPlainTupleBase(base) {
 			var err error
 			if ctxs, err = evalTupleStages(base, stages, ctxs, node.KeepSingletonArray); err != nil {
-				return nil, nil, nil, false, err
+				return nil, nil, false, err
 			}
 			if len(ctxs) == 0 {
 				break
@@ -446,15 +427,15 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 				continue
 			}
 
-			result, err := evalTupleContextStep(evalStep, val, ctx.env, node.KeepSingletonArray, beforeStream)
+			result, err := evalTupleContextStep(step, val, ctx.env, node.KeepSingletonArray, beforeStream)
 			if err != nil {
-				return nil, nil, nil, false, err
+				return nil, nil, false, err
 			}
 			if result == nil {
 				continue
 			}
 
-			appendTupleResults(evalStep, result, ctx.value, ctx.env, &nextCtxs)
+			appendTupleResults(step, result, ctx.value, ctx.env, &nextCtxs)
 		}
 
 		ctxs = nextCtxs
@@ -464,9 +445,9 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 	}
 
 	if err := env.Err(); err != nil {
-		return nil, nil, nil, false, err
+		return nil, nil, false, err
 	}
-	return ctxs, finalGroup, rawContext, hasBindingStep && reached >= tupleStart, nil
+	return ctxs, rawContext, hasBindingStep && reached >= tupleStart, nil
 }
 
 // evalTupleSort applies a sort step to a slice of pathCtx in tuple-stream mode.
@@ -522,15 +503,9 @@ func evalTupleSort(step *parser.Node, ctxs []pathCtx, env *Environment, state st
 		// sorted output; a plain Eval would discard the per-element environments.
 		var expanded []pathCtx
 		switch {
-		case step.Left.Type == parser.NodePath && len(step.Left.Steps) > 0 && step.Left.Group == nil && !pathHasStepGroup(step.Left):
-			var err error
-			if expanded, _, _, _, err = walkPathTuple(step.Left, ctxs, env, state); err != nil {
-				return nil, err
-			}
 		case step.Left.Type == parser.NodePath && len(step.Left.Steps) > 0:
 			var err error
-			expanded, err = expandPathTuple(step.Left.Steps, ctxs, state == streamPending)
-			if err != nil {
+			if expanded, _, _, err = walkPathTuple(step.Left, ctxs, env, state); err != nil {
 				return nil, err
 			}
 		default:
@@ -578,11 +553,6 @@ func bindSortIndex(step *parser.Node, sorted []pathCtx) {
 		sorted[k].env.Bind(tupleKey, true)
 		sorted[k].env.Bind(step.Index, float64(k))
 	}
-}
-
-// pathHasStepGroup reports whether any step of path carries a group.
-func pathHasStepGroup(path *parser.Node) bool {
-	return slices.ContainsFunc(path.Steps, func(step *parser.Node) bool { return step.Group != nil })
 }
 
 // tupleKey marks the environments that hold one tuple's bindings (see
@@ -728,7 +698,7 @@ func appendTupleResult(stream []pathCtx, block *parser.Node, ctx pathCtx) ([]pat
 // does any expression a % passed over.
 func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx, result any, isTuples bool, _ error) {
 	switch {
-	case node.Type == parser.NodeBlock && node.TupleResult:
+	case node.Type == parser.NodeBlock && node.TupleResult && node.Group == nil:
 		last := len(node.Expressions) - 1
 		blockEnv := env
 		if last > 0 {
@@ -747,7 +717,7 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 			rebaseTuples(tuples, blockEnv, env)
 		}
 		return tuples, nil, true, nil
-	case node.Type == parser.NodePath && node.TupleResult && node.Group == nil && !pathHasStepGroup(node):
+	case node.Type == parser.NodePath && node.TupleResult && node.Group == nil:
 		ctxs := []pathCtx{{value: val, env: env}}
 		if node.Steps[0].Type != parser.NodeVariable {
 			switch items := val.(type) {
@@ -757,7 +727,7 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 				ctxs = splitTuples(items, env)
 			}
 		}
-		tuples, _, _, _, err := walkPathTuple(node, ctxs, env, streamOwn)
+		tuples, _, _, err := walkPathTuple(node, ctxs, env, streamOwn)
 		return tuples, nil, true, err
 	}
 	result, err := Eval(node, val, env)
@@ -779,42 +749,6 @@ func rebaseTuples(tuples []pathCtx, from, env *Environment) {
 		}
 		tuples[i].env = rebased
 	}
-}
-
-// expandPathTuple runs a mini tuple walk over the given path steps, starting
-// from the given ctxs. It returns the resulting (value, env) pairs, preserving
-// #$var, @$var and ancestor bindings. A sort whose Left path has a group uses
-// it, since walkPathTuple would leave that group to its caller.
-//
-// With beforeStream, the walk starts outside a tuple stream: until a step
-// binds a variable, steps run as plain steps (see evalTupleContextStep).
-func expandPathTuple(steps []*parser.Node, ctxs []pathCtx, beforeStream bool) ([]pathCtx, error) {
-	for _, step := range steps {
-		beforeStream = beforeStream && !stepHasBinding(step)
-		var next []pathCtx
-		for _, ctx := range ctxs {
-			val := ctx.value
-			if seq, ok := val.(*Sequence); ok {
-				val = CollapseSequence(seq)
-			}
-			if val == nil {
-				continue
-			}
-			result, err := evalTupleContextStep(step, val, ctx.env, false, beforeStream)
-			if err != nil {
-				return nil, err
-			}
-			if result == nil {
-				continue
-			}
-			appendTupleResults(step, result, ctx.value, ctx.env, &next)
-		}
-		ctxs = next
-		if len(ctxs) == 0 {
-			return nil, nil
-		}
-	}
-	return ctxs, nil
 }
 
 // evalTupleGroup evaluates a group expression against a tuple stream (see
@@ -893,6 +827,11 @@ func mergeGroupEnvs(envs []*Environment) *Environment {
 func evalPathStep(
 	step *parser.Node, input any, env *Environment, prevWasMapper, keepSingletonArray, lastStep bool,
 ) (any, error) {
+	// A leading step's own group, as on (a){k: v} or *{k: v}, groups the
+	// step's result.
+	if step.Group != nil {
+		return Eval(step, input, env)
+	}
 	// Steps that already handle array inputs natively (field lookup, wildcard,
 	// descendant, variable, literals, sort) are delegated directly.
 	switch step.Type {
@@ -1093,7 +1032,7 @@ func evalTupleContextStep(step *parser.Node, val any, env *Environment, keepSing
 	switch _, cons := val.(ConsArray); {
 	case cons:
 		result, err = evalConsArrayStep(step, val, env, keepSingleton)
-	case step.Type == parser.NodeWildcard:
+	case step.Type == parser.NodeWildcard && step.Group == nil:
 		result, err = evalWildcard(step, val, env)
 	default:
 		result, err = evalPathStep(step, val, env, false, keepSingleton, false)

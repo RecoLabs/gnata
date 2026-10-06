@@ -211,11 +211,13 @@ func predicateSlots(node *Node) []*Slot {
 	return exprSlots(node)
 }
 
-// isPathLike reports whether jsonata-js turns node into a path.
+// isPathLike reports whether jsonata-js turns node, processed or not, into
+// a path.
 func isPathLike(node *Node) bool {
 	for {
 		switch {
-		case node.Type == NodePath || node.Type == NodeSort || node.Type == NodeName || node.Index != "":
+		case node.Type == NodePath || node.Type == NodeSort || node.Type == NodeName || node.Index != "" ||
+			node.Type == NodeBinary && node.Value == ".":
 			return true
 		case node.Type == NodeBinary && node.Value == "[" && node.Left != nil:
 			node = node.Left

@@ -9,7 +9,8 @@ import "slices"
 //   - Flattens nested binary(".") nodes into path nodes with Steps slices.
 //   - Propagates KeepSingletonArray when any step has KeepArray=true.
 //   - Marks array-constructor steps as ConsArray (jsonata-js consarray).
-//   - Attaches group expressions from path-step binary("{") to the path.
+//   - Attaches a group on a path, or on anything jsonata-js makes a path,
+//     to the whole path: it applies after all its steps and sorts.
 //   - Flags sorts whose Left binds #$var, @$var or an ancestor (Tuple) and
 //     wraps them, with any subscripts, in a one-step path (see wrapBoundStep).
 //   - Resolves each % to the step whose input it reads (see ancestry.go).
@@ -17,6 +18,12 @@ import "slices"
 func ProcessAST(node *Node) (*Node, error) {
 	if node == nil {
 		return nil, nil
+	}
+	// collectPathSteps processes a path's groups, inner dots' included.
+	if node.Group != nil && (node.Type != NodeBinary || node.Value != ".") {
+		if err := processGroup(node.Group); err != nil {
+			return nil, err
+		}
 	}
 
 	switch node.Type {
@@ -63,28 +70,33 @@ func ProcessAST(node *Node) (*Node, error) {
 
 	default:
 		// Leaf nodes (name, string, number, value, variable, wildcard, descendant, parent, regex).
-		// Still need to process any attached Group expression.
-		if node.Group != nil {
-			var err error
-			for i, pair := range node.Group.Pairs {
-				node.Group.Pairs[i][0], err = ProcessAST(pair[0])
-				if err != nil {
-					return nil, err
-				}
-				node.Group.Pairs[i][1], err = ProcessAST(pair[1])
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
 		return node, nil
 	}
+}
+
+// processGroup processes a group's key and value expressions.
+func processGroup(group *GroupExpr) error {
+	for i, pair := range group.Pairs {
+		for j, expr := range pair {
+			processed, err := ProcessAST(expr)
+			if err != nil {
+				return err
+			}
+			group.Pairs[i][j] = processed
+		}
+	}
+	return nil
+}
+
+// errTwoGroups is S0210, for a path or step given a second group.
+func errTwoGroups() error {
+	return parseError("S0210", "{", "each step can only have one grouping expression")
 }
 
 // processDotBinary flattens a binary(".") node into a path node.
 func processDotBinary(node *Node) (*Node, error) {
 	// Collect all steps from nested dots.
-	steps, err := collectPathSteps(node)
+	steps, group, err := collectPathSteps(node)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +106,7 @@ func processDotBinary(node *Node) (*Node, error) {
 		Value: node.Value,
 		Steps: steps,
 		Pos:   node.Pos,
-		Group: node.Group, // propagate group-by expression (A.B{key:val})
+		Group: group,
 	}
 	markUnaryArraySteps(steps)
 	markSubscriptStages(steps)
@@ -108,66 +120,72 @@ func processDotBinary(node *Node) (*Node, error) {
 	if slices.ContainsFunc(steps, ChainKeepsArray) {
 		path.KeepSingletonArray = true
 	}
-
-	// Process group-by key/value pairs so nested dot expressions within them are resolved.
-	if path.Group != nil {
-		for i, pair := range path.Group.Pairs {
-			path.Group.Pairs[i][0], err = ProcessAST(pair[0])
-			if err != nil {
-				return nil, err
-			}
-			path.Group.Pairs[i][1], err = ProcessAST(pair[1])
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-
 	return path, nil
 }
 
-// collectPathSteps recursively collects steps from binary(".") nodes.
-func collectPathSteps(node *Node) ([]*Node, error) {
+// collectPathSteps recursively collects steps from binary(".") nodes, with
+// the path's group: one on a dot, or on a leading step jsonata-js makes a
+// path (as in a{k: v}.c), which then groups the whole path's result.
+func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 	if node.Type != NodeBinary || node.Value != "." {
 		// Leaf step — process it.
 		processed, err := ProcessAST(node)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// If the processed node is itself a path, splice its steps.
 		if processed.Type == NodePath {
-			return processed.Steps, nil
+			return processed.Steps, processed.Group, nil
 		}
 		promoteQuotedPathNames(processed)
 		if processed.Type == NodeString {
-			processed = &Node{Type: NodeName, Value: processed.Value, Pos: processed.Pos}
+			processed.Type = NodeName
 		}
-		return []*Node{processed}, nil
+		var group *GroupExpr
+		if processed.Group != nil && processed.Group.OnPath {
+			group, processed.Group = processed.Group, nil
+		}
+		return []*Node{processed}, group, nil
 	}
 
-	leftSteps, err := collectPathSteps(node.Left)
+	steps, group, err := collectPathSteps(node.Left)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	rightSteps, err := collectPathSteps(node.Right)
+	rightSteps, rightGroup, err := collectPathSteps(node.Right)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	for _, g := range []*GroupExpr{rightGroup, node.Group} {
+		if g == nil {
+			continue
+		}
+		if group != nil {
+			return nil, nil, errTwoGroups()
+		}
+		group = g
+	}
+	if node.Group != nil {
+		if err := processGroup(node.Group); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// The # and @ infix operators set Index/Focus on the binary "." node
-	// itself (e.g. (Account.Order)#$o). Propagate these to the last left
-	// step so the binding survives path flattening.
-	if len(leftSteps) > 0 {
-		last := leftSteps[len(leftSteps)-1]
-		if node.Index != "" {
-			last.Index = node.Index
-		}
-		if node.Focus != "" {
-			last.Focus = node.Focus
-		}
+	// itself after a group, as in a.b{k: v}#$i. jsonata-js binds them on
+	// the path's last step, a #$var after its predicates.
+	steps = append(steps, rightSteps...)
+	last := steps[len(steps)-1]
+	if node.Index != "" {
+		last.Index = node.Index
 	}
-
-	return append(leftSteps, rightSteps...), nil
+	if node.Focus != "" {
+		if last.Type == NodeBinary && last.Value == "[" {
+			return nil, nil, parseError("S0215", "@", "the @ operator cannot follow a predicate expression")
+		}
+		last.Focus = node.Focus
+	}
+	return steps, group, nil
 }
 
 func promoteQuotedPathNames(n *Node) {
@@ -202,12 +220,42 @@ func processBinaryChildren(node *Node) (*Node, error) {
 	}
 	switch node.Value {
 	case "[":
-		if err := resolvePredicateAncestry(node); err != nil {
-			return nil, err
-		}
+		return processSubscript(node)
 	case "~>":
 	default:
 		node.SeekingParent = concatSlots(node.Left, node.Right)
+	}
+	return node, nil
+}
+
+// processSubscript finishes a subscript whose operands are processed. A
+// group on a path-like Left, as in a{k: v}[0], moves to the subscript, so it
+// applies after it; on a path, as in a.b{k: v}[0], the subscript becomes a
+// stage of the last step, as jsonata-js applies it there.
+func processSubscript(node *Node) (*Node, error) {
+	path := node.Left
+	if path.Type != NodePath || IsStepPath(path) {
+		path = nil
+	} else {
+		last := len(path.Steps) - 1
+		node.Left = path.Steps[last]
+		path.Steps[last] = node
+		node.PathStage = last > 0
+	}
+	if err := resolvePredicateAncestry(node); err != nil {
+		return nil, err
+	}
+	if path != nil {
+		if node.KeepArray {
+			path.KeepSingletonArray = true
+		}
+		return path, nil
+	}
+	if group := node.Left.Group; group != nil && group.OnPath {
+		if node.Group != nil {
+			return nil, errTwoGroups()
+		}
+		node.Group, node.Left.Group = group, nil
 	}
 	return node, nil
 }
@@ -415,6 +463,14 @@ func processSortChildren(node *Node) (*Node, error) {
 	if err := resolveSortAncestry(node); err != nil {
 		return nil, err
 	}
+	// A group on a path-like Left groups the sorted result, as in jsonata-js
+	// the sort joins the path that carries it: a{k: v}^(c) sorts first.
+	if group := node.Left.Group; group != nil && group.OnPath {
+		if node.Group != nil {
+			return nil, errTwoGroups()
+		}
+		node.Group, node.Left.Group = group, nil
+	}
 	return node, nil
 }
 
@@ -431,19 +487,6 @@ func processPathChildren(node *Node) (*Node, error) {
 		}
 	}
 	markUnaryArraySteps(node.Steps)
-	// Process group-by key/value pairs.
-	if node.Group != nil {
-		for i, pair := range node.Group.Pairs {
-			node.Group.Pairs[i][0], err = ProcessAST(pair[0])
-			if err != nil {
-				return nil, err
-			}
-			node.Group.Pairs[i][1], err = ProcessAST(pair[1])
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
 	return node, nil
 }
 
@@ -547,12 +590,17 @@ func wrapBoundStep(node *Node) *Node {
 }
 
 // wrapStep returns a one-step path running step, as jsonata-js makes any
-// step it evaluates as a tuple stream a path.
+// step it evaluates as a tuple stream a path. A group on the path moves to
+// it.
 func wrapStep(step *Node) *Node {
-	return &Node{
+	path := &Node{
 		Type: NodePath, Steps: []*Node{step}, Pos: step.Pos, Tuple: true,
 		KeepSingletonArray: ChainKeepsArray(step), SeekingParent: pathSlots(step),
 	}
+	if step.Group != nil && step.Group.OnPath {
+		path.Group, step.Group = step.Group, nil
+	}
+	return path
 }
 
 // IsStepPath reports whether node is a path wrapStep made.
