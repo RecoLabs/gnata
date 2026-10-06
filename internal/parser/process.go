@@ -121,8 +121,8 @@ func processDotBinary(node *Node) (*Node, error) {
 		return nil, err
 	}
 	for _, step := range steps {
-		if step.Type == NodeNumber || step.Type == NodeValue {
-			return nil, parseError("S0213", step.Value, "a number, true, false or null cannot be a path step")
+		if base := StepBase(step); base.Type == NodeNumber || base.Type == NodeValue {
+			return nil, parseError("S0213", base.Value, "a number, true, false or null cannot be a path step")
 		}
 	}
 
