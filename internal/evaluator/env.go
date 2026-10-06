@@ -66,11 +66,12 @@ const (
 // chain of them would overflow the Go stack, which cannot be recovered. It
 // is fixed, unlike the call depth WithStack sets. Native builds have room
 // for far more, but under js/wasm in Node with go_js_wasm_exec's 8 MB stack,
-// the stack CI runs, it overflows at about 12,750 $sort comparators that are
-// partial applications, the costliest unit measured, and at about 35,000
-// plain partial applications. Hosts with a smaller stack, such as Node's
-// default, can overflow below the limit.
-const maxNestedCalls = 5_000
+// the stack CI runs, $sort comparators that are partial applications, the
+// costliest unit measured, overflow at about 12,500 on a fresh stack and at
+// about 4,900 once an earlier chain in the same evaluation has grown it, so
+// the limit leaves about 2.4 times that. Hosts with a smaller stack, such as
+// Node's default, can overflow below the limit.
+const maxNestedCalls = 2_000
 
 // callCounter.nested must hold maxNestedCalls.
 const _ uint16 = maxNestedCalls
