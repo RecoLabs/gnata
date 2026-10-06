@@ -1175,8 +1175,8 @@ func evalPathStep(
 		if err != nil {
 			return nil, err
 		}
-		if step.Type == parser.NodeFunction {
-			val = CollapseAndKeep(val, step.KeepArray)
+		if seq, ok := val.(*Sequence); ok && step.Type == parser.NodeFunction {
+			val = CollapseAndKeep(seq, step.KeepArray)
 		}
 		if val == nil {
 			continue
