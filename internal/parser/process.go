@@ -33,7 +33,8 @@ func ProcessAST(node *Node) (*Node, error) {
 	return wrapBoundStep(processed), nil
 }
 
-// processNode processes node's children by node type.
+// processNode is ProcessAST's pass for node's type, before the group and
+// wrapping steps every node shares.
 func processNode(node *Node) (*Node, error) {
 	switch node.Type {
 	case NodeBinary:
@@ -89,9 +90,27 @@ func processGroup(group *GroupExpr) error {
 	return nil
 }
 
-// errTwoGroups is S0210, for a path or step given a second group.
-func errTwoGroups() error {
-	return parseError("S0210", "{", "each step can only have one grouping expression")
+// takePathGroup removes and returns node's group if it groups a whole
+// path (see GroupExpr.OnPath).
+func takePathGroup(node *Node) *GroupExpr {
+	group := node.Group
+	if group == nil || !group.OnPath {
+		return nil
+	}
+	node.Group = nil
+	return group
+}
+
+// joinGroups returns the one group of a and b, raising S0210 if both are
+// set: a path or step has at most one group.
+func joinGroups(a, b *GroupExpr) (*GroupExpr, error) {
+	switch {
+	case a == nil:
+		return b, nil
+	case b == nil:
+		return a, nil
+	}
+	return nil, parseError("S0210", "{", "each step can only have one grouping expression")
 }
 
 // processDotBinary flattens a binary(".") node into a path node.
@@ -141,11 +160,9 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 		}
 		// If the processed node is itself a path, as a wrapped step is,
 		// splice its steps.
-		steps, group := []*Node{processed}, (*GroupExpr)(nil)
+		steps, group := []*Node{processed}, takePathGroup(processed)
 		if processed.Type == NodePath {
 			steps, group = processed.Steps, processed.Group
-		} else if processed.Group != nil && processed.Group.OnPath {
-			group, processed.Group = processed.Group, nil
 		}
 		// A quoted step, or one with predicates, is a field name.
 		for _, step := range steps {
@@ -164,14 +181,11 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, g := range []*GroupExpr{rightGroup, node.Group} {
-		if g == nil {
-			continue
-		}
-		if group != nil {
-			return nil, nil, errTwoGroups()
-		}
-		group = g
+	if group, err = joinGroups(group, rightGroup); err != nil {
+		return nil, nil, err
+	}
+	if group, err = joinGroups(group, node.Group); err != nil {
+		return nil, nil, err
 	}
 	if node.Group != nil {
 		if err := processGroup(node.Group); err != nil {
@@ -211,6 +225,8 @@ func processBinaryChildren(node *Node) (*Node, error) {
 	case "[":
 		return processSubscript(node)
 	case "~>":
+		// jsonata-js passes no slots on from either side of ~>, so a % there
+		// stays unresolved.
 	default:
 		node.SeekingParent = concatSlots(node.Left, node.Right)
 	}
@@ -222,7 +238,6 @@ func processBinaryChildren(node *Node) (*Node, error) {
 // applies after it; on a path, as in a.b{k: v}[0], the subscript becomes a
 // stage of the last step, as jsonata-js applies it there.
 func processSubscript(node *Node) (*Node, error) {
-	node.KeepSingletonArray = ChainKeepsArray(node.Left)
 	path := node.Left
 	if path.Type != NodePath || IsStepPath(path) {
 		path = nil
@@ -232,6 +247,7 @@ func processSubscript(node *Node) (*Node, error) {
 		path.Steps[last] = node
 		node.PathStage = last > 0
 	}
+	node.KeepSingletonArray = ChainKeepsArray(node.Left)
 	node.base = StepBase(node.Left)
 	if err := resolvePredicateAncestry(node); err != nil {
 		return nil, err
@@ -242,13 +258,9 @@ func processSubscript(node *Node) (*Node, error) {
 		}
 		return path, nil
 	}
-	if group := node.Left.Group; group != nil && group.OnPath {
-		if node.Group != nil {
-			return nil, errTwoGroups()
-		}
-		node.Group, node.Left.Group = group, nil
-	}
-	return node, nil
+	group, err := joinGroups(node.Group, takePathGroup(node.Left))
+	node.Group = group
+	return node, err
 }
 
 // processUnaryChildren recursively processes a unary node.
@@ -457,13 +469,8 @@ func processSortChildren(node *Node) (*Node, error) {
 	}
 	// A group on a path-like Left groups the sorted result, as in jsonata-js
 	// the sort joins the path that carries it: a{k: v}^(c) sorts first.
-	if group := node.Left.Group; group != nil && group.OnPath {
-		if node.Group != nil {
-			return nil, errTwoGroups()
-		}
-		node.Group, node.Left.Group = group, nil
-	}
-	return node, nil
+	node.Group, err = joinGroups(node.Group, takePathGroup(node.Left))
+	return node, err
 }
 
 // processPathChildren recursively processes an existing path node.
@@ -587,14 +594,10 @@ func wrapBoundStep(node *Node) *Node {
 // step it evaluates as a tuple stream a path, with the slots seeking past
 // it. A group on the path moves to it.
 func wrapStep(step *Node, seeking []*Slot) *Node {
-	path := &Node{
-		Type: NodePath, Steps: []*Node{step}, Pos: step.Pos, Tuple: true,
+	return &Node{
+		Type: NodePath, Steps: []*Node{step}, Pos: step.Pos, Tuple: true, Group: takePathGroup(step),
 		KeepSingletonArray: ChainKeepsArray(step), SeekingParent: seeking,
 	}
-	if step.Group != nil && step.Group.OnPath {
-		path.Group, step.Group = step.Group, nil
-	}
-	return path
 }
 
 // IsStepPath reports whether node is a path wrapStep made.

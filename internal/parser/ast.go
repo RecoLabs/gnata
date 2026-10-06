@@ -48,7 +48,7 @@ type Node struct {
 	KeepSingletonArray bool // path has at least one keepArray step; on a subscript or sort, its Left chain does (see ChainKeepsArray)
 	ConsArray          bool // step is an array constructor used as a path step
 	Thunk              bool // call, or ?: or ?? operator, in a lambda's tail position
-	Tuple              bool // sort whose Left binds #$var, @$var or an ancestor, or the step path wrapping it (see wrapStep)
+	Tuple              bool // sort whose Left binds #$var, @$var or an ancestor; on a path, one wrapStep made
 	RootContext        bool // step starting a path over the root input (see markRootContext)
 	PathStage          bool // subscript applied as a stage of a path step (see markSubscriptStages)
 	NoBinds            bool // transform whose pattern, update and delete bind no variable

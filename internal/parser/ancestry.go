@@ -12,6 +12,10 @@ import "slices"
 // that climbs past its path moves to the path's SeekingParent for the
 // expression around it, and one left at the top raises S0217.
 //
+// As in jsonata-js, a resolved slot (Level 0) stays in the lists it joined,
+// so they still report it: a subscripted block that resolved its %, as in
+// (a)[%.x], still passes it on and raises S0217 at the top.
+//
 // gnata keeps a step's predicates as subscript nodes around it, where
 // jsonata-js stores them on the step. A step's own slots therefore live on
 // its base (see StepBase), while subscripts and paths report what
