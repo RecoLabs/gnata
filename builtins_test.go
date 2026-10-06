@@ -124,14 +124,18 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$each(q, function($v){$v}){$: 1}`, data: `{"q":{"k":["x","y"]}}`, code: "T1003"},
 	{expr: `q.$each(function($v){$v})[0]`, data: `{"q":{"k":["x","y"]}}`, want: `"x"`},
 	{expr: `a.($each(function($v){$v})[0])`, data: `{"a":[{"k":["x"]},{"k":["y","z"]}]}`, want: `["x","y","z"]`},
+	{expr: `$map([[[1,2],[3]]], $filter(?, function($v){$v[0]=1}))`, want: `[[1,2]]`},
+	{expr: `$map([[[1,2]],[[3]]], $filter(?, function($v){true}))`, want: `[[[1,2]],[[3]]]`},
+	{expr: `$each({"a":[[1,2]]}, $filter(?, function($v){true}))`, want: `[[1,2]]`},
+	{expr: `$map([{"a":1},{"b":1}], $keys)`, want: `[["a"],["b"]]`},
+	{expr: `$map([[1,1],[2,2]], $distinct)`, want: `[[1],[2]]`},
 	{expr: `x.$distinct(a.b)[0]`, data: `{"x":{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}}`, want: `1`},
 	{expr: `$distinct(a.b)#$i[0]`, data: `{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}`, want: `1`},
 	{expr: `$distinct(a.b)[0]#$i`, data: `{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}`, want: `1`},
-	// jsonata-js keeps a lambda's or partial's tail-call result as its raw
-	// sequence, giving [[1,2]], [1,2] and [[1,2]].
+	// jsonata-js keeps a lambda's tail-call result as its raw sequence,
+	// giving [[1,2]] and [1,2].
 	{expr: `$map([1], function($i){$filter([[1,2],[3]], function($v){$v[0]=1})})`, want: `[1,2]`},
 	{expr: `($f := function(){$filter([[1,2],[3]], function($v){$v[0]=1})}; $f()[0])`, want: `1`},
-	{expr: `$map([[[1,2],[3]]], $filter(?, function($v){$v[0]=1}))`, want: `[1,2]`},
 	{expr: `$filter(o.[b,c], function($v){$v>5})`, data: pairsJSON, want: `6`},
 	{expr: `$filter(a.[b,c], function($v){$v[0]=3})[0]`, data: pairsJSON, want: `[3,4]`},
 	{expr: `$sum(o.[b,c])`, data: pairsJSON, want: `11`},

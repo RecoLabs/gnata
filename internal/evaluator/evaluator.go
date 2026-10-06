@@ -90,6 +90,15 @@ func evalDescendant(input any, env *Environment) (any, error) {
 
 // ApplyFunction is the public API used by the standard library to call
 // any function value (BuiltinFunction or *Lambda) with the given args.
+// A builtin's result sequence comes back as a plain array, which is how a
+// jsonata-js caller such as $map holds it.
 func ApplyFunction(fn any, args []any, focus any, env *Environment) (any, error) {
-	return callFunction(fn, args, focus, env)
+	result, err := callFunction(fn, args, focus, env)
+	if seq, ok := result.(*Sequence); ok && err == nil && !seq.TupleStream {
+		if len(seq.Values) == 0 {
+			return nil, nil
+		}
+		return slices.Clip(seq.Values), nil
+	}
+	return result, err
 }
