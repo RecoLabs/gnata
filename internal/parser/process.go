@@ -147,10 +147,10 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 		} else if processed.Group != nil && processed.Group.OnPath {
 			group, processed.Group = processed.Group, nil
 		}
+		// A quoted step, or one with predicates, is a field name.
 		for _, step := range steps {
-			promoteQuotedPathNames(step)
-			if step.Type == NodeString {
-				step.Type = NodeName
+			if base := stepBase(step); base.Type == NodeString {
+				base.Type = NodeName
 			}
 		}
 		return steps, group, nil
@@ -194,25 +194,6 @@ func collectPathSteps(node *Node) ([]*Node, *GroupExpr, error) {
 		last.Focus = node.Focus
 	}
 	return steps, group, nil
-}
-
-func promoteQuotedPathNames(n *Node) {
-	for n != nil && n.Type == NodeBinary && n.Value == "[" {
-		if n.Left != nil && n.Left.Type == NodeString {
-			left := n.Left
-			n.Left = &Node{
-				Type:      NodeName,
-				Value:     left.Value,
-				Pos:       left.Pos,
-				KeepArray: left.KeepArray,
-				Group:     left.Group,
-				Index:     left.Index,
-				Focus:     left.Focus,
-			}
-			return
-		}
-		n = n.Left
-	}
 }
 
 // processBinaryChildren recursively processes a non-dot binary node.
