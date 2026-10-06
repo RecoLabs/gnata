@@ -62,7 +62,8 @@ func evalPathSimpleLast(node *parser.Node, input any, env *Environment) (result,
 		case i > 0 && step.Type == parser.NodeVariable:
 			result, err = evalVariableStep(step, result, env, i == len(node.Steps)-1)
 		case i == 0 && startsRootPath(step, result, env):
-			result, err = evalStepOnce(step, result, unwrapRoot(env))
+			env = unwrapRoot(env)
+			result, err = evalStepOnce(step, result, env)
 		default:
 			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray, i == len(node.Steps)-1)
 		}
@@ -260,6 +261,12 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		startsStream := hasBindingStep && stepIdx == tupleStart
 		inStream := hasBindingStep && stepIdx > tupleStart
 		started = started || startsStream
+		// A first step over the wrapped root array runs once against it,
+		// and it and every later step see it unwrapped.
+		rootStep := stepIdx == 0 && len(ctxs) == 1 && startsRootPath(step, ctxs[0].value, ctxs[0].env)
+		if rootStep {
+			ctxs[0].env = unwrapRoot(ctxs[0].env)
+		}
 
 		// Sort steps must be applied globally to ALL tuples simultaneously so that
 		// tuple ordering is preserved (e.g. Account.Order#$o.Product^(ProductID)).
@@ -399,7 +406,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		}
 
 		var err error
-		if ctxs, err = mapTupleStep(step, ctxs, stepIdx == 0, node.KeepSingletonArray, beforeStream); err != nil {
+		if ctxs, err = mapTupleStep(step, ctxs, stepIdx == 0, node.KeepSingletonArray, beforeStream && !rootStep); err != nil {
 			return nil, nil, false, err
 		}
 		if len(ctxs) == 0 {
@@ -1027,8 +1034,6 @@ func evalTupleContextStep(step *parser.Node, val any, env *Environment, keepSing
 		result, err = evalConsArrayStep(step, val, env, keepSingleton)
 	case step.Type == parser.NodeWildcard && step.Group == nil:
 		result, err = evalWildcard(step, val, env)
-	case startsRootPath(step, val, env):
-		result, err = evalStepOnce(step, val, unwrapRoot(env))
 	case beforeStream:
 		result, err = evalPathStep(step, val, env, false, keepSingleton, false)
 	default:

@@ -532,6 +532,9 @@ func markRootContext(node *Node, root bool) {
 				// jsonata-js evaluates a leading array constructor once
 				// against the wrapped input.
 				markRootContext(first, root)
+			case StepBase(first).Type == NodeSort:
+				// A sort's Left holds the steps jsonata-js puts before it.
+				markRootContext(first, root)
 			default:
 				markRootContext(first, false)
 			}
@@ -570,16 +573,17 @@ func markRootContext(node *Node, root bool) {
 		// A lambda body runs against the input where the lambda is defined.
 		markRootContext(node.Body, root)
 	case NodeSort:
-		// jsonata-js makes the sort a path, so a Left that is not a path is
-		// its first step.
-		if left := node.Left; left.Type != NodePath && !isUnaryArrayCtor(StepBase(left)) {
+		// jsonata-js makes the sort a path, so a Left that is not a path, a
+		// sort or a leading array constructor is its first step.
+		left := node.Left
+		if base := StepBase(left); left.Type != NodePath && base.Type != NodeSort && !isUnaryArrayCtor(base) {
 			if root {
-				StepBase(left).RootContext = true
+				base.RootContext = true
 			}
 			markRootContext(left, false)
 			return
 		}
-		markRootContext(node.Left, root)
+		markRootContext(left, root)
 	}
 }
 
