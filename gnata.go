@@ -90,9 +90,10 @@ func WithTimeout(d time.Duration) Option {
 // D2015. As in jsonata-js, a path step mapping over input data counts too,
 // so a.b over more than n items of a exceeds it; a last step returning an
 // array stored in the data, the value of its only context that yields one,
-// is exempt. Expressions compiled with it always use the full evaluator.
-// Without this option, only the built-in 10,000,000 element hard caps
-// (D2014 / D3010) apply.
+// is exempt. The gjson fast paths keep only lookups that never cross an
+// array, and $keys, whose result is bounded, falls back to the full
+// evaluator too. Without this option, only the built-in 10,000,000 element
+// hard caps (D2014 / D3010) apply.
 func WithSequence(n int) Option {
 	return func(o *compileOptions) { o.sequence = n }
 }
@@ -154,12 +155,48 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 		options:   o,
 	}
 	if o != nil && o.sequence > 0 {
-		// The gjson fast paths walk arrays outside the evaluator, where the
-		// sequence guardrail is enforced.
-		e.fastPath, e.paths, e.pathSteps = false, nil, nil
-		e.cmpFast, e.funcFast, e.boolFast = nil, nil, nil
+		// The fast paths' step walkers map field steps over arrays outside
+		// the evaluator, where the sequence guardrail is enforced. Their
+		// single gjson lookup never crosses an array, so it stays; a path
+		// that does cross one, and $keys, whose result the guardrail
+		// bounds, fall back to the evaluator.
+		e.pathSteps = nil
+		e.cmpFast = cmpWithoutWalk(e.cmpFast)
+		e.funcFast = funcWithoutWalk(e.funcFast)
+		e.boolFast = boolWithoutWalk(e.boolFast)
 	}
 	return e, nil
+}
+
+func cmpWithoutWalk(c *parser.ComparisonFastPath) *parser.ComparisonFastPath {
+	if c == nil {
+		return nil
+	}
+	walkless := *c
+	walkless.LHSPathSteps = nil
+	return &walkless
+}
+
+func funcWithoutWalk(f *parser.FuncFastPath) *parser.FuncFastPath {
+	// $keys builds a sequence of the keys, which the builtin checks
+	// against the limit.
+	if f == nil || f.Kind == parser.FuncFastKeys {
+		return nil
+	}
+	walkless := *f
+	walkless.PathSteps = nil
+	return &walkless
+}
+
+func boolWithoutWalk(b *parser.BoolFastPath) *parser.BoolFastPath {
+	if b == nil {
+		return nil
+	}
+	walkless := *b
+	walkless.Left, walkless.Right = boolWithoutWalk(b.Left), boolWithoutWalk(b.Right)
+	walkless.PureSteps = nil
+	walkless.Cmp, walkless.Func = cmpWithoutWalk(b.Cmp), funcWithoutWalk(b.Func)
+	return &walkless
 }
 
 // CustomFunc is a user-defined function that can be registered with gnata.
@@ -549,6 +586,9 @@ func resolvePurePath(
 		return gjsonValue(&res, useNumber), true
 	}
 	switch {
+	case len(steps) == 0:
+		// Without steps (WithSequence) there is no walk to fall back to.
+		return nil, false
 	case data != nil:
 		return walkPureStepsBytes(steps, data, useNumber)
 	case mapData != nil:

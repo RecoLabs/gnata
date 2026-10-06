@@ -295,6 +295,70 @@ func TestWithSequence_EvalBytes(t *testing.T) {
 	}
 }
 
+// The gjson fast paths keep their single lookup, which never crosses an
+// array; a path crossing one falls back to the evaluator, which bounds it.
+func TestWithSequence_FastPaths(t *testing.T) {
+	keys := make([]string, 20)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(`"k%d":%d`, i, i)
+	}
+	data := []byte(`{"x":{"a":` + twentyItemsJSON() + `,"n":"s"},"a":` + twentyItemsJSON() + `,"o":{` + strings.Join(keys, ",") + `}}`)
+	testCases := []struct {
+		desc string
+		expr string
+		want any
+		code string
+	}{
+		{desc: "path", expr: "x.n", want: "s"},
+		{desc: "comparison", expr: `x.n = "s"`, want: true},
+		{desc: "aggregate of a stored array", expr: "$count(x.a)", want: 20.0},
+		{desc: "boolean", expr: "x.n and true", want: true},
+		{desc: "path crossing an array", expr: "a.b", code: "D2015"},
+		{desc: "comparison crossing an array", expr: "a.b = 1", code: "D2015"},
+		{desc: "aggregate crossing an array", expr: "$count(a.b)", code: "D2015"},
+		{desc: "existence crossing an array", expr: "$exists(a.b)", code: "D2015"},
+		{desc: "boolean crossing an array", expr: "a.b and true", code: "D2015"},
+		{desc: "keys, whose result is bounded", expr: "$keys(o)", code: "D2015"},
+		{desc: "boolean of keys", expr: "x.n and $keys(o)", code: "D2015"},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr, gnata.WithSequence(10))
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := e.EvalBytes(context.Background(), data)
+			if tC.code != "" {
+				if err == nil || !strings.Contains(err.Error(), tC.code) {
+					t.Fatalf("expected %s, got %v, %v", tC.code, got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("eval bytes: %v", err)
+			}
+			if !gnata.DeepEqual(got, tC.want) {
+				t.Fatalf("got %v, want %v", got, tC.want)
+			}
+		})
+	}
+	e, err := gnata.Compile("x.n", gnata.WithSequence(10))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if paths := e.RequiredPaths(); len(paths) != 1 {
+		t.Fatalf("RequiredPaths() = %v, want the fast path's one path", paths)
+	}
+}
+
+func twentyItemsJSON() string {
+	b, err := json.Marshal(twentyItems())
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 // A last step against a single context returns its value without building a
 // sequence, so a stored array longer than the guardrail passes through.
 func TestWithSequence_Allowed(t *testing.T) {

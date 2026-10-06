@@ -337,7 +337,7 @@ All three are opt-in; without them gnata keeps its existing defaults (100-deep c
 - The stream before a filtered first step that `%` later reads (`a[p].%`) is not bounded.
 - `$distinct` returns a sequence where jsonata-js returns a plain array, as gnata does not tell the two apart in a function's argument; as the only value of a last step, its result counts against the limit where jsonata-js passes it through.
 
-Expressions compiled with `WithSequence` always use the full evaluator rather than the gjson fast paths. Use guardrails when evaluating expressions from an untrusted source.
+With `WithSequence`, the gjson fast paths of `EvalBytes`, `EvalMap` and `StreamEvaluator` keep their single gjson lookup, which never crosses an array; a path that crosses one, and `$keys`, whose result the limit bounds, fall back to the full evaluator, where the limit is enforced. Use guardrails when evaluating expressions from an untrusted source.
 
 ### Decimal Precision
 
