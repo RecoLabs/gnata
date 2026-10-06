@@ -6,7 +6,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -122,7 +121,10 @@ func (l *Lexer) scan(infix bool) (Token, error) { //nolint:gocyclo,funlen // dis
 				}
 				l.pos++
 			case ')':
-				if !inClass && depth > 0 {
+				// As in jsonata-js, an unbalanced ) means no / can close
+				// the regex, which is never valid anyway; a stray ] or }
+				// is a literal and stays accepted.
+				if !inClass {
 					depth--
 				}
 				l.pos++
@@ -144,15 +146,12 @@ func (l *Lexer) scan(infix bool) (Token, error) { //nolint:gocyclo,funlen // dis
 					}
 					l.pos++ // consume closing '/'
 
-					// Collect flags: only 'i' and 'm' are valid.
+					// Flags are i and m; as in jsonata-js, any other letter
+					// starts the next token.
 					var flags strings.Builder
-					for l.pos < len(l.src) && unicode.IsLetter(rune(l.src[l.pos])) {
-						if fc := l.src[l.pos]; fc == 'i' || fc == 'm' {
-							flags.WriteByte(fc)
-							l.pos++
-						} else {
-							return Token{}, lexError("S0302", "invalid regex flag")
-						}
+					for l.pos < len(l.src) && (l.src[l.pos] == 'i' || l.src[l.pos] == 'm') {
+						flags.WriteByte(l.src[l.pos])
+						l.pos++
 					}
 					flags.WriteByte('g')
 
@@ -322,7 +321,7 @@ func (l *Lexer) scanString(quote byte, startPos int) (Token, error) {
 		// Escape sequence.
 		l.pos++
 		if l.pos >= len(l.src) {
-			return Token{}, lexError("S0101", "unterminated string literal")
+			return Token{}, lexError("S0103", "invalid escape sequence at end of input")
 		}
 		esc := l.src[l.pos]
 		l.pos++
@@ -333,14 +332,15 @@ func (l *Lexer) scanString(quote byte, startPos int) (Token, error) {
 		if esc != 'u' {
 			return Token{}, lexError("S0103", "invalid escape sequence: \\"+string(esc))
 		}
-		if l.pos+4 > len(l.src) {
-			return Token{}, lexError("S0104", "invalid unicode escape: too short")
-		}
-		hex := l.src[l.pos : l.pos+4]
-		r, err := strconv.ParseInt(hex, 16, 32)
-		if err != nil {
+		hex := l.src[l.pos:min(l.pos+4, len(l.src))]
+		if hex == "" || strings.Trim(hex, "0123456789abcdefABCDEF") != "" {
 			return Token{}, lexError("S0104", "invalid unicode escape: \\u"+hex)
 		}
+		if len(hex) < 4 {
+			// jsonata-js accepts the short escape and then runs out of input.
+			return Token{}, lexError("S0101", "unterminated string literal")
+		}
+		r, _ := strconv.ParseInt(hex, 16, 32)
 		l.pos += 4
 		// Handle UTF-16 surrogate pairs: high surrogate + low surrogate -> single code point.
 		if r >= 0xD800 && r <= 0xDBFF && l.pos+6 <= len(l.src) && l.src[l.pos] == '\\' && l.src[l.pos+1] == 'u' {
@@ -377,14 +377,16 @@ func (l *Lexer) scanNumber(startPos int) (Token, error) {
 		// If next char after '.' is not a digit, leave '.' for the parser (e.g., "0.foo").
 	}
 
-	// Exponent part.
+	// Exponent part, only when digits follow, as in jsonata-js: 2.5e is the
+	// number 2.5 followed by the name e.
 	if l.pos < len(l.src) && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E') {
-		l.pos++
-		if l.pos < len(l.src) && (l.src[l.pos] == '+' || l.src[l.pos] == '-') {
-			l.pos++
+		end := l.pos + 1
+		if end < len(l.src) && (l.src[end] == '+' || l.src[end] == '-') {
+			end++
 		}
-		for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
-			l.pos++
+		if end < len(l.src) && l.src[end] >= '0' && l.src[end] <= '9' {
+			for l.pos = end; l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9'; l.pos++ {
+			}
 		}
 	}
 

@@ -338,6 +338,43 @@ var regexPositionCases = []exprCase{
 	{expr: `function($x/){1}`, code: "S0211"},
 }
 
+// syntaxErrorCases pin the jsonata-js 2.2.2 code for malformed expressions.
+// Missing tokens are S0203 at the end of the input and S0202 elsewhere; a
+// missing operand is S0207, but only once nothing earlier fails.
+var syntaxErrorCases = []exprCase{
+	{expr: `1 +`, code: "S0207"},
+	{expr: `$x :=`, code: "S0207"},
+	{expr: `[1,`, code: "S0203"},
+	{expr: `(1 +`, code: "S0203"},
+	{expr: `{"a": 1`, code: "S0203"},
+	{expr: `function($a)<n`, code: "S0203"},
+	{expr: `function($a)<n{1}`, code: "S0202"},
+	{expr: `[1 2]`, code: "S0202"},
+	{expr: `[1 ~ 2]`, code: "S0204"},
+	{expr: `!x`, code: "S0204"},
+	{expr: `1 ~ 2`, code: "S0204"},
+	{expr: `~|a|{}|`, code: "S0204"},
+	{expr: `1|1`, code: "S0201"},
+	{expr: `$str|ing()`, code: "S0201"},
+	{expr: `"x" #in ["a"]`, code: "S0214"},
+	{expr: `a^(x)@`, code: "S0214"},
+	{expr: `a[0]@$x`, code: "S0215"},
+	{expr: `a^(x)@$v`, code: "S0216"},
+	{expr: `a{"k":1}[`, code: "S0203"},
+	{expr: `$x{"k":1}[0]`, code: "S0209"},
+	{expr: `a{"k":1}{"j":2}`, code: "S0210"},
+	{expr: `2.5e`, code: "S0201"},
+	{expr: `"\u+00e9"`, code: "S0104"},
+	{expr: `"\u00`, code: "S0101"},
+	{expr: `"abc\`, code: "S0103"},
+	{expr: `/a/x`, code: "S0201"},
+	{expr: `/)a/`, code: "S0302"},
+	{expr: `/a)/`, code: "S0302"},
+	{expr: `2.5e3`, want: `2500`},
+	{expr: `$match("a(", /\(/).index`, want: `1`},
+	{expr: `$ ~> |a ? b : c|{"d": 1}|`, data: `{"a":true,"b":{}}`, want: `{"a":true,"b":{"d":1}}`},
+}
+
 // lambdaParameterCases pin that jsonata-js parses each lambda parameter as an
 // expression and only then requires a $variable (S0208), so a malformed
 // parameter reports its parse error instead.
@@ -368,4 +405,5 @@ func TestPathAndOperatorSemantics(t *testing.T) {
 	t.Run("operators", func(t *testing.T) { runExprCases(t, operatorCases) })
 	t.Run("regex position", func(t *testing.T) { runExprCases(t, regexPositionCases) })
 	t.Run("lambda parameters", func(t *testing.T) { runExprCases(t, lambdaParameterCases) })
+	t.Run("syntax errors", func(t *testing.T) { runExprCases(t, syntaxErrorCases) })
 }

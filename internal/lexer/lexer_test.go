@@ -270,7 +270,7 @@ func TestLexerRegex(t *testing.T) {
 		// Asymmetric escaping: only one side of a bracket pair is escaped.
 		{"asym escaped open bracket", `/a\[b]/`, `a\[b]`, "g", false, ""},
 		{"asym escaped open brace", `/a\{b}/`, `a\{b}`, "g", false, ""},
-		{"asym escaped open paren", `/\(a)/`, `\(a)`, "g", false, ""},
+		{"unbalanced close paren", `/\(a)/`, "", "", true, "S0302"},
 		{"asym escaped close paren", `/(a\)/`, `(a\)`, "g", false, ""},
 		{"escaped ] inside class", `/[a\]b]/`, `[a\]b]`, "g", false, ""},
 		{"escaped ) inside class", `/[\)]/`, `[\)]`, "g", false, ""},
@@ -285,7 +285,7 @@ func TestLexerRegex(t *testing.T) {
 		{"even backslashes nest", `/\\(/x)/`, `\\(/x)`, "g", false, ""},
 		{"empty pattern", `//`, "", "", true, "S0301"},
 		{"unterminated", `/hello`, "", "", true, "S0302"},
-		{"invalid flag", `/foo/x`, "", "", true, "S0302"},
+		{"letter after flags", `/foo/ix`, "foo", "ig", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
