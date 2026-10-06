@@ -149,6 +149,10 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `w[[0]].$filter(a, function($v){$v[0]=1})[]`, data: stageJSON, want: `[[1,2]]`},
 	{expr: `w[[0]].$each(function($v){$v})[]`, data: stageJSON, want: `[[[1,2],[3]]]`},
 	{expr: `w[[0]].(a)[]`, data: stageJSON, want: `[[1,2],[3]]`},
+	{expr: `w[[0]].$filter(a, function($v){$v[0]=1}).$string()[]`, data: stageJSON, want: `["1","2"]`},
+	{expr: `w[[0]].$filter(a, function($v){$v[0]=1}).$sum($)[]`, data: stageJSON, want: `[1,2]`},
+	{expr: `w[[0]].$each(function($v){$v}).$string()[]`, data: stageJSON, want: `["[1,2]","[3]"]`},
+	{expr: `w.$filter(a, function($v){$v[0]=1})`, data: stageJSON, want: `[1,2,1,9]`},
 	// jsonata-js keeps a lambda's tail-call result as its raw sequence,
 	// giving [[1,2]] and [1,2].
 	{expr: `$map([1], function($i){$filter([[1,2],[3]], function($v){$v[0]=1})})`, want: `[1,2]`},

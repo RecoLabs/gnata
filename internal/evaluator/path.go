@@ -1189,6 +1189,9 @@ func evalPathStep(
 		if err != nil {
 			return nil, err
 		}
+		if step.Type == parser.NodeFunction {
+			val = CollapseAndKeep(val, step.KeepArray)
+		}
 		if val == nil {
 			continue
 		}
@@ -1210,9 +1213,9 @@ func evalPathStep(
 		return nil, nil
 	}
 	if keepSingletonArray {
-		// With [] (keepSingletonArray), prevent singleton collapse so that a
-		// path like $.[v,e][] with 1 input element returns [[v,e]] not [v,e],
-		// and w.$filter(a, f)[] keeps a lone array match as one item.
+		// With [] (keepSingletonArray), jsonata-js never collapses a
+		// sequence between steps, so a path like $.[v,e][] with 1 input
+		// element returns [[v,e]] not [v,e].
 		return seq.Values, nil
 	}
 	return CollapseSequence(seq), nil
