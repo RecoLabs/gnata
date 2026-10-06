@@ -132,6 +132,10 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$each({"a":[[1,2]]}, $filter(?, function($v){true}))`, want: `[[1,2]]`},
 	{expr: `$map([{"a":1},{"b":1}], $keys)`, want: `[["a"],["b"]]`},
 	{expr: `$map([[1,1],[2,2]], $distinct)`, want: `[[1],[2]]`},
+	// jsonata-js gives "a" for both: a builtin callback's one-item
+	// sequence in a $map result still collapses when read.
+	{expr: `$map([{"a":1},{"b":1}], $keys)[0]`, want: `["a"]`},
+	{expr: `$map($map([{"a":1},{"b":1}], $keys), function($v){$v})[0]`, want: `["a"]`},
 	{expr: `x.$distinct(a.b)[0]`, data: `{"x":{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}}`, want: `1`},
 	{expr: `$distinct(a.b)#$i[0]`, data: `{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}`, want: `1`},
 	{expr: `$distinct(a.b)[0]#$i`, data: `{"a":[{"b":[[1,2]]},{"b":[[1,2]]}]}`, want: `1`},
