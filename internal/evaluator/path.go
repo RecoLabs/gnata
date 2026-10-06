@@ -95,7 +95,7 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 			return nil, nil
 		}
 		if seq, ok := result.(*Sequence); ok {
-			result = CollapseSequence(seq)
+			result = CollapseAndKeep(seq, i > 0 && node.Steps[i-1].KeepArray)
 			if i > 0 && result == nil {
 				return nil, nil
 			}
@@ -130,7 +130,7 @@ func evalPathSimple(node *parser.Node, input any, env *Environment) (any, error)
 	}
 
 	if seq, ok := result.(*Sequence); ok {
-		result = CollapseSequence(seq)
+		result = CollapseAndKeep(seq, node.KeepSingletonArray)
 	}
 	if node.KeepSingletonArray {
 		return keepSingletonArray(result), nil
@@ -1209,9 +1209,10 @@ func evalPathStep(
 	if len(seq.Values) == 0 {
 		return nil, nil
 	}
-	if isGroupStep && keepSingletonArray {
+	if keepSingletonArray {
 		// With [] (keepSingletonArray), prevent singleton collapse so that a
-		// path like $.[v,e][] with 1 input element returns [[v,e]] not [v,e].
+		// path like $.[v,e][] with 1 input element returns [[v,e]] not [v,e],
+		// and w.$filter(a, f)[] keeps a lone array match as one item.
 		return seq.Values, nil
 	}
 	return CollapseSequence(seq), nil
