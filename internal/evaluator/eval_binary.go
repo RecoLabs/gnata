@@ -269,7 +269,12 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 // the result to a slice. Returns (left, items, err); left==nil means no match.
 func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any, items []any, _ error) {
 	var err error
-	if node.Left.Type == parser.NodeFunction && !node.Stage && node.Index == "" && node.Left.Index == "" {
+	// A subscript filters a call's raw sequence, except that a #$i binding
+	// or a later path step without [] filters its collapsed result, as
+	// jsonata-js evaluates those as stages of a path step.
+	rawCall := node.Left.Type == parser.NodeFunction && node.Index == "" && node.Left.Index == "" &&
+		(!node.Stage || node.KeepArray || parser.ChainKeepsArray(node.Left))
+	if rawCall {
 		left, err = evalCall(node.Left, input, env)
 	} else {
 		left, err = Eval(node.Left, input, env)
