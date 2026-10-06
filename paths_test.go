@@ -424,6 +424,12 @@ var transformCases = []exprCase{
 }
 
 var pathStepCases = []exprCase{
+	{expr: `$sort($, function($a,$b){$a.v<$b.v}).n`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `["q","p"]`},
+	{expr: `$reverse($)[0].n`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `"q"`},
+	{expr: `$sum(v).$`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `3`},
+	{expr: `{n:1}.$`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `{"p":1,"q":1}`},
+	{expr: `({n:1}).$`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `{"p":1,"q":1}`},
+	{expr: `({n:1})`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, code: "T1003"},
 	{expr: `1#$i`, want: `1`},
 	{expr: `1#$i{"k":$i}`, want: `{"k":0}`},
 	{expr: `a.true`, data: pairsJSON, code: "S0213"},

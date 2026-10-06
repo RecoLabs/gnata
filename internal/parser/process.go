@@ -536,6 +536,12 @@ func markRootContext(node *Node, root bool) {
 			markRootContext(expr, root)
 		}
 	case NodeUnary:
+		// An object constructor groups an array's items unless it sees the
+		// root array as jsonata-js wraps it, which none does under a path's
+		// first step.
+		if node.Value == "{" && !root {
+			node.RootContext = true
+		}
 		markRootContext(node.Expression, root)
 		for _, expr := range node.Expressions {
 			markRootContext(expr, root)

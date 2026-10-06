@@ -61,6 +61,8 @@ func evalPathSimpleLast(node *parser.Node, input any, env *Environment) (result,
 			result, err = evalConsArrayStep(step, result, env, node.KeepSingletonArray)
 		case i > 0 && step.Type == parser.NodeVariable:
 			result, err = evalVariableStep(step, result, env, i == len(node.Steps)-1)
+		case i == 0 && startsRootPath(step, result, env):
+			result, err = evalStepOnce(step, result, env)
 		default:
 			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray, i == len(node.Steps)-1)
 		}
@@ -1023,10 +1025,10 @@ func evalTupleContextStep(step *parser.Node, val any, env *Environment, keepSing
 		result, err = evalConsArrayStep(step, val, env, keepSingleton)
 	case step.Type == parser.NodeWildcard && step.Group == nil:
 		result, err = evalWildcard(step, val, env)
-	case beforeStream:
+	case beforeStream && !startsRootPath(step, val, env):
 		result, err = evalPathStep(step, val, env, false, keepSingleton, false)
 	default:
-		return evalTupleStep(step, val, env)
+		result, err = evalStepOnce(step, val, env)
 	}
 	if err != nil {
 		return nil, err
@@ -1041,17 +1043,24 @@ func evalTupleContextStep(step *parser.Node, val any, env *Environment, keepSing
 	return result, nil
 }
 
-// evalTupleStep evaluates a step of a running tuple stream once against the
-// tuple's value, as jsonata-js evaluateTupleStep does: a call on an array
-// value sees the whole array, where a plain step would map over its items.
-func evalTupleStep(step *parser.Node, val any, env *Environment) (any, error) {
-	switch {
-	case step.Type == parser.NodeFunction && step.Group == nil:
+// evalStepOnce evaluates step once against val, as jsonata-js evaluates a
+// step of a running tuple stream (evaluateTupleStep), or one starting a
+// path over the root array it wraps as one item: a call on an array value
+// sees the whole array, where a plain step maps over its items.
+func evalStepOnce(step *parser.Node, val any, env *Environment) (any, error) {
+	if step.Type == parser.NodeFunction && step.Group == nil {
 		return evalPathFunctionStep(step, val, env)
-	case step.Type == parser.NodeDescendant:
-		return evalPathStepDescendant(val, env)
 	}
 	return Eval(step, val, env)
+}
+
+// startsRootPath reports whether step starts a path over the root array
+// jsonata-js wraps as one item (see markRootContext). * and ** handle that
+// array themselves.
+func startsRootPath(step *parser.Node, input any, env *Environment) bool {
+	items, ok := input.([]any)
+	return ok && step.Type != parser.NodeWildcard && step.Type != parser.NodeDescendant &&
+		parser.StepBase(step).RootContext && isRootInput(items, env)
 }
 
 // tupleContext returns the context value and environment a stage predicate
