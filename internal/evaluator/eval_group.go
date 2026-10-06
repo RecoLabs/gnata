@@ -24,7 +24,13 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	// recursion and without mutating the shared AST (concurrent safety).
 	baseCopy := *node
 	baseCopy.Group = nil
-	base, err := Eval(&baseCopy, input, env)
+	var base any
+	var err error
+	if baseCopy.Type == parser.NodeFunction {
+		base, err = evalCall(&baseCopy, input, env)
+	} else {
+		base, err = Eval(&baseCopy, input, env)
+	}
 	if err != nil || base == nil {
 		return nil, err
 	}
@@ -36,13 +42,12 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	case ConsArray:
 		items = v
 	case *Sequence:
-		if collapsed := CollapseSequence(v); collapsed == nil {
+		// A call's result sequence is grouped before it collapses, as in
+		// jsonata-js.
+		if len(v.Values) == 0 {
 			return nil, nil
-		} else if arr, ok := collapsed.([]any); ok {
-			items = arr
-		} else {
-			items = []any{collapsed}
 		}
+		items = v.Values
 	default:
 		items = []any{base}
 	}
