@@ -400,6 +400,15 @@ func evalPathStepWildcard(step *parser.Node, input any, env *Environment) (any, 
 	return c.wildcardResult()
 }
 
+// unwrapRoot returns a child of env in which no array is the root input:
+// what a step evaluates once against the root array jsonata-js wraps sees
+// that array as unwrapped.
+func unwrapRoot(env *Environment) *Environment {
+	child := NewChildEnvironment(env)
+	child.SetRootInput(nil)
+	return child
+}
+
 // isRootInput reports whether items is the root input (see SetRootInput).
 func isRootInput(items []any, env *Environment) bool {
 	root, ok := env.Lookup(rootInputKey)

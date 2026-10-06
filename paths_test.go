@@ -21,6 +21,7 @@ const (
 	rootItemsJSON   = `[{"k":[{"v":1},{"v":2}],"n":"p"},{"k":[{"v":3}],"n":"q"}]`
 	nestedItemsJSON = `{"x":[[1,2],[3]],"y":[[{"n":"a"},{"n":"b"}],[{"n":"c"}]],"n":"top"}`
 	levelsJSON      = `{"a":{"y":2,"b":[{"x":5,"y":6,"c":[{"x":7},{"x":8}],"z":true},{"x":9,"y":10,"c":{"x":11},"z":false}]}}`
+	rootPairsJSON   = `[{"n":"p","v":1},{"n":"q","v":2}]`
 )
 
 var parentOperatorCases = []exprCase{
@@ -424,12 +425,20 @@ var transformCases = []exprCase{
 }
 
 var pathStepCases = []exprCase{
-	{expr: `$sort($, function($a,$b){$a.v<$b.v}).n`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `["q","p"]`},
-	{expr: `$reverse($)[0].n`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `"q"`},
-	{expr: `$sum(v).$`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `3`},
-	{expr: `{n:1}.$`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `{"p":1,"q":1}`},
-	{expr: `({n:1}).$`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, want: `{"p":1,"q":1}`},
-	{expr: `({n:1})`, data: `[{"n":"p","v":1},{"n":"q","v":2}]`, code: "T1003"},
+	{expr: `$sort($, function($a,$b){$a.v<$b.v}).n`, data: rootPairsJSON, want: `["q","p"]`},
+	{expr: `$reverse($)[0].n`, data: rootPairsJSON, want: `"q"`},
+	{expr: `$sum(v).$`, data: rootPairsJSON, want: `3`},
+	{expr: `{n:1}.$`, data: rootPairsJSON, want: `{"p":1,"q":1}`},
+	{expr: `({n:1}).$`, data: rootPairsJSON, want: `{"p":1,"q":1}`},
+	{expr: `({n:1})`, data: rootPairsJSON, code: "T1003"},
+	{expr: `{"a":$reverse($).n}`, data: rootPairsJSON, want: `{"a":["p","q"]}`},
+	{expr: `{"a":{n:v}}`, data: rootPairsJSON, want: `{"a":{"p":1,"q":2}}`},
+	{expr: `$eval("$reverse($).n").$`, data: rootPairsJSON, want: `["p","q"]`},
+	{expr: `[{n:v}].$`, data: rootPairsJSON, code: "T1003"},
+	{expr: `[$reverse($).n].$`, data: rootPairsJSON, want: `["q","p"]`},
+	{expr: `({n:v}.$).$`, data: rootPairsJSON, want: `[{"p":1},{"q":2}]`},
+	{expr: `{n:1}^(n)`, data: rootPairsJSON, want: `{"p":1,"q":1}`},
+	{expr: `[{n:1}]^($).$`, data: rootPairsJSON, code: "T1003"},
 	{expr: `1#$i`, want: `1`},
 	{expr: `1#$i{"k":$i}`, want: `{"k":0}`},
 	{expr: `a.true`, data: pairsJSON, code: "S0213"},

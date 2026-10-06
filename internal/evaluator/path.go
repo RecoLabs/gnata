@@ -62,7 +62,7 @@ func evalPathSimpleLast(node *parser.Node, input any, env *Environment) (result,
 		case i > 0 && step.Type == parser.NodeVariable:
 			result, err = evalVariableStep(step, result, env, i == len(node.Steps)-1)
 		case i == 0 && startsRootPath(step, result, env):
-			result, err = evalStepOnce(step, result, env)
+			result, err = evalStepOnce(step, result, unwrapRoot(env))
 		default:
 			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray, i == len(node.Steps)-1)
 		}
@@ -1028,7 +1028,9 @@ func evalTupleContextStep(step *parser.Node, val any, env *Environment, keepSing
 		result, err = evalConsArrayStep(step, val, env, keepSingleton)
 	case step.Type == parser.NodeWildcard && step.Group == nil:
 		result, err = evalWildcard(step, val, env)
-	case beforeStream && !startsRootPath(step, val, env):
+	case startsRootPath(step, val, env):
+		result, err = evalStepOnce(step, val, unwrapRoot(env))
+	case beforeStream:
 		result, err = evalPathStep(step, val, env, false, keepSingleton, false)
 	default:
 		result, err = evalStepOnce(step, val, env)
@@ -1058,12 +1060,29 @@ func evalStepOnce(step *parser.Node, val any, env *Environment) (any, error) {
 }
 
 // startsRootPath reports whether step starts a path over the root array
-// jsonata-js wraps as one item (see markRootContext). * and ** handle that
-// array themselves.
+// jsonata-js wraps as one item (see markRootContext), which the step then
+// runs against once, unwrapped. * and ** handle that array themselves, and
+// a leading array constructor sees it wrapped.
 func startsRootPath(step *parser.Node, input any, env *Environment) bool {
 	items, ok := input.([]any)
-	return ok && step.Type != parser.NodeWildcard && step.Type != parser.NodeDescendant &&
-		parser.StepBase(step).RootContext && isRootInput(items, env)
+	if !ok || !parser.StepBase(step).RootContext || !isRootInput(items, env) {
+		return false
+	}
+	// A sort's Left holds the steps jsonata-js puts before it.
+	lead := step
+	for base := parser.StepBase(lead); base.Type == parser.NodeSort && base.Left != nil; base = parser.StepBase(lead) {
+		lead = base.Left
+		if lead.Type == parser.NodePath {
+			lead = lead.Steps[0]
+		}
+	}
+	switch base := parser.StepBase(lead); {
+	case base.Type == parser.NodeWildcard, base.Type == parser.NodeDescendant:
+		return false
+	case base.Type == parser.NodeUnary && base.Value == "[":
+		return false
+	}
+	return true
 }
 
 // tupleContext returns the context value and environment a stage predicate

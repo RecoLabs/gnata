@@ -8,7 +8,15 @@ import (
 )
 
 func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
-	items, err := Eval(node.Left, input, env)
+	var items any
+	var err error
+	// jsonata-js makes the sort a path, so a Left that is not a path is its
+	// first step (see startsRootPath).
+	if startsRootPath(node.Left, input, env) {
+		items, err = evalStepOnce(node.Left, input, unwrapRoot(env))
+	} else {
+		items, err = Eval(node.Left, input, env)
+	}
 	if err != nil {
 		return nil, err
 	}

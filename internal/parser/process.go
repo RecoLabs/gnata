@@ -524,9 +524,14 @@ func markRootContext(node *Node, root bool) {
 			if root {
 				StepBase(first).RootContext = true
 			}
-			if first.Type == NodeWildcard {
+			switch {
+			case first.Type == NodeWildcard:
 				first.RootContext = true
-			} else {
+			case isUnaryArrayCtor(StepBase(first)):
+				// jsonata-js evaluates a leading array constructor once
+				// against the wrapped input.
+				markRootContext(first, root)
+			default:
 				markRootContext(first, false)
 			}
 		}
@@ -535,18 +540,14 @@ func markRootContext(node *Node, root bool) {
 			markRootContext(expr, root)
 		}
 	case NodeUnary:
-		// An object constructor groups an array's items unless it sees the
-		// root array as jsonata-js wraps it, which none does under a path's
-		// first step.
-		if node.Value == "{" && !root {
-			node.RootContext = true
-		}
 		markRootContext(node.Expression, root)
 		for _, expr := range node.Expressions {
 			markRootContext(expr, root)
 		}
+		// An object constructor evaluates its pairs against each item of
+		// its input, so even at the top they see the root array unwrapped.
 		for _, expr := range node.LHS {
-			markRootContext(expr, root)
+			markRootContext(expr, root && node.Value != "{")
 		}
 	case NodeBinary, NodeApply:
 		markRootContext(node.Left, root)
@@ -568,6 +569,15 @@ func markRootContext(node *Node, root bool) {
 		// A lambda body runs against the input where the lambda is defined.
 		markRootContext(node.Body, root)
 	case NodeSort:
+		// jsonata-js makes the sort a path, so a Left that is not a path is
+		// its first step.
+		if left := node.Left; left.Type != NodePath && !isUnaryArrayCtor(StepBase(left)) {
+			if root {
+				StepBase(left).RootContext = true
+			}
+			markRootContext(left, false)
+			return
+		}
 		markRootContext(node.Left, root)
 	}
 }
