@@ -258,8 +258,20 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		beforeStream := hasBindingStep && stepIdx < tupleStart
 		startsStream := hasBindingStep && stepIdx == tupleStart
 		inStream := hasBindingStep && stepIdx > tupleStart
-		grouped := step.Group != nil
 		started = started || startsStream
+
+		// A step's own group, which only a leading step can have, applies
+		// to the step's result, so the step is evaluated whole per tuple.
+		if step.Group != nil {
+			var err error
+			if ctxs, err = mapTupleStep(step, ctxs, stepIdx == 0, node.KeepSingletonArray, beforeStream); err != nil {
+				return nil, nil, false, err
+			}
+			if len(ctxs) == 0 {
+				break
+			}
+			continue
+		}
 
 		// Sort steps must be applied globally to ALL tuples simultaneously so that
 		// tuple ordering is preserved (e.g. Account.Order#$o.Product^(ProductID)).
@@ -268,7 +280,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// Before the tuple stream starts, a sort with predicates is a plain
 		// step, evaluated below like any other.
 		sortStep, stages := splitTupleStages(step)
-		if !grouped && sortStep.Type == parser.NodeSort && (len(stages) == 0 || startsStream || inStream) {
+		if sortStep.Type == parser.NodeSort && (len(stages) == 0 || startsStream || inStream) {
 			leftState := streamOwn
 			switch {
 			case inStream:
@@ -304,11 +316,11 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// A block a % reaches into yields its last expression's tuples,
 		// which carry the bindings made inside; predicates on the block
 		// then filter the whole stream.
-		if base, stages := splitTupleStages(step); !grouped && base.Type == parser.NodeBlock && base.TupleResult {
+		if base, stages := splitTupleStages(step); base.Type == parser.NodeBlock && base.TupleResult {
 			var stream []pathCtx
 			for _, ctx := range ctxs {
 				var err error
-				if stream, err = appendTupleResult(stream, base, ctx); err != nil {
+				if stream, err = appendBlockTuples(stream, base, ctx); err != nil {
 					return nil, nil, false, err
 				}
 			}
@@ -326,7 +338,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// e.g., Contact@$c[$c.ssn = $e.SSN]. We evaluate the Left to get
 		// elements, bind each to $focus_var, then apply the predicate with
 		// access to both the focus variable and previously bound variables.
-		if !grouped && step.Type == parser.NodeBinary && step.Value == "[" &&
+		if step.Type == parser.NodeBinary && step.Value == "[" &&
 			step.Left != nil && step.Left.Focus != "" {
 			predicate := step.Right
 			leftNode := step.Left
@@ -353,7 +365,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// binary "[" with Left.Focus set. E.g., books@$b[pred][1] or
 		// books@$b[pred][]. Process the inner join-filter first to collect
 		// tuples, then apply the outer subscript to the entire tuple collection.
-		if !grouped && step.Type == parser.NodeBinary && step.Value == "[" &&
+		if step.Type == parser.NodeBinary && step.Value == "[" &&
 			step.Left != nil && step.Left.Type == parser.NodeBinary && step.Left.Value == "[" &&
 			step.Left.Left != nil && step.Left.Left.Focus != "" {
 			// Process the inner join-filter as if it were a standalone step.
@@ -394,7 +406,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			continue
 		}
 
-		if base, stages := splitTupleStages(step); !grouped && (startsStream || inStream) && len(stages) > 0 && isPlainTupleBase(base) {
+		if base, stages := splitTupleStages(step); (startsStream || inStream) && len(stages) > 0 && isPlainTupleBase(base) {
 			var err error
 			if ctxs, err = evalTupleStages(base, stages, ctxs, node.KeepSingletonArray); err != nil {
 				return nil, nil, false, err
@@ -405,32 +417,10 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			continue
 		}
 
-		for _, ctx := range ctxs {
-			if ctx.value == nil && stepIdx > 0 {
-				continue
-			}
-
-			// Unwrap sequences.
-			val := ctx.value
-			if seq, ok := val.(*Sequence); ok {
-				val = CollapseSequence(seq)
-			}
-			if val == nil && stepIdx > 0 {
-				continue
-			}
-
-			result, err := evalTupleContextStep(step, val, ctx.env, node.KeepSingletonArray, beforeStream)
-			if err != nil {
-				return nil, nil, false, err
-			}
-			if result == nil {
-				continue
-			}
-
-			appendTupleResults(step, result, ctx.value, ctx.env, &nextCtxs)
+		var err error
+		if ctxs, err = mapTupleStep(step, ctxs, stepIdx == 0, node.KeepSingletonArray, beforeStream); err != nil {
+			return nil, nil, false, err
 		}
-
-		ctxs = nextCtxs
 		if len(ctxs) == 0 {
 			break
 		}
@@ -440,6 +430,30 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		return nil, nil, false, err
 	}
 	return ctxs, rawContext, started, nil
+}
+
+// mapTupleStep evaluates step against each tuple's value, flattening its
+// results into the next tuples (see appendTupleResults). An undefined value
+// is skipped except at a path's first step.
+func mapTupleStep(step *parser.Node, ctxs []pathCtx, first, keepSingleton, beforeStream bool) ([]pathCtx, error) {
+	var next []pathCtx
+	for _, ctx := range ctxs {
+		val := ctx.value
+		if seq, ok := val.(*Sequence); ok {
+			val = CollapseSequence(seq)
+		}
+		if val == nil && !first {
+			continue
+		}
+		result, err := evalTupleContextStep(step, val, ctx.env, keepSingleton, beforeStream)
+		if err != nil {
+			return nil, err
+		}
+		if result != nil {
+			appendTupleResults(step, result, ctx.value, ctx.env, &next)
+		}
+	}
+	return next, nil
 }
 
 // evalTupleSort applies a sort step to a slice of pathCtx in tuple-stream mode.
@@ -674,11 +688,11 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 	}
 }
 
-// appendTupleResult appends to stream the tuples a block a % reaches into
+// appendBlockTuples appends to stream the tuples a block a % reaches into
 // yields for ctx: jsonata-js merges each tuple the block's last expression
 // returns into ctx's tuple, while a plain value's items become tuples as
 // for any step.
-func appendTupleResult(stream []pathCtx, block *parser.Node, ctx pathCtx) ([]pathCtx, error) {
+func appendBlockTuples(stream []pathCtx, block *parser.Node, ctx pathCtx) ([]pathCtx, error) {
 	val := ctx.value
 	if seq, ok := val.(*Sequence); ok {
 		val = CollapseSequence(seq)
@@ -686,23 +700,20 @@ func appendTupleResult(stream []pathCtx, block *parser.Node, ctx pathCtx) ([]pat
 	if val == nil {
 		return stream, nil
 	}
-	tuples, result, isTuples, err := tupleResult(block, val, ctx.env)
-	switch {
-	case err != nil:
+	tuples, result, err := tupleResult(block, val, ctx.env)
+	if err != nil {
 		return nil, err
-	case isTuples:
-		return append(stream, tuples...), nil
-	case result != nil:
+	}
+	if result != nil {
 		appendTupleResults(block, result, ctx.value, ctx.env, &stream)
 	}
-	return stream, nil
+	return append(stream, tuples...), nil
 }
 
 // tupleResult evaluates node, a block or path a % reaches into, against
-// val. A path yields its tuples, starting from each item of an array val
-// as jsonata-js does; with a group it yields the grouped value instead, as
-// does any expression a % passed over.
-func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx, result any, isTuples bool, _ error) {
+// val. A path yields its tuples (see inputTuples); with a group it yields
+// the grouped value instead, as does any expression a % passed over.
+func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx, result any, _ error) {
 	switch {
 	case node.Type == parser.NodeBlock && node.TupleResult && node.Group == nil:
 		last := len(node.Expressions) - 1
@@ -711,24 +722,24 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 			blockEnv = NewChildEnvironment(env)
 			for _, expr := range node.Expressions[:last] {
 				if _, err := Eval(expr, val, blockEnv); err != nil {
-					return nil, nil, false, err
+					return nil, nil, err
 				}
 			}
 		}
-		tuples, result, isTuples, err := tupleResult(node.Expressions[last], val, blockEnv)
-		if err != nil || !isTuples {
-			return nil, settleRaw(result, node.KeepArray), false, err
+		tuples, result, err := tupleResult(node.Expressions[last], val, blockEnv)
+		if err != nil || tuples == nil {
+			return nil, settleRaw(result, node.KeepArray), err
 		}
 		if blockEnv != env {
 			rebaseTuples(tuples, blockEnv, env)
 		}
-		return tuples, nil, true, nil
+		return tuples, nil, nil
 	case node.Type == parser.NodePath && node.TupleResult && node.Group == nil:
 		tuples, _, _, err := walkPathTuple(node, inputTuples(node, val, env), env, streamOwn)
-		return tuples, nil, true, err
+		return tuples, nil, err
 	}
 	result, err := Eval(node, val, env)
-	return nil, result, false, err
+	return nil, result, err
 }
 
 // rebaseTuples moves the bindings each tuple holds below from onto a child
@@ -737,7 +748,7 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 func rebaseTuples(tuples []pathCtx, from, env *Environment) {
 	for i, tuple := range tuples {
 		var chain []*Environment
-		for e := tuple.env; e != from; e = e.Parent() {
+		for e := tuple.env; e != nil && e != from; e = e.Parent() {
 			chain = append(chain, e)
 		}
 		rebased := NewChildEnvironment(env)
@@ -979,15 +990,10 @@ func splitTupleStages(step *parser.Node) (*parser.Node, []tupleStage) {
 }
 
 // isPlainTupleBase reports whether a predicated step's base is one that
-// evalTupleStages can expand per context; joins keep their dedicated
-// handling.
+// evalTupleStages can expand per context; sorts and joins keep their
+// dedicated handling.
 func isPlainTupleBase(base *parser.Node) bool {
-	switch base.Type {
-	case parser.NodeName, parser.NodeString, parser.NodeWildcard, parser.NodeDescendant,
-		parser.NodeBlock, parser.NodeFunction, parser.NodeVariable, parser.NodeUnary, parser.NodeParent:
-		return base.Focus == "" && base.Group == nil
-	}
-	return false
+	return base.Type != parser.NodeSort && base.Focus == "" && base.Group == nil
 }
 
 // evalTupleStages expands base for every context, then applies each stage

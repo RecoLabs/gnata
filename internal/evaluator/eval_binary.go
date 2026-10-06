@@ -187,11 +187,7 @@ func evalSubscript(node *parser.Node, input any, env *Environment) (any, error) 
 	if node.Right.Type == parser.NodeNumber {
 		return pickItem(node.Right, items, keepArray, env)
 	}
-	indexVar := ""
-	if node.Left != nil {
-		indexVar = node.Left.Index
-	}
-	filtered, err := filterByPredicate(node.Right, items, indexVar, env)
+	filtered, err := filterByPredicate(node.Right, items, env)
 	if err != nil {
 		return nil, err
 	}
@@ -219,11 +215,11 @@ func pickItem(index *parser.Node, items []any, keepArray bool, env *Environment)
 }
 
 // filterByPredicate evaluates predicate against each item and keeps it as
-// filterMatches says, binding indexVar, if any, to the item's position.
-func filterByPredicate(predicate *parser.Node, items []any, indexVar string, env *Environment) (*Sequence, error) {
+// filterMatches says.
+func filterByPredicate(predicate *parser.Node, items []any, env *Environment) (*Sequence, error) {
 	seq := CreateSequence()
 	filterEnv := NewChildEnvironment(env)
-	if contextFree(predicate, indexVar) {
+	if contextFree(predicate) {
 		res, err := Eval(predicate, items[0], filterEnv)
 		if err != nil {
 			return nil, err
@@ -233,9 +229,6 @@ func filterByPredicate(predicate *parser.Node, items []any, indexVar string, env
 	for i, item := range items {
 		if err := env.Err(); err != nil {
 			return nil, err
-		}
-		if indexVar != "" {
-			filterEnv.Bind(indexVar, float64(i))
 		}
 		res, err := Eval(predicate, item, filterEnv)
 		if err != nil {
@@ -280,10 +273,10 @@ func filterConstant(res any, items []any, env *Environment) (*Sequence, error) {
 	return seq, nil
 }
 
-// contextFree reports whether predicate reads neither its item nor its
-// position, so it has the same value for every item: filterByPredicate then
-// evaluates it once, and a computed index such as $a[$i] takes O(1).
-func contextFree(predicate *parser.Node, indexVar string) bool {
+// contextFree reports whether predicate does not read its item, so it has
+// the same value for every item: filterByPredicate then evaluates it once,
+// and a computed index such as $a[$i] takes O(1).
+func contextFree(predicate *parser.Node) bool {
 	if predicate == nil {
 		return true
 	}
@@ -294,18 +287,18 @@ func contextFree(predicate *parser.Node, indexVar string) bool {
 	case parser.NodeNumber, parser.NodeString, parser.NodeValue:
 		return true
 	case parser.NodeVariable:
-		return predicate.Value != "" && predicate.Value != indexVar
+		return predicate.Value != ""
 	case parser.NodeBinary:
-		return contextFree(predicate.Left, indexVar) && contextFree(predicate.Right, indexVar)
+		return contextFree(predicate.Left) && contextFree(predicate.Right)
 	case parser.NodeCondition:
-		return contextFree(predicate.Condition, indexVar) && contextFree(predicate.Then, indexVar) &&
-			contextFree(predicate.Else, indexVar)
+		return contextFree(predicate.Condition) && contextFree(predicate.Then) &&
+			contextFree(predicate.Else)
 	case parser.NodeUnary:
 		switch predicate.Value {
 		case "-":
-			return contextFree(predicate.Expression, indexVar)
+			return contextFree(predicate.Expression)
 		case "[":
-			return !slices.ContainsFunc(predicate.Expressions, func(e *parser.Node) bool { return !contextFree(e, indexVar) })
+			return !slices.ContainsFunc(predicate.Expressions, func(e *parser.Node) bool { return !contextFree(e) })
 		}
 	}
 	return false

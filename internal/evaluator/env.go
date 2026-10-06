@@ -178,21 +178,6 @@ func (e *Environment) Lookup(name string) (any, bool) {
 	return nil, false
 }
 
-// LookupWithEnv looks up a variable and returns both the value and the
-// specific environment in which the binding was found. This is used by the
-// parent operator (%) so that chained %.% navigations correctly use the
-// parent of the binding's environment, not the parent of the starting env.
-// Returns (nil, nil, false) if not found.
-func (e *Environment) LookupWithEnv(name string) (any, *Environment, bool) {
-	if v, ok := e.LookupDirect(name); ok {
-		return v, e, true
-	}
-	if e.parent != nil {
-		return e.parent.LookupWithEnv(name)
-	}
-	return nil, nil, false
-}
-
 // ResetCallCounter installs a fresh call-depth counter on this environment,
 // decoupling it from any inherited parent counter. Use this when creating a
 // per-eval child environment from a shared parent to avoid cross-eval interference.
