@@ -257,9 +257,8 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 	}
 	hasBindingStep := tupleStart < len(node.Steps) || state == streamPending
 
-	reached := -1
+	started = state == streamRunning
 	for stepIdx, step := range node.Steps {
-		reached = stepIdx
 		if err := env.Err(); err != nil {
 			return nil, nil, false, err
 		}
@@ -271,6 +270,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		startsStream := hasBindingStep && stepIdx == tupleStart
 		inStream := hasBindingStep && stepIdx > tupleStart
 		grouped := step.Group != nil
+		started = started || startsStream
 
 		// Sort steps must be applied globally to ALL tuples simultaneously so that
 		// tuple ordering is preserved (e.g. Account.Order#$o.Product^(ProductID)).
@@ -288,18 +288,21 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 				leftState = streamPending
 			}
 			raw := rawTupleContext(node.Steps[:stepIdx+1], env)
-			sorted, err := evalTupleSort(sortStep, ctxs, env, leftState, raw)
+			sorted, sortedRaw, sortStarted, err := evalTupleSort(sortStep, ctxs, env, leftState, raw)
 			if err != nil {
 				return nil, nil, false, err
 			}
-			if startsStream && !sortStep.Tuple {
-				bindSortIndex(sortStep, sorted)
+			if startsStream {
+				started = sortStarted
+				if !sortStep.Tuple {
+					bindSortIndex(sortStep, sorted)
+				}
 			}
-			// jsonata-js sorts an existing tuple stream into a plain array of
-			// tuples, so its predicates see each raw tuple object rather than
-			// its value and bindings.
+			// jsonata-js sorts an existing tuple stream of several tuples into
+			// a plain array of tuples, so its predicates see each raw tuple
+			// object rather than its value and bindings.
 			var contextOf tupleContext
-			if inStream || sortStep.Tuple {
+			if sortedRaw {
 				contextOf = raw
 			}
 			rawContext = contextOf
@@ -447,7 +450,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 	if err := env.Err(); err != nil {
 		return nil, nil, false, err
 	}
-	return ctxs, rawContext, hasBindingStep && reached >= tupleStart, nil
+	return ctxs, rawContext, started, nil
 }
 
 // evalTupleSort applies a sort step to a slice of pathCtx in tuple-stream mode.
@@ -467,7 +470,9 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 // stream already existed before that sort (inStream, or bindings in its
 // Left), jsonata-js leaves a plain array of tuples, so its predicates and
 // this sort's terms see raw tuple objects (see rawTupleContext).
-func evalTupleSort(step *parser.Node, ctxs []pathCtx, env *Environment, state streamPos, raw tupleContext) ([]pathCtx, error) {
+func evalTupleSort(
+	step *parser.Node, ctxs []pathCtx, env *Environment, state streamPos, raw tupleContext,
+) (sorted []pathCtx, rawResult, started bool, _ error) {
 	inStream := state == streamRunning
 	// A Left of $ sorts a running stream's tuples in place; anywhere else
 	// it navigates like any Left, so the input's items are sorted.
@@ -484,19 +489,22 @@ func evalTupleSort(step *parser.Node, ctxs []pathCtx, env *Environment, state st
 		leftSort, leftStages = splitTupleStages(left)
 	}
 	var termContext tupleContext
+	inputRaw := false
+	started = true
 	if leftSort != nil && leftSort.Type == parser.NodeSort {
-		inner, err := evalTupleSort(leftSort, ctxs, env, state, raw)
+		inner, innerRaw, innerStarted, err := evalTupleSort(leftSort, ctxs, env, state, raw)
 		if err != nil {
-			return nil, err
+			return nil, false, false, err
 		}
 		if !inStream && !leftSort.Tuple {
 			bindSortIndex(leftSort, inner)
 		}
-		if inStream || leftSort.Tuple {
+		if innerRaw {
 			termContext = raw
 		}
+		inputRaw, started = innerRaw, innerStarted
 		if ctxs, err = applyTupleStages(leftStages, inner, termContext); err != nil {
-			return nil, err
+			return nil, false, false, err
 		}
 	} else if needsNavigation {
 		// Expand: navigate via step.Left for each ctx, collect all (child, childEnv) tuples.
@@ -506,14 +514,14 @@ func evalTupleSort(step *parser.Node, ctxs []pathCtx, env *Environment, state st
 		switch {
 		case step.Left.Type == parser.NodePath && len(step.Left.Steps) > 0:
 			var err error
-			if expanded, _, _, err = walkPathTuple(step.Left, ctxs, env, state); err != nil {
-				return nil, err
+			if expanded, _, started, err = walkPathTuple(step.Left, ctxs, env, state); err != nil {
+				return nil, false, false, err
 			}
 		default:
 			for _, ctx := range ctxs {
 				result, err := Eval(step.Left, ctx.value, ctx.env)
 				if err != nil {
-					return nil, err
+					return nil, false, false, err
 				}
 				if result == nil {
 					continue
@@ -523,12 +531,20 @@ func evalTupleSort(step *parser.Node, ctxs []pathCtx, env *Environment, state st
 		}
 		ctxs = expanded
 	}
+	// A sort whose Left binds nothing starts any stream itself, which
+	// jsonata-js never reaches when that Left yields nothing.
+	if !inStream && !step.Tuple {
+		started = len(ctxs) > 0
+	}
+	// jsonata-js returns a stream of at most one tuple as is, still a
+	// stream, and sorts a longer one into raw tuples.
+	rawResult = inputRaw || (inStream || step.Tuple) && len(ctxs) > 1
 
 	if len(step.Terms) == 0 {
-		return ctxs, nil
+		return ctxs, rawResult, started, nil
 	}
 
-	sorted := slices.Clone(ctxs)
+	sorted = slices.Clone(ctxs)
 
 	if err := SortItemsErr(sorted, func(a, b pathCtx) (int, error) {
 		aVal, aEnv, bVal, bEnv := a.value, a.env, b.value, b.env
@@ -538,9 +554,9 @@ func evalTupleSort(step *parser.Node, ctxs []pathCtx, env *Environment, state st
 		}
 		return compareSortTerms(step.Terms, aVal, bVal, aEnv, bEnv)
 	}); err != nil {
-		return nil, err
+		return nil, false, false, err
 	}
-	return sorted, nil
+	return sorted, rawResult, started, nil
 }
 
 // bindSortIndex binds a sort step's #$var to the sorted positions, for a sort

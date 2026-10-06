@@ -17,6 +17,7 @@ const (
 	tripleJSON = `{"a":[{"b":1,"c":2},{"b":3,"c":4},{"b":2,"c":9}]}`
 	// parentArrayJSON is a root array, which jsonata-js wraps as one item.
 	parentArrayJSON = `[{"k":[1,2],"m":[1]},{"k":4,"m":[2,3]}]`
+	keyedJSON       = `{"a":[{"b":"k","c":[1,2]},{"b":"k","c":[3]},{"b":"j","c":4}],"e":[]}`
 )
 
 var parentOperatorCases = []exprCase{
@@ -315,6 +316,14 @@ var groupAndSortCases = []exprCase{
 	{expr: `Account.Nope#$o.Order{"a":1}`, data: accountJSON, want: `{}`},
 	{expr: `Account.Order[0]#$o.Product{"k":$o}`, data: accountJSON, want: `{"k":[0,0]}`},
 	{expr: `Account.Order.Product^(>Price)#$i.Name{"k":$i}`, data: accountJSON, want: `{"k":[0,1,2]}`},
+	{expr: `a#$i.c[$>9]^($){"k":1}`, data: keyedJSON, want: `{}`},
+	{expr: `a[b="j"].c^(%.b){"k":$}`, data: keyedJSON, want: `{"k":4}`},
+	{expr: `a[b="j"]#$i.c^($)[$keys($)[0]="@"]`, data: keyedJSON, want: undefined},
+	{expr: `nope^(%.b){"k":1}`, data: keyedJSON, want: `{}`},
+	{expr: `e^(b)#$i{"k":1}`, data: keyedJSON, want: `{"k":1}`},
+	{expr: `e^(b)#$i[0]{"k":1}`, data: keyedJSON, want: `{"k":1}`},
+	{expr: `nope.x#$j^(b){"k":1}`, data: keyedJSON, want: `{"k":1}`},
+	{expr: `a.nope#$j^(b){"k":1}`, data: keyedJSON, want: `{}`},
 	{expr: `Account.Order.Product@$p{"k":$p.Name}`, data: accountJSON, want: `{"k":["Hat","Cap","Bag"]}`},
 	{expr: `a{b: c, b: d}`, data: `{"a":{"b":"k","c":1,"d":2}}`, code: "D1009"},
 	{expr: `a{b: $error("g")}`, data: `{"a":{"b":"k","c":1}}`, code: "D3137"},
