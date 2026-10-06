@@ -40,16 +40,9 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 	sortsByPartial := func(depth int) string {
 		return fmt.Sprintf(`($p := $sort(?, ?); $d := $reduce([1..%d], function($a,$i){[[$a], $p]}, [2,1]); $count($sort($d, $p)))`, depth)
 	}
-	withStack := []gnata.Option{gnata.WithStack(20_000)}
 	nested := func(depth int) string { return strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth) }
 	const tooNested = "U1001: stack overflow error: function values nested more than 5000 deep"
-	testCases := []struct {
-		desc string
-		expr string
-		opts []gnata.Option
-		want any
-		code string
-	}{
+	runNestingCases(t, []nestingCase{
 		{desc: "partial applications within nesting limit", expr: partials(4_999), want: float64(5)},
 		{desc: "partial applications exceed nesting limit", expr: partials(5_001), code: tooNested},
 		{desc: "compositions within nesting limit", expr: compositions(4_999), want: "5"},
@@ -61,21 +54,6 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		{desc: "builtin callbacks exceed nesting limit", expr: sortsBySort(1_000_000), code: tooNested},
 		{desc: "builtin callbacks through partials within nesting limit", expr: sortsByPartial(4_999), want: float64(2)},
 		{desc: "builtin callbacks through partials exceed nesting limit", expr: sortsByPartial(5_001), code: tooNested},
-		{
-			desc: "WithStack bounds recursion through $map",
-			expr: `($f := function($n){$n = 0 ? 0 : $map([$n], function($x){$f($x - 1)})[0] + 1}; $f(10500))`,
-			opts: withStack, want: float64(10500),
-		},
-		{
-			desc: "WithStack bounds recursion through a function parameter",
-			expr: `($f := function($n, $g){$n = 0 ? 0 : $g($n - 1, $g) + 1}; $f(10500, $f))`,
-			opts: withStack, want: float64(10500),
-		},
-		{
-			desc: "endless recursion through $map",
-			expr: `($f := function($n){$map([$n], function($x){$f($x)})}; $f(1))`,
-			opts: withStack, code: "D1011",
-		},
 		{desc: "recursion through a transform within default stack", expr: recursiveTransform(99), want: float64(2)},
 		{desc: "deep transforms in a group exceed nesting limit", expr: groupedTransforms(10_000, 3_000), code: tooNested},
 		{
@@ -90,7 +68,57 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 				`}} |)}; $count($keys($f(99))))`,
 			want: float64(3),
 		},
-	}
+	})
+}
+
+// Lambdas, and wrappers that call only lambdas, are bounded by WithStack's
+// call depth, not by the nesting budget.
+func TestWithStackThroughFunctionValues(t *testing.T) {
+	withStack := []gnata.Option{gnata.WithStack(20_000)}
+	runNestingCases(t, []nestingCase{
+		{
+			desc: "WithStack bounds recursion through $map",
+			expr: `($f := function($n){$n = 0 ? 0 : $map([$n], function($x){$f($x - 1)})[0] + 1}; $f(10500))`,
+			opts: withStack, want: float64(10500),
+		},
+		{
+			desc: "WithStack bounds recursion through a function parameter",
+			expr: `($f := function($n, $g){$n = 0 ? 0 : $g($n - 1, $g) + 1}; $f(10500, $f))`,
+			opts: withStack, want: float64(10500),
+		},
+		{
+			desc: "WithStack bounds recursion through a partial application",
+			expr: `($f := function($n){$n = 0 ? 0 : $p($n - 1) + 1}; $p := $f(?); $p(10500))`,
+			opts: withStack, want: float64(10500),
+		},
+		{
+			desc: "WithStack bounds recursion through a partial application argument",
+			expr: `($f := function($n, $g){$n = 0 ? 0 : $g($n - 1, $g) + 1}; $f(10500, $f(?, ?)))`,
+			opts: withStack, want: float64(10500),
+		},
+		{
+			desc: "WithStack bounds recursion through a composition",
+			expr: `($f := function($n){$n = 0 ? 0 : $c($n - 1) + 1}; $c := $f ~> function($x){$x}; $c(10500))`,
+			opts: withStack, want: float64(10500),
+		},
+		{
+			desc: "endless recursion through $map",
+			expr: `($f := function($n){$map([$n], function($x){$f($x)})}; $f(1))`,
+			opts: withStack, code: "D1011",
+		},
+	})
+}
+
+type nestingCase struct {
+	desc string
+	expr string
+	opts []gnata.Option
+	want any
+	code string
+}
+
+func runNestingCases(t *testing.T, testCases []nestingCase) {
+	t.Helper()
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
 			e, err := gnata.Compile(tC.expr, tC.opts...)

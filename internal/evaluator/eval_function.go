@@ -162,7 +162,8 @@ func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
 			}
 			return invokeFunction(fn, fullArgs, focus, env, false)
 		},
-		Arity: placeholders,
+		Arity:        placeholders,
+		CallsLambdas: isLambda(fn),
 	}
 	return partial, nil
 }
@@ -174,7 +175,8 @@ func wrapFunctionArg(arg any, env *Environment) any {
 	if !isCallable(arg) {
 		return arg
 	}
-	if sb, isSigned := arg.(*SignedBuiltin); isSigned && sb.Argument != nil {
+	sb, isSigned := arg.(*SignedBuiltin)
+	if isSigned && sb.Argument != nil {
 		return arg
 	}
 	arity, known := FunctionArity(arg)
@@ -187,6 +189,10 @@ func wrapFunctionArg(arg any, env *Environment) any {
 		},
 		Arity:    arity,
 		Argument: arg,
+		// A partial application or composition of lambdas calls only
+		// lambdas too, and as no wrapper wraps another argument wrapper, a
+		// chain of these stays two wrappers long.
+		CallsLambdas: isLambda(arg) || isSigned && sb.CallsLambdas,
 	}
 }
 
@@ -227,6 +233,12 @@ func isCallable(v any) bool {
 	return false
 }
 
+// isLambda reports whether fn is a lambda.
+func isLambda(fn any) bool {
+	_, ok := fn.(*Lambda)
+	return ok
+}
+
 // wrappedLambda returns the lambda that fn wraps as a function argument.
 func wrappedLambda(fn any) (*Lambda, bool) {
 	sb, isSigned := fn.(*SignedBuiltin)
@@ -253,6 +265,9 @@ func stackOverflowError(counter *callCounter) error {
 // callWrapper calls a partial application, composition or argument wrapper,
 // which calls the function it wraps on the Go stack.
 func callWrapper(f *SignedBuiltin, args []any, focus any, env *Environment, counter *callCounter) (any, error) {
+	if f.CallsLambdas {
+		return f.Fn(args, focus, env)
+	}
 	return counter.callNested(1, func() (any, error) {
 		return f.Fn(args, focus, env)
 	})
@@ -292,8 +307,7 @@ func invokeFunction(fn any, args []any, focus any, env *Environment, checked boo
 		checked = true
 		switch f := fn.(type) {
 		case *SignedBuiltin:
-			if _, wrapsLambda := wrappedLambda(f); wrapsLambda || !f.isWrapper() {
-				// The call depth bounds a wrapped lambda argument.
+			if !f.isWrapper() {
 				return f.Fn(args, focus, env)
 			}
 			return callWrapper(f, args, focus, env, counter)

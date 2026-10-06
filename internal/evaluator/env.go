@@ -455,6 +455,9 @@ type SignedBuiltin struct {
 	Context   *ContextSig        // nil: no parameter defaults to the context
 	Arity     int                // parameters of the jsonata-js implementation, for HOF callbacks; -1 if unknown
 	Argument  any                // a function argument this applies with a null context, or nil
+	// CallsLambdas reports that a wrapper calls only lambdas directly, so
+	// the call depth bounds it and it spends no nesting budget.
+	CallsLambdas bool
 }
 
 // isWrapper reports whether sb is a partial application, composition or

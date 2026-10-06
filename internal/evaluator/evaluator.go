@@ -87,27 +87,15 @@ func evalDescendant(input any, env *Environment) (any, error) {
 	return seq, nil
 }
 
-// boundedWhenCalled reports whether calling fn is already bounded: a lambda,
-// or a wrapper around a lambda argument, by the call depth, and any other
-// wrapper by the nesting budget it spends itself.
-func boundedWhenCalled(fn any) bool {
-	switch f := fn.(type) {
-	case *Lambda:
-		return true
-	case *SignedBuiltin:
-		return f.isWrapper()
-	}
-	return false
-}
-
 // ApplyFunction is the public API used by the standard library to call a
 // function argument with the given args. Like jsonata-js, which wraps a
 // function argument in a closure that applies it with a null context, it
 // calls fn with a null context. A builtin callback spends the nesting
 // budget, since it can recurse on the Go stack with no lambda call, as $sort
-// does as $sort's comparator.
+// does as $sort's comparator. A lambda is bounded by the call depth, and a
+// wrapper by the call depth or the budget it spends itself.
 func ApplyFunction(fn any, args []any, env *Environment) (any, error) {
-	if boundedWhenCalled(fn) {
+	if reachesLambda(fn) {
 		return callFunction(fn, args, Null, env)
 	}
 	return env.callCounter().callNested(1, func() (any, error) {

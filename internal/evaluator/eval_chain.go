@@ -95,7 +95,8 @@ func evalChain(right *parser.Node, piped, input any, env *Environment) (any, err
 				}
 				return CollapseAndKeep(res, false), nil
 			},
-			Arity: 1,
+			Arity:        1,
+			CallsLambdas: isLambda(piped) && isLambda(fn),
 		}, nil
 	}
 	// jsonata-js applies a bare function reference with a null context.
