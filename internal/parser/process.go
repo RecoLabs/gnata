@@ -97,6 +97,7 @@ func processDotBinary(node *Node) (*Node, error) {
 	}
 	markUnaryArraySteps(steps)
 	markCallStages(steps)
+	dropBoundKeepArray(steps)
 
 	// Propagate KeepSingletonArray when any step (or a subscript step's left side)
 	// has KeepArray=true. This covers both A[].B and A[][filter].B patterns.
@@ -250,6 +251,25 @@ func markUnaryArraySteps(steps []*Node) {
 	for i, step := range steps {
 		if (i > 0 || len(steps) == 1) && isUnaryArrayCtor(step) {
 			step.ConsArray = true
+		}
+	}
+}
+
+// dropBoundKeepArray clears a [] written after a later step's #$var
+// binding, which jsonata-js drops with the binding's own path.
+func dropBoundKeepArray(steps []*Node) {
+	for _, step := range steps[1:] {
+		for n := step; n != nil; n = n.Left {
+			if n.Type == NodeBinary && n.Value == "[" {
+				continue
+			}
+			if n.IndexKeepArray {
+				for m := step; m != n; m = m.Left {
+					m.KeepArray = false
+				}
+				n.KeepArray = false
+			}
+			break
 		}
 	}
 }

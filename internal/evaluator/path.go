@@ -224,21 +224,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 	for _, ctx := range ctxs {
 		appendToSequence(seq, ctx.value)
 	}
-	result := CollapseAndKeep(seq, node.KeepSingletonArray)
-
-	if node.KeepSingletonArray {
-		switch v := result.(type) {
-		case []any:
-			return v, nil
-		case ConsArray:
-			return []any(v), nil
-		default:
-			if result != nil {
-				return []any{result}, nil
-			}
-		}
-	}
-	return result, nil
+	return CollapseAndKeep(seq, node.KeepSingletonArray), nil
 }
 
 // streamPos says where a walked path sits relative to the tuple stream.
@@ -901,7 +887,7 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 			*nextCtxs = append(*nextCtxs, pathCtx{value: ctxValue(elem), env: bindAt(j, elem)})
 		}
 	case *Sequence:
-		collapsed := CollapseAndKeep(rv, step.KeepArray)
+		collapsed := CollapseAndKeep(rv, step.KeepArray && !step.IndexKeepArray)
 		if collapsed == nil {
 			return
 		}
@@ -937,7 +923,7 @@ func appendTupleResultsNoParent(step *parser.Node, result any, parentEnv *Enviro
 			*nextCtxs = append(*nextCtxs, pathCtx{value: elem, env: bindAt(j, elem)})
 		}
 	case *Sequence:
-		collapsed := CollapseAndKeep(rv, step.KeepArray)
+		collapsed := CollapseAndKeep(rv, step.KeepArray && !step.IndexKeepArray)
 		if collapsed == nil {
 			return
 		}

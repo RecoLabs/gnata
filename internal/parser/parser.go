@@ -964,6 +964,13 @@ func (p *Parser) parseSubscript(left *Node, pos int) (*Node, error) {
 			return nil, err
 		}
 		left.KeepArray = true
+		base := left
+		for base.Type == NodeBinary && base.Value == "[" && base.Left != nil {
+			base = base.Left
+		}
+		if base.Index != "" {
+			base.IndexKeepArray = true
+		}
 		return left, nil
 	}
 	expr, err := p.expression(0)
