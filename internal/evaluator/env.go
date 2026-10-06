@@ -83,6 +83,10 @@ type Environment struct {
 	// evaluation starts, and child environments inherit it. It sits beside
 	// inlineN to reuse that field's padding.
 	hasDeadline bool
+	// sequenceLimited mirrors whether the call counter has a WithSequence
+	// limit, so that without one CheckSequence returns at once. It is set
+	// with the limit before evaluation starts, and children inherit it.
+	sequenceLimited bool
 	// decimalPrecision is the significant digits set via WithDecimalPrecision
 	// (0 = float64 only), inherited by children. At most 100, so it fits in
 	// the padding after hasDeadline.
@@ -109,6 +113,7 @@ func NewChildEnvironment(parent *Environment) *Environment {
 		env.calls = parent.callCounter()
 		env.done = parent.done
 		env.hasDeadline = parent.hasDeadline
+		env.sequenceLimited = parent.sequenceLimited
 		env.decimalPrecision = parent.decimalPrecision
 	}
 	return env
@@ -240,14 +245,14 @@ type outerInput struct{ arr, items []any }
 // context, so that a field lookup over it builds a sequence. Only the
 // sequence guardrail reads it, so without one it records nothing.
 func (e *Environment) SetOuterInput(arr []any) {
-	if e.callCounter().maxSequence > 0 {
+	if e.sequenceLimited {
 		e.Bind(outerInputKey, &outerInput{arr: arr})
 	}
 }
 
 // outer returns the outerInput that holds arr, or nil.
 func (e *Environment) outer(arr []any) *outerInput {
-	if e.callCounter().maxSequence <= 0 {
+	if !e.sequenceLimited {
 		return nil
 	}
 	v, _ := e.Lookup(outerInputKey)
@@ -285,6 +290,13 @@ func unwrapOuter(v any, env *Environment) any {
 // Exceeding it at a checked growth site returns error D2015.
 func (e *Environment) SetMaxSequence(n int) {
 	e.callCounter().maxSequence = clampInt32(n)
+	e.sequenceLimited = n > 0
+}
+
+// SequenceLimited reports whether a WithSequence limit is set, so that work
+// done only to check it can be skipped without one.
+func (e *Environment) SequenceLimited() bool {
+	return e.sequenceLimited
 }
 
 // clampInt32 saturates a configured limit to the int32 range; larger limits
@@ -307,6 +319,13 @@ func (e *Environment) DecimalPrecision() int {
 // CheckSequence returns a D2015 error if n exceeds the configured sequence
 // guardrail. No-op when no guardrail is set.
 func (e *Environment) CheckSequence(n int) error {
+	if !e.sequenceLimited {
+		return nil
+	}
+	return e.checkSequenceLimit(n)
+}
+
+func (e *Environment) checkSequenceLimit(n int) error {
 	c := e.callCounter()
 	if c.maxSequence > 0 && n > int(c.maxSequence) {
 		return &JSONataError{Code: "D2015", Message: fmt.Sprintf("The maximum sequence length of %d was exceeded", c.maxSequence)}

@@ -19,6 +19,9 @@ type groupEntry struct {
 type appendCount struct{ items, values int }
 
 func (c *appendCount) add(v any, env *Environment) error {
+	if !env.SequenceLimited() {
+		return nil
+	}
 	c.items += appendLength(v)
 	c.values++
 	if c.values == 1 {

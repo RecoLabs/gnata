@@ -199,6 +199,9 @@ func sequenceContexts(seq *Sequence) any {
 // rather than building a sequence. That context is either the step's only
 // one, or the only one of several that yields a value (lone).
 func checkPathStep(stepInput, result any, singleContext, lone, lastStep bool, env *Environment) error {
+	if !env.SequenceLimited() {
+		return nil
+	}
 	if _, isArr := stepInput.([]any); lastStep && (!isArr || singleContext || lone) {
 		return nil
 	}
@@ -209,6 +212,9 @@ func checkPathStep(stepInput, result any, singleContext, lone, lastStep bool, en
 // constructed array (ConsArray) is one value of its step, as in jsonata-js,
 // so it does not count.
 func checkSequenceLength(result any, env *Environment) error {
+	if !env.SequenceLimited() {
+		return nil
+	}
 	switch v := result.(type) {
 	case []any:
 		return env.CheckSequence(len(v))

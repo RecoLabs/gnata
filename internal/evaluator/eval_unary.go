@@ -48,7 +48,7 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 			isExplicitArray := isArrayConstructor(expr)
 			// jsonata-js appends every other value with $append, which counts
 			// against the sequence guardrail; a nested constructor is pushed.
-			if !isExplicitArray {
+			if !isExplicitArray && env.SequenceLimited() {
 				if err := env.CheckSequence(len(result) + appendLength(val)); err != nil {
 					return nil, err
 				}
