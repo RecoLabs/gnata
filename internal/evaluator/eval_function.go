@@ -9,6 +9,20 @@ import (
 )
 
 func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
+	result, err := evalCall(node, input, env)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := result.(*TailCall); ok {
+		return result, nil
+	}
+	return CollapseAndKeep(result, node.KeepArray), nil
+}
+
+// evalCall evaluates a function call without collapsing a returned
+// *Sequence, so that a subscript on the call sees its items, as in
+// jsonata-js.
+func evalCall(node *parser.Node, input any, env *Environment) (any, error) {
 	var fn any
 	if node.Procedure != nil {
 		var err error
@@ -71,11 +85,7 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 		}
 	}
 
-	result, err := callFunction(fn, args, input, env)
-	if err != nil {
-		return nil, err
-	}
-	return CollapseAndKeep(result, node.KeepArray), nil
+	return callFunction(fn, args, input, env)
 }
 
 func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {

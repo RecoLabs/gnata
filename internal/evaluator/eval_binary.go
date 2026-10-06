@@ -268,7 +268,12 @@ func filterByPredicate(predicate *parser.Node, items []any, parent any, indexVar
 // evalSubscriptLeft evaluates the left side of a subscript and normalizes
 // the result to a slice. Returns (left, items, err); left==nil means no match.
 func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any, items []any, _ error) {
-	left, err := Eval(node.Left, input, env)
+	var err error
+	if node.Left.Type == parser.NodeFunction {
+		left, err = evalCall(node.Left, input, env)
+	} else {
+		left, err = Eval(node.Left, input, env)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -286,15 +291,10 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (left any
 	case []any:
 		items = v
 	case *Sequence:
-		collapsed := CollapseSequence(v)
-		if collapsed == nil {
+		if len(v.Values) == 0 {
 			return nil, nil, nil
 		}
-		if arr, ok := AsArray(collapsed); ok {
-			items = arr
-		} else {
-			items = []any{collapsed}
-		}
+		items = v.Values
 	default:
 		items = []any{left}
 	}

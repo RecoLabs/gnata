@@ -90,6 +90,7 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `$sort()`, want: undefined},
 	{expr: `$distinct(a.b)`, data: `{"a":[{"b":[1,1,2]},{"b":2}]}`, want: `[1,2]`},
 	{expr: `$distinct([[1],[1],[2],null,null])`, want: `[[1],[2],null]`},
+	{expr: `$distinct([[1,2],[1,2]])[0]`, want: `[1,2]`},
 	{expr: `$flatten([[1,[2,[3]]]], 1)`, want: `[1,[2,[3]]]`},
 	{expr: `$zip([1,2],[3])`, want: `[[1,3]]`},
 	{expr: `$zip()`, want: `[]`},
