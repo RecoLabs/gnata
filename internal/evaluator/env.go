@@ -28,7 +28,7 @@ type callCounter struct {
 	depth       int32
 	max         int32
 	maxSequence int32  // 0 = unlimited; guardrail set via WithSequence (error D2015)
-	nested      uint16 // nesting budget spent by calls in progress, see enterNested
+	nested      uint16 // nesting budget spent by calls in progress, see callNested
 	evalDepth   int8   // $eval nesting, capped by IncrEvalDepth
 	flags       counterFlags
 
@@ -71,22 +71,19 @@ const maxNestedCalls = 10_000
 // callCounter.nested must hold maxNestedCalls.
 const _ uint16 = maxNestedCalls
 
-// enterNested spends cost of the nesting budget on a call; leaveNested
-// returns it when the call ends.
-func (c *callCounter) enterNested(cost int) error {
+// callNested calls call, spending cost of the nesting budget while it runs,
+// or returns U1001 when the budget does not cover it.
+func (c *callCounter) callNested(cost int, call func() (any, error)) (any, error) {
 	if int(c.nested)+cost > maxNestedCalls {
-		return &JSONataError{
+		return nil, &JSONataError{
 			Code:    "U1001",
 			Message: fmt.Sprintf("stack overflow error: function values nested more than %d deep", maxNestedCalls),
 		}
 	}
 	c.nested += uint16(cost)
-	return nil
-}
-
-// leaveNested ends a call counted by enterNested with the same cost.
-func (c *callCounter) leaveNested(cost int) {
+	result, err := call()
 	c.nested -= uint16(cost)
+	return result, err
 }
 
 type deadlineState struct {

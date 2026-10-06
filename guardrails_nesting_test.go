@@ -91,3 +91,45 @@ func TestNestedFunctionValueLimit(t *testing.T) {
 		})
 	}
 }
+
+// Lambda callbacks are bounded by WithStack, not by the nesting budget.
+func TestWithStackThroughHigherOrderFunctions(t *testing.T) {
+	testCases := []struct {
+		desc string
+		expr string
+		want any
+		code string
+	}{
+		{
+			desc: "recursion through $map beyond the nesting limit",
+			expr: `($f := function($n){$n = 0 ? 0 : $map([$n], function($x){$f($x - 1)})[0] + 1}; $f(10500))`,
+			want: float64(10500),
+		},
+		{
+			desc: "endless recursion through $map",
+			expr: `($f := function($n){$map([$n], function($x){$f($x)})}; $f(1))`,
+			code: "D1011",
+		},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr, gnata.WithStack(20_000))
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := e.Eval(context.Background(), nil)
+			if tC.code != "" {
+				if err == nil || !strings.Contains(err.Error(), tC.code) {
+					t.Fatalf("expected error code %s, got result=%v err=%v", tC.code, got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if !gnata.DeepEqual(got, tC.want) {
+				t.Fatalf("want %v, got %v", tC.want, got)
+			}
+		})
+	}
+}

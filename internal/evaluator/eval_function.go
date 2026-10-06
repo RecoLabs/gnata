@@ -253,12 +253,9 @@ func stackOverflowError(counter *callCounter) error {
 // callWrapper calls a partial application, composition or argument wrapper,
 // which calls the function it wraps on the Go stack.
 func callWrapper(f *SignedBuiltin, args []any, focus any, env *Environment, counter *callCounter) (any, error) {
-	if err := counter.enterNested(1); err != nil {
-		return nil, err
-	}
-	result, err := f.Fn(args, focus, env)
-	counter.leaveNested(1)
-	return result, err
+	return counter.callNested(1, func() (any, error) {
+		return f.Fn(args, focus, env)
+	})
 }
 
 // callFunction applies fn as jsonata-js's apply does: focus is the call's
