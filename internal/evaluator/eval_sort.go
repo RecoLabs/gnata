@@ -69,7 +69,13 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if !wasArray && len(sorted) == 1 {
+	// jsonata-js collapses the sorted result like a sequence: one item
+	// becomes the item and none undefined, unless [] keeps the array (see
+	// evalSortNode).
+	switch len(sorted) {
+	case 0:
+		return nil, nil
+	case 1:
 		return sorted[0], nil
 	}
 	return sorted, nil
