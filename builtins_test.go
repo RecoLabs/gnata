@@ -102,6 +102,18 @@ var arrayAndObjectBuiltinCases = []exprCase{
 	{expr: `[1,2,3] ~> $filter(function($v){$v>1})`, want: `[2,3]`},
 	{expr: `$filter([1,2,3], function($v){$v>2})`, want: `3`},
 	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[0]`, want: `[1,2]`},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})`, want: `[1,2]`},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[1]`, want: undefined},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[-1]`, want: `[1,2]`},
+	{expr: `$filter([[1,2],[3]], function($v){$v[0]=1})[$=1]`, want: undefined},
+	{expr: `$count($filter([[1,2],[3]], function($v){$v[0]=1}))`, want: `2`},
+	{expr: `($x := $filter([[1,2],[3]], function($v){$v[0]=1}); $x[0])`, want: `1`},
+	{expr: `$filter([[[1,2]]], function($v){true})[0]`, want: `[[1,2]]`},
+	{expr: `$filter([[]], function($v){true})[0]`, want: `[]`},
+	{expr: `$filter(["a",""], $boolean)`, want: `"a"`},
+	// jsonata-js gives [[1,2]]: its trampoline passes a builtin tail call's
+	// sequence to $map uncollapsed.
+	{expr: `$map([1], function($i){$filter([[1,2],[3]], function($v){$v[0]=1})})`, want: `[1,2]`},
 	{expr: `$filter(o.[b,c], function($v){$v>5})`, data: pairsJSON, want: `6`},
 	{expr: `$filter(a.[b,c], function($v){$v[0]=3})[0]`, data: pairsJSON, want: `[3,4]`},
 	{expr: `$sum(o.[b,c])`, data: pairsJSON, want: `11`},

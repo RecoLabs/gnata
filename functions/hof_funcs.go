@@ -130,10 +130,11 @@ func makeFnFilter(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		}
 		// jsonata-js applies a call's predicates and [] to the one-item
 		// sequence before collapsing it; collapsing a lone array here would
-		// let $filter(...)[0] index into that array instead.
+		// let $filter(...)[0] index into that array instead, so the call
+		// site collapses it.
 		if len(seq.Values) == 1 {
 			if _, isArr := evaluator.AsArray(seq.Values[0]); isArr {
-				return []any{seq.Values[0]}, nil
+				return seq, nil
 			}
 		}
 		return evaluator.CollapseSequence(seq), nil
