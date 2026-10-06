@@ -376,6 +376,13 @@ gnata targets exact parity with the JSONata reference implementation ([jsonata-j
 | 13 | **Exponent mantissa width** | `$formatNumber(1000, "0.0e0")` → `"1.0e3"` | `"10.0e2"` | gnata keeps the mantissa within the picture's integer digits, also when rounding carries over (`9.95` → `"1.0e1"`, not `"10.0e0"`). |
 | 14 | **Negative offsets in `[Z]`** | `$fromMillis(0, "[Z0000]", "-0530")` → `"-0530"` | `"-0630"` | jsonata-js floors a negative `hhmm` offset into its hours, so half-hour zones west of UTC lose an hour. |
 | 15 | **Match object `next`** | `$replace("ababab", /b/, function($m){ $m.next() ? "X" : "Y" })` → `"aXaXaY"` | `"aXabaY"` | Only `$replace` callbacks get `next`, which returns the match after `$m`. jsonata-js advances the cursor `$replace` itself uses, skipping the returned match. `$match` and `~> /re/` results omit `next` so they hold no function values. |
+| 16 | **Partial `$string`** | `"x" ~> $string(?)` → `"x"` | `S0208` | jsonata-js builds partial applications of built-ins from their JavaScript parameter lists, and `$string`'s default parameter does not parse. No other built-in is affected. |
+| 17 | **Extra syntax** | `1..3`, `$count(1..3)`, `[1,]`, `{"a":1,}`, `$sum(1,)`, `function($x,){$x}`, `a^()`, `'it\'s'`, `2 ** 8` are accepted | `S0201`, `S0202`, `S0211` or `S0103` | Ranges work outside array constructors, lists allow a trailing comma, an empty sort keeps the order, `\'` escapes a quote, and `**` raises to a power. |
+| 18 | **Regex literals** | `/[)]/`, `/a]/` and `/a}/` read as written; an invalid pattern such as `/a{2,1}/` raises `D3137` when evaluated | `S0302`; an uncoded `SyntaxError` while parsing | gnata reads character classes when looking for the closing `/`, and treats a stray `]` or `}` as a literal, as RE2 does. jsonata-js counts brackets regardless of classes. |
+| 19 | **Step and parent errors** | `S0213` and `S0217` when evaluated, on branches that run: `false ? % : 1` → `1` | `S0213` / `S0217` while parsing | |
+| 20 | **Lambda signatures** | `S0402` for an unknown character, as in `function($a)<#n:n>{$a}` | ignores unknown characters | The same parser validates custom function signatures, where a typo should fail. |
+| 21 | **Predicate after a path's group** | `a{"k": 1}[0]` → `S0209` | groups the result of `a[0]` | A predicate after a group on a variable, literal or constructor is `S0209` in both. |
+| 22 | **Nesting depth** | `S0218` past 10,000 levels | a `RangeError` stack overflow from about 5,000 levels | Each nested expression and each chained operator is a level, in `Compile` and `$eval` alike. This keeps deep input away from Go's fatal stack limit. |
 
 ## Regex Engine: RE2 vs JavaScript RegExp
 
