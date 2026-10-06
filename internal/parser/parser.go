@@ -52,12 +52,21 @@ func parseError(code, tok, msg string) error {
 	return fmt.Errorf("JSONata error %s at token %q: %s", code, tok, msg)
 }
 
+// MaxDepth is the deepest expression nesting the parser accepts. Each nested
+// expression and each chained operator is one level. It keeps the parser and
+// the recursive passes over the tree (processing, analysis, evaluation) far
+// from Go's fatal stack limit, which deep enough input would otherwise reach.
+// jsonata-js itself overflows its stack at about 5,000 levels.
+const MaxDepth = 10_000
+
 // Parser is a top-down operator precedence (Pratt) parser for JSONata.
 type Parser struct {
 	lex     *lexer.Lexer
 	token   lexer.Token
 	src     string
 	initErr error // error from initial lexer prime
+	depth   int   // active expression calls
+	height  int   // tallest subtree finished in the current expression call
 }
 
 // NewParser creates a new Parser for the given source string.
@@ -147,19 +156,43 @@ func (p *Parser) Parse() (*Node, error) {
 	return node, nil
 }
 
-// expression is the core Pratt parsing function.
+// expression is the core Pratt parsing function. It also tracks the height of
+// the subtree it builds, so a chain like 1+1+...+1, which the loop below
+// builds without recursing, counts toward MaxDepth like nesting does.
 func (p *Parser) expression(bp int) (*Node, error) {
+	if p.depth == MaxDepth {
+		return nil, p.depthError()
+	}
+	p.depth++
+	defer func() { p.depth-- }()
+	outer := p.height
+	p.height = 0
 	left, err := p.nud()
 	if err != nil {
 		return nil, err
 	}
-	for bindingPower(p.token.Type) > bp {
+	height := p.height + 1
+	for {
+		if height > MaxDepth {
+			return nil, p.depthError()
+		}
+		if bindingPower(p.token.Type) <= bp {
+			break
+		}
+		p.height = 0
 		left, err = p.led(left)
 		if err != nil {
 			return nil, err
 		}
+		height = max(height, p.height) + 1
 	}
+	p.height = max(outer, height)
 	return left, nil
+}
+
+func (p *Parser) depthError() error {
+	return parseError("S0218", p.token.Value,
+		fmt.Sprintf("expression nesting exceeds the maximum depth of %d", MaxDepth))
 }
 
 // binaryRHS parses the right-hand side of a binary operator.

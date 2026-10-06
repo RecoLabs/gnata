@@ -608,3 +608,13 @@ func TestLexerSequence(t *testing.T) { //nolint:funlen // test data table
 		}
 	})
 }
+
+func TestLongCommentRun(t *testing.T) {
+	tokens, err := tokenizeAll(strings.Repeat("/* c */", 1_000_000) + "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 1 || tokens[0].Type != lexer.TokenNumber {
+		t.Fatalf("want a single number token, got %v", tokens)
+	}
+}

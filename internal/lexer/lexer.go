@@ -1,6 +1,7 @@
 package lexer
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -48,7 +49,23 @@ func isEscapedAt(src string, start, pos int) bool {
 // Next returns the next token.
 // infix=true means we are after a value (closing bracket, identifier, etc.).
 // infix=false means we are in prefix position; a '/' starts a regex literal.
-func (l *Lexer) Next(infix bool) (Token, error) { //nolint:gocyclo,funlen // dispatch
+func (l *Lexer) Next(infix bool) (Token, error) {
+	// A loop rather than recursion, so a long run of comments or skipped
+	// characters cannot exhaust the stack.
+	for {
+		tok, err := l.scan(infix)
+		if !errors.Is(err, errSkipped) {
+			return tok, err
+		}
+	}
+}
+
+// errSkipped is scan's signal that it consumed only a comment or an
+// unrecognized character, so Next must scan again.
+var errSkipped = errors.New("skipped")
+
+// scan reads one token.
+func (l *Lexer) scan(infix bool) (Token, error) { //nolint:gocyclo,funlen // dispatch
 	// Skip whitespace.
 	for l.pos < len(l.src) {
 		ch := l.src[l.pos]
@@ -70,7 +87,7 @@ func (l *Lexer) Next(infix bool) (Token, error) { //nolint:gocyclo,funlen // dis
 		for l.pos += 2; l.pos < len(l.src); l.pos++ {
 			if l.src[l.pos] == '*' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '/' {
 				l.pos += 2
-				return l.Next(infix)
+				return Token{}, errSkipped
 			}
 		}
 		return Token{}, lexError("S0106", "unclosed block comment")
@@ -226,7 +243,7 @@ func (l *Lexer) Next(infix bool) (Token, error) { //nolint:gocyclo,funlen // dis
 		// Unrecognised character — skip it and try again.
 		_, size := utf8.DecodeRuneInString(l.src[l.pos:])
 		l.pos += size
-		return l.Next(infix)
+		return Token{}, errSkipped
 	}
 
 	if id[0] == '$' {

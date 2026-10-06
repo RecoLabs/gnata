@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/recolabs/gnata"
+	"github.com/recolabs/gnata/internal/parser"
 )
 
 func TestGuardrailsDefaultUnaffected(t *testing.T) {
@@ -44,6 +45,56 @@ func TestGuardrailsDefaultUnaffected(t *testing.T) {
 			}
 		})
 	}
+}
+
+// nestingShapes build an expression whose nesting grows by one level per n.
+var nestingShapes = map[string]func(n int) string{
+	"parens":    func(n int) string { return strings.Repeat("(", n) + "1" + strings.Repeat(")", n) },
+	"arrays":    func(n int) string { return strings.Repeat("[", n) + "1" + strings.Repeat("]", n) },
+	"objects":   func(n int) string { return strings.Repeat(`{"a":`, n) + "1" + strings.Repeat("}", n) },
+	"negation":  func(n int) string { return strings.Repeat("-", n) + "1" },
+	"chain":     func(n int) string { return "1" + strings.Repeat("+1", n) },
+	"path":      func(n int) string { return "a" + strings.Repeat(".a", n) },
+	"predicate": func(n int) string { return "a" + strings.Repeat("[true]", n) },
+	"condition": func(n int) string { return strings.Repeat("true ? ", n) + "1" },
+	"binding":   func(n int) string { return strings.Repeat("$x := ", n) + "1" },
+	"calls":     func(n int) string { return strings.Repeat("$string(", n) + "1" + strings.Repeat(")", n) },
+}
+
+func TestNestingDepthLimit(t *testing.T) {
+	for name, build := range nestingShapes {
+		t.Run(name, func(t *testing.T) {
+			e, err := gnata.Compile(build(parser.MaxDepth / 2))
+			if err != nil {
+				t.Fatalf("compile at half the limit: %v", err)
+			}
+			if _, err := e.Eval(context.Background(), nil); err != nil {
+				t.Fatalf("eval at half the limit: %v", err)
+			}
+			if _, err := gnata.Compile(build(parser.MaxDepth + 2)); err == nil || !strings.Contains(err.Error(), "S0218") {
+				t.Fatalf("compile past the limit: want S0218, got %v", err)
+			}
+		})
+	}
+	t.Run("exact limit", func(t *testing.T) {
+		// The innermost 1 is one level, and each pair of parentheses adds one.
+		if _, err := gnata.Compile(nestingShapes["parens"](parser.MaxDepth - 1)); err != nil {
+			t.Fatalf("at the limit: %v", err)
+		}
+		if _, err := gnata.Compile(nestingShapes["parens"](parser.MaxDepth)); err == nil || !strings.Contains(err.Error(), "S0218") {
+			t.Fatalf("one past the limit: want S0218, got %v", err)
+		}
+	})
+	t.Run("eval", func(t *testing.T) {
+		e, err := gnata.Compile(`$eval($)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = e.Eval(context.Background(), nestingShapes["parens"](parser.MaxDepth))
+		if err == nil || !strings.Contains(err.Error(), "D3120") || !strings.Contains(err.Error(), "S0218") {
+			t.Fatalf("want D3120 wrapping S0218, got %v", err)
+		}
+	})
 }
 
 func TestEvalKeepsGuardrailCodes(t *testing.T) {
