@@ -443,6 +443,11 @@ var builtinContextCases = []exprCase{
 	// The context of a whole-input call, a block and a filter.
 	{expr: `$keys()`, data: `{"a":1,"b":2}`, want: `["a","b"]`},
 	{expr: `$keys()`, data: `[{"a":1},{"b":2}]`, want: `["a","b"]`},
+	{expr: `$keys()`, data: `[[{"a":1}],{"b":2}]`, want: `["a","b"]`},
+	{expr: `$keys()`, data: `[[{"a":1},[{"c":3}]],{"b":2}]`, want: `["a","c","b"]`},
+	{expr: `$keys([[],[[{"z":1,"a":2}]],{"a":3,"y":4}])`, want: `["z","a","y"]`},
+	{expr: `$keys([1,"x",[null]])`, want: undefined},
+	{expr: `[[{"a":1}],{"b":2}].$keys()`, want: `["a","b"]`},
 	{expr: `$length()`, data: `"abc"`, want: `3`},
 	{expr: `o.$keys().$uppercase()`, data: `{"o":{"a":1,"b":2}}`, want: `["A","B"]`},
 	{expr: `o.($keys())`, data: `{"o":{"a":1}}`, want: `"a"`},
