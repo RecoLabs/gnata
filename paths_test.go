@@ -85,6 +85,7 @@ var parentOperatorCases = []exprCase{
 	{expr: `Account.Order@$o.Product@$p.%.OrderID`, data: accountJSON, want: undefined},
 	{expr: `Account.Order.Product^(%.OrderID)[Name="Hat"]`, data: accountJSON, want: undefined},
 	{expr: `Account.Order.Product^(%.OrderID)[$keys($)[1]="!0"].Name`, data: accountJSON, want: `["Hat","Cap","Bag"]`},
+	{expr: `Account.Order.Product^(%.OrderID & (%.OrderID & %.OrderID)){"k":$keys($)}`, data: accountJSON, want: `{"k":["@","!0"]}`},
 	{expr: `Account.Order.(Product#$i)^(>%.OrderID){"k":$keys($)}`, data: accountJSON, want: `{"k":["@","i","!0"]}`},
 	{expr: `Account.Order{OrderID: Product.%.OrderID}`, data: accountJSON, want: `{"o1":["o1","o1"],"o2":"o2"}`},
 	{expr: `Account.Order.Product{Name: $count(%)}`, data: accountJSON, want: `{"Bag":0,"Cap":0,"Hat":0}`},

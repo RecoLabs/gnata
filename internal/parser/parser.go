@@ -59,8 +59,8 @@ type Parser struct {
 	token   lexer.Token
 	infix   bool
 	src     string
-	initErr error // error from initial lexer prime
-	parents int   // % operators parsed so far, numbering their slots
+	initErr error   // error from initial lexer prime
+	slots   []*Slot // the slots of the % operators parsed so far, in order
 }
 
 // NewParser creates a new Parser for the given source string.
@@ -272,8 +272,8 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		slot := &Slot{Label: "!" + strconv.Itoa(p.parents), Level: 1}
-		p.parents++
+		slot := &Slot{Label: "!" + strconv.Itoa(len(p.slots)), Level: 1}
+		p.slots = append(p.slots, slot)
 		return &Node{Type: NodeParent, Value: "%", Pos: tok.Pos, Slot: slot}, nil
 
 	case lexer.TokenLBracket:

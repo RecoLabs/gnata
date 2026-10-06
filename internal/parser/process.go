@@ -492,7 +492,8 @@ func processPathChildren(node *Node) (*Node, error) {
 // ParseAndProcess parses src and runs the post-parse passes, returning the
 // tree the evaluator runs.
 func ParseAndProcess(src string) (*Node, error) {
-	ast, err := NewParser(src).Parse()
+	p := NewParser(src)
+	ast, err := p.Parse()
 	if err != nil {
 		return nil, err
 	}
@@ -502,6 +503,7 @@ func ParseAndProcess(src string) (*Node, error) {
 	if ast.Type == NodeParent || len(exprSlots(ast)) > 0 {
 		return nil, errNoParent(ast)
 	}
+	nameSharedLabels(p.slots)
 	markRootContext(ast, true)
 	return ast, nil
 }

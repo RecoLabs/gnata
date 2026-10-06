@@ -1,6 +1,9 @@
 package parser
 
-import "slices"
+import (
+	"slices"
+	"strconv"
+)
 
 // The % operator reads the input of an earlier path step, which jsonata-js
 // picks at parse time (seekParent, pushAncestry and resolveAncestry in its
@@ -20,6 +23,22 @@ import "slices"
 // jsonata-js stores them on the step. A step's own slots therefore live on
 // its base (see StepBase), while subscripts and paths report what
 // jsonata-js's equivalent node would (see exprSlots).
+
+// nameSharedLabels names each label after the first of the slots sharing
+// it, given in source order, as jsonata-js does by resolving them in that
+// order; concatSlots may resolve them in another. A raw tuple shows the
+// name as a key.
+func nameSharedLabels(slots []*Slot) {
+	first := make(map[string]int, len(slots))
+	for i, slot := range slots {
+		if _, ok := first[slot.Label]; !ok {
+			first[slot.Label] = i
+		}
+	}
+	for _, slot := range slots {
+		slot.Label = "!" + strconv.Itoa(first[slot.Label])
+	}
+}
 
 // errNoParent is jsonata-js's S0217 for a % whose step cannot be derived.
 func errNoParent(node *Node) error {
@@ -248,10 +267,11 @@ func pathSlots(node *Node) []*Slot {
 
 // concatSlots joins the slots several operands pass to their expression.
 // It extends the longest operand's list in place, so a chain nested on
-// either side, such as %.x+%.x+... or a ? b ? c : d : e, stays linear:
-// an operand's list is final once its expression is processed, and only
-// its len is ever read, so appending past it is invisible. Only the order
-// of labels that share a step can differ from jsonata-js.
+// either side, such as %.x+%.x+... or a ? b ? c : d : e, stays linear.
+// That is safe because readers see only an operand's first len slots, and
+// the only later append, a predicate's slots joining its step, targets
+// this expression rather than an operand. The order can differ from
+// jsonata-js's, which nameSharedLabels makes invisible.
 func concatSlots(nodes ...*Node) []*Slot {
 	longest, length := -1, 0
 	for i, node := range nodes {
