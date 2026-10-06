@@ -368,7 +368,7 @@ gnata targets exact parity with the JSONata reference implementation ([jsonata-j
 |---|------|-------|------------|-------|
 | 1 | **Large integer precision** | `"123456789012345678"` (exact) | `"123456789012345680"` (float64 rounding) | Go's `json.Number` preserves full precision; JS loses it beyond 2^53. Compare with relative tolerance ~1e-12. |
 | 2 | **Null placeholders in auto-mapping** | `["ext1", "ext2"]` | `[null, "ext1", "ext2"]` | jsonata-js inserts `null` for groups with no predicate match. gnata omits them per spec. Strip `null` entries when comparing. |
-| 3 | **Argument errors** | `D3006` for a missing argument | `T0410`, or `undefined` | gnata reports wrong argument counts and types consistently; codes for malformed calls can differ. |
+| 3 | **Argument errors** | `D3006` for a missing argument | `T0410`, or `undefined` | Builtins with a jsonata-js signature that defaults an argument to the context, and typed lambdas, validate their arguments as jsonata-js does (`T0410`/`T0411`/`T0412`, blaming the same argument). Other builtins report wrong argument counts and types themselves, so codes for malformed calls to them can differ. |
 | 4 | **Timezones** | `$fromMillis(0, "[H01]:[m01]", "+05:30")` → `"05:30"` | `"00:05"`; `"NaN"` for `"Europe/London"` | gnata accepts IANA zone names and `±HH:MM` offsets and rejects malformed ones (`D3137`). `$toMillis` `[Z]` also parses `Z` and `±HHMM`. |
 | 5 | **`$base64decode`** | `D3137` for invalid input | `""` | Unpadded input decodes in both. |
 | 6 | **`$contains`, `$values`, `$flatten`** | array search, object values, flattening | `T0410` / unknown function | gnata-only extensions. |

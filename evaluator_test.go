@@ -912,7 +912,7 @@ func TestDecimalFunctions(t *testing.T) {
 		{desc: "format_number_scale_overflow", expr: `$formatNumber(a, "0‰")`, payload: `{"a":9e307}`, want: `"+Inf‰"`, sameInFloat64: true},
 		{desc: "format_number_long_picture", expr: `$formatNumber(1.5, p)`, payload: `{"p":"0.` + strings.Repeat("0", 10_001) + `"}`, want: `"1.5` + strings.Repeat("0", 10_000) + `"`, sameInFloat64: true},
 		{desc: "format_number_picture_number", expr: `$formatNumber(1.5, 1)`, code: "T0410", sameInFloat64: true},
-		{desc: "format_number_no_picture", expr: `$formatNumber(a)`, payload: `{"a":1.5}`, code: "D3006", sameInFloat64: true},
+		{desc: "format_number_no_picture", expr: `$formatNumber(a)`, payload: `{"a":1.5}`, code: "T0410", sameInFloat64: true},
 		{desc: "format_number_bad_negative_picture", expr: `$formatNumber(1.5, "0;0.0.0")`, code: "D3081", sameInFloat64: true},
 		{desc: "format_number_two_separators", expr: `$formatNumber(1.5, "#;#;#")`, code: "D3080", sameInFloat64: true},
 		{desc: "format_base_uint256", expr: `$formatBase(a, 16)`, payload: `{"a":` + u256 + `}`, want: `"` + strings.Repeat("f", 64) + `"`}, // float64: int64 overflow

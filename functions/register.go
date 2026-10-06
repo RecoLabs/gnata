@@ -94,9 +94,10 @@ type jsSpec struct {
 	// sig is the jsonata-js signature when a parameter defaults to the
 	// context value ('-').
 	sig string
-	// validate checks the arguments against sig, as jsonata-js's
-	// validateArguments does.
-	validate bool
+	// lenient skips checking the arguments against sig, as jsonata-js's
+	// validateArguments does, for a builtin that accepts more than
+	// jsonata-js, such as gnata's extensions.
+	lenient bool
 }
 
 // jsSpecs declares every registered builtin.
@@ -110,13 +111,13 @@ var jsSpecs = map[string]jsSpec{
 	"substring":          {arity: 3, sig: "s-nn?:s"},
 	"substringBefore":    {arity: 2, sig: "s-s:s"},
 	"substringAfter":     {arity: 2, sig: "s-s:s"},
-	"lowercase":          {arity: 1, sig: "s-:s", validate: true},
-	"uppercase":          {arity: 1, sig: "s-:s", validate: true},
+	"lowercase":          {arity: 1, sig: "s-:s"},
+	"uppercase":          {arity: 1, sig: "s-:s"},
 	"length":             {arity: 1, sig: "s-:n"},
 	"trim":               {arity: 1, sig: "s-:s"},
 	"pad":                {arity: 3, sig: "s-ns?:s"},
 	"match":              {arity: 3, sig: "s-f<s:o>n?:a<o>"},
-	"contains":           {arity: 2, sig: "s-(sf):b"},
+	"contains":           {arity: 2, sig: "s-(sf):b", lenient: true}, // also searches arrays
 	"replace":            {arity: 4, sig: "s-(sf)(sf)n?:s"},
 	"split":              {arity: 3, sig: "s-(sf)n?:a<s>"},
 	"join":               {arity: 2},
@@ -176,7 +177,7 @@ func bind(env *evaluator.Environment, name string, fn evaluator.EnvAwareBuiltin)
 	if !declared {
 		panic(fmt.Sprintf("$%s is not declared in jsSpecs", name))
 	}
-	sb, err := evaluator.NewSignedBuiltin(name, fn, spec.sig, spec.arity, spec.validate)
+	sb, err := evaluator.NewSignedBuiltin(name, fn, spec.sig, spec.arity, !spec.lenient)
 	if err != nil {
 		panic(fmt.Sprintf("$%s: %v", name, err))
 	}

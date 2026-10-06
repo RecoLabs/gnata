@@ -217,39 +217,25 @@ func fnSubstring(args []any, _ any) (any, error) {
 type substringCutFunc func(before, after string) string
 
 func fnSubstringCut(name string, cutFn substringCutFunc) func([]any, any) (any, error) {
-	return func(args []any, focus any) (any, error) {
+	return func(args []any, _ any) (any, error) {
 		if len(args) > 2 {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": too many arguments"}
 		}
-		var str, sep any
-		fromContext := false
-		switch len(args) {
-		case 0:
-			return nil, &evaluator.JSONataError{Code: "T0411", Message: name + ": requires 2 arguments"}
-		case 1:
-			str = focus
-			sep = args[0]
-			fromContext = true
-		default:
-			str = args[0]
-			sep = args[1]
-		}
-		if str == nil {
+		if len(args) == 0 || args[0] == nil {
 			return nil, nil
 		}
-		s, ok1 := str.(string)
-		if !ok1 {
-			code := "T0410"
-			if fromContext {
-				code = "T0411"
+		s, isString := args[0].(string)
+		if !isString {
+			return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": argument 1 must be a string"}
+		}
+		// jsonata-js searches for an undefined separator as "undefined".
+		sep := "undefined"
+		if len(args) > 1 && args[1] != nil {
+			if sep, isString = args[1].(string); !isString {
+				return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": argument 2 must be a string"}
 			}
-			return nil, &evaluator.JSONataError{Code: code, Message: name + ": argument 1 must be a string"}
 		}
-		sep2, ok2 := sep.(string)
-		if !ok2 {
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": argument 2 must be a string"}
-		}
-		if before, after, ok := strings.Cut(s, sep2); ok {
+		if before, after, ok := strings.Cut(s, sep); ok {
 			return cutFn(before, after), nil
 		}
 		return s, nil
