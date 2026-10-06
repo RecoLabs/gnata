@@ -20,6 +20,7 @@ const (
 	keyedJSON       = `{"a":[{"b":"k","c":[1,2]},{"b":"k","c":[3]},{"b":"j","c":4}],"e":[]}`
 	rootItemsJSON   = `[{"k":[{"v":1},{"v":2}],"n":"p"},{"k":[{"v":3}],"n":"q"}]`
 	nestedItemsJSON = `{"x":[[1,2],[3]],"y":[[{"n":"a"},{"n":"b"}],[{"n":"c"}]],"n":"top"}`
+	levelsJSON      = `{"a":{"y":2,"b":[{"x":5,"y":6,"c":[{"x":7},{"x":8}],"z":true},{"x":9,"y":10,"c":{"x":11},"z":false}]}}`
 )
 
 var parentOperatorCases = []exprCase{
@@ -100,6 +101,8 @@ var parentOperatorCases = []exprCase{
 	{expr: `a.[{"x":b},{"x":c}].(x).%`, data: pairsJSON, want: `[{"x":1},{"x":2},{"x":3},{"x":4}]`},
 	{expr: `a.().%`, data: pairsJSON, want: undefined},
 	{expr: `a.($error("boom"); b).%`, data: pairsJSON, code: "D3137"},
+	{expr: `a.b.c.((%.x)[%.%.z])`, data: levelsJSON, want: `[5,5]`},
+	{expr: `a.b.c.((%.x; %.%.y)[%.%.z])`, data: levelsJSON, want: `[2,2]`},
 	{expr: `library.loans@$l.%.$l.customer`, data: libraryJSON, want: `["c1","c2","c3"]`},
 	{expr: `a.b.%@$p[0].{"p":$p.c}`, data: `{"a":[{"b":[1,2],"c":"x"},{"b":[3],"c":"y"}]}`, want: `{"p":"x"}`},
 	{expr: `a.b.%@$p[$p.c="y"].{"p":$p.c}`, data: `{"a":[{"b":[1,2],"c":"x"},{"b":[3],"c":"y"}]}`, want: `{"p":"y"}`},
