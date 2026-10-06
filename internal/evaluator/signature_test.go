@@ -120,16 +120,9 @@ func TestSignatureInject(t *testing.T) {
 // mismatchError blames with solve.
 func TestMatchFixedAgreesWithSolve(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
-	const modifiers = "?-"
 	for range 20000 {
-		var sig strings.Builder
-		for range 1 + rng.IntN(5) {
-			sig.WriteByte("snbalofx"[rng.IntN(8)])
-			for range rng.IntN(3) {
-				sig.WriteByte(modifiers[rng.IntN(len(modifiers))])
-			}
-		}
-		compiled, err := compileSig(sig.String())
+		sig := randomSig(rng, "snbalofx", "?-")
+		compiled, err := compileSig(sig)
 		if err != nil {
 			continue
 		}
@@ -140,7 +133,7 @@ func TestMatchFixedAgreesWithSolve(t *testing.T) {
 		fixed, fixedOK := compiled.matchFixed(symbols, nil)
 		solved, _, solvedOK := compiled.solve(symbols, len(compiled.params), true, nil)
 		if fixedOK != solvedOK || fixedOK && !slices.Equal(fixed, solved) {
-			t.Fatalf("<%s> on %v: matchFixed %v %v, solve %v %v", sig.String(), symbols, fixed, fixedOK, solved, solvedOK)
+			t.Fatalf("<%s> on %v: matchFixed %v %v, solve %v %v", sig, symbols, fixed, fixedOK, solved, solvedOK)
 		}
 	}
 }

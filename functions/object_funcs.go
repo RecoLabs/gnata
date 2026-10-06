@@ -212,16 +212,11 @@ func fillSiftArgs(buf []any, value any, key string, obj any) {
 
 func makeFnSift(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 	return func(args []any, focus any, env *evaluator.Environment) (any, error) {
-		var objVal any
-		var fn any
-		switch len(args) {
-		case 0:
-			return nil, &evaluator.JSONataError{Code: "D3006", Message: "$sift: requires at least 1 argument"}
-		case 1:
-			objVal = focus
-			fn = args[0]
-		default:
+		var objVal, fn any
+		if len(args) > 0 {
 			objVal = args[0]
+		}
+		if len(args) > 1 {
 			fn = args[1]
 		}
 		if objVal == nil {
@@ -256,16 +251,11 @@ func makeFnSift(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 func makeFnEach(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 	return func(args []any, focus any, env *evaluator.Environment) (any, error) {
-		var objVal any
-		var fn any
-		switch len(args) {
-		case 0:
-			return nil, &evaluator.JSONataError{Code: "D3006", Message: "$each: requires at least 1 argument"}
-		case 1:
-			objVal = focus
-			fn = args[0]
-		default:
+		var objVal, fn any
+		if len(args) > 0 {
 			objVal = args[0]
+		}
+		if len(args) > 1 {
 			fn = args[1]
 		}
 		if objVal == nil {

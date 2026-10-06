@@ -218,7 +218,7 @@ func (s *Signature) fillsInOrder(args []any, plain bool) bool {
 	}
 	for i, arg := range args {
 		param := s.params[i]
-		if param.lazy || param.symbols&symbolBit(sigSymbol(arg)) == 0 || plain && (arg == nil || param.array) {
+		if param.lazy || param.symbols&argSymbolBits(arg) == 0 || plain && (arg == nil || param.array) {
 			return false
 		}
 	}
@@ -266,7 +266,7 @@ func (s *Signature) validateMatched(args []any, focus any) ([]any, error) {
 				argIndex++
 				return
 			}
-			out = copyPrefix(args, argIndex, len(args)+len(s.params))
+			out = copyPrefix(args, argIndex, s.outputSize(len(args)))
 		}
 		out = append(out, v)
 		argIndex++
@@ -277,7 +277,7 @@ func (s *Signature) validateMatched(args []any, focus any) ([]any, error) {
 				return nil, err
 			}
 			if out == nil {
-				out = copyPrefix(args, argIndex, len(args)+len(s.params))
+				out = copyPrefix(args, argIndex, s.outputSize(len(args)))
 			}
 			out = append(out, focus)
 			continue
@@ -313,6 +313,15 @@ func argAt(args []any, i int) any {
 		return args[i]
 	}
 	return nil
+}
+
+// outputSize is how many arguments Validate can pass for nArgs: one per
+// parameter, plus the arguments a '+' parameter takes.
+func (s *Signature) outputSize(nArgs int) int {
+	if s.variadic {
+		return nArgs + len(s.params)
+	}
+	return len(s.params)
 }
 
 // copyPrefix returns a copy of args[:n], with undefined for indexes past the
@@ -404,9 +413,20 @@ func (s *Signature) mismatchError(args []any) error {
 func argSymbols(args []any, buf []uint8) []uint8 {
 	symbols := scratch(buf, len(args))
 	for i, arg := range args {
-		symbols[i] = symbolBit(sigSymbol(arg))
+		symbols[i] = argSymbolBits(arg)
 	}
 	return symbols
+}
+
+// argSymbolBits returns the bits of the symbols arg matches: sigSymbol's,
+// and for a plain map shaped like a regex, which may as well be data, the
+// object symbol too.
+func argSymbolBits(arg any) uint8 {
+	bits := symbolBit(sigSymbol(arg))
+	if m, isMap := arg.(map[string]any); isMap && isRegexValue(m) {
+		bits |= symbolBit('o')
+	}
+	return bits
 }
 
 // fits reports whether matching nArgs arguments needs a table within

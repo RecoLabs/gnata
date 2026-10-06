@@ -91,12 +91,12 @@ type jsSpec struct {
 	// arity is the number of parameters the jsonata-js implementation
 	// declares, which is how many arguments a HOF passes it as a callback.
 	arity int
-	// sig is the jsonata-js signature when a parameter defaults to the
-	// context value ('-').
+	// sig is the jsonata-js signature of a builtin with a parameter that
+	// defaults to the context value ('-'). It fills that parameter and
+	// validates the arguments, as jsonata-js's validateArguments does.
 	sig string
-	// lenient skips checking the arguments against sig, as jsonata-js's
-	// validateArguments does, for a builtin that accepts more than
-	// jsonata-js, such as gnata's extensions.
+	// lenient only fills the context, without validating the arguments,
+	// for a builtin that accepts more than jsonata-js (a gnata extension).
 	lenient bool
 }
 

@@ -725,3 +725,32 @@ func sharedArrays(levels int) string {
 	}
 	return b.String()
 }
+
+// A plain Go map shaped like a regex can be data, so the object
+// parameters of validated builtins accept it.
+func TestRegexShapedDataMaps(t *testing.T) {
+	data := map[string]any{"a": map[string]any{"pattern": "b", "flags": ""}}
+	testCases := []struct {
+		expr string
+		want any
+	}{
+		{expr: `$each(a, function($v,$k){$k})`, want: []any{"flags", "pattern"}},
+		{expr: `$count($keys($sift(a, function($v){true})))`, want: float64(2)},
+		{expr: `$clone(a).pattern`, want: "b"},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) {
+			e, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			got, err := e.Eval(context.Background(), data)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !gnata.DeepEqual(got, tC.want) {
+				t.Fatalf("got %v, want %v", got, tC.want)
+			}
+		})
+	}
+}
