@@ -1,6 +1,10 @@
 package functions
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/recolabs/gnata/internal/evaluator"
+)
 
 // floatOnlyNumeric lists the numeric builtins that deliberately stay float64
 // under WithDecimalPrecision.
@@ -18,8 +22,8 @@ var floatOnlyNumeric = map[string]string{
 // compare numbers, so decimal precision does not apply to them.
 var nonNumeric = []string{
 	"length", "substring", "substringBefore", "substringAfter", "trim", "pad", "contains", "split", "join",
-	"encodeUrl", "encodeUrlComponent", "decodeUrl", "decodeUrlComponent", "reverse", "shuffle", "flatten",
-	"zip", "keys", "values", "spread", "merge", "error", "lookup", "boolean", "not", "exists", "assert",
+	"encodeUrl", "encodeUrlComponent", "decodeUrl", "decodeUrlComponent", "reverse", "shuffle",
+	"zip", "values", "merge", "error", "boolean", "not", "exists", "assert",
 	"type", "now", "base64encode", "base64decode",
 }
 
@@ -43,6 +47,26 @@ func TestBuiltinsClassifiedForDecimalPrecision(t *testing.T) {
 			t.Errorf("$%s is in both builtinFuncs and decimalFuncs", b.name)
 		case !classified[b.name]:
 			t.Errorf("$%s is not classified for decimal precision: add a decimal variant or list it here", b.name)
+		}
+	}
+}
+
+// Every builtin in jsSpecs must be registered, with its signature
+// and validation, so a typo cannot silently drop either.
+func TestJSSpecsAreRegistered(t *testing.T) {
+	env := evaluator.NewEnvironment()
+	RegisterAll(env, evaluator.ApplyFunction)
+	for name, spec := range jsSpecs {
+		fn, _ := env.Lookup(name)
+		sb, ok := fn.(*evaluator.SignedBuiltin)
+		if !ok {
+			t.Fatalf("$%s is not registered: %T", name, fn)
+		}
+		if (spec.sig != "") != (sb.Signature != nil) {
+			t.Fatalf("$%s: signature %q, bound signature %v", name, spec.sig, sb.Signature)
+		}
+		if want := spec.sig != "" && !spec.lenient; sb.Validated != want {
+			t.Fatalf("$%s: validated is %v, want %v", name, sb.Validated, want)
 		}
 	}
 }

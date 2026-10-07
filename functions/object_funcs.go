@@ -10,36 +10,74 @@ import (
 
 // ── $keys ─────────────────────────────────────────────────────────────────────
 
-func fnKeys(args []any, _ any) (any, error) {
+func fnKeys(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
 	var keys []string
-	seen := make(map[string]bool)
 	switch v := args[0].(type) {
 	case *evaluator.OrderedMap:
 		keys = v.Keys()
 	case map[string]any:
 		keys = sortedKeyStrings(v)
-	case []any:
-		for _, item := range v {
-			if evaluator.IsMap(item) {
-				for _, k := range evaluator.MapKeys(item) {
-					if !seen[k] {
-						seen[k] = true
-						keys = append(keys, k)
-					}
-				}
-			}
-		}
 	default:
-		return nil, nil
+		items, isArray := evaluator.AsArray(v)
+		if !isArray {
+			return evaluator.CreateSequence(), nil
+		}
+		keys = arrayKeys(items)
+	}
+	if err := env.CheckSequence(len(keys)); err != nil {
+		return nil, err
 	}
 	seq := evaluator.CreateSequence()
 	for _, k := range keys {
 		seq.Values = append(seq.Values, k)
 	}
 	return seq, nil
+}
+
+// arrayKeys returns the keys of the objects in items and, as in jsonata-js,
+// in arrays nested in it, each once in the order first seen. A work stack
+// instead of recursion keeps deeply nested input off the Go stack, and an
+// array met again adds no keys, so it is not walked twice: shared nested
+// arrays cannot make the walk exponential, nor cyclic ones endless.
+func arrayKeys(items []any) []string {
+	var keys []string
+	seen := make(map[string]bool)
+	type arrayID struct {
+		first *any
+		n     int
+	}
+	walked := make(map[arrayID]bool)
+	for pending := [][]any{items}; len(pending) > 0; {
+		top := pending[len(pending)-1]
+		if len(top) == 0 {
+			pending = pending[:len(pending)-1]
+			continue
+		}
+		item := top[0]
+		pending[len(pending)-1] = top[1:]
+		if nested, isArray := evaluator.AsArray(item); isArray {
+			if len(nested) > 0 {
+				if id := (arrayID{&nested[0], len(nested)}); !walked[id] {
+					walked[id] = true
+					pending = append(pending, nested)
+				}
+			}
+			continue
+		}
+		if !evaluator.IsMap(item) {
+			continue
+		}
+		for _, k := range evaluator.MapKeys(item) {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	return keys
 }
 
 func sortedKeyStrings(m map[string]any) []string {
@@ -97,39 +135,53 @@ func fnValues(args []any, _ any) (any, error) {
 
 // ── $spread ───────────────────────────────────────────────────────────────────
 
-func fnSpread(args []any, _ any) (any, error) {
+func fnSpread(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	spreadOne := func(obj any) []any {
-		keys := evaluator.MapKeys(obj)
-		result := make([]any, len(keys))
-		for i, k := range keys {
-			om := evaluator.NewOrderedMap()
-			v, _ := evaluator.MapGet(obj, k)
-			om.Set(k, v)
-			result[i] = om
+	arr, isArr := evaluator.AsArray(args[0])
+	if !isArr {
+		if !evaluator.IsMap(args[0]) {
+			return args[0], nil
 		}
-		return result
+		objs, err := spreadObject(args[0], nil, env)
+		return &evaluator.Sequence{Values: objs}, err
 	}
-	if evaluator.IsMap(args[0]) {
-		return &evaluator.Sequence{Values: spreadOne(args[0])}, nil
+	if len(arr) == 0 {
+		return evaluator.CreateSequence(), nil
 	}
-	if arr, ok := args[0].([]any); ok {
-		var result []any
-		for _, item := range arr {
-			if evaluator.IsMap(item) {
-				result = append(result, spreadOne(item)...)
-			} else {
-				result = append(result, item)
-			}
+	// As in jsonata-js, an array's items are spread and appended in turn,
+	// nested arrays included, so a spread array is a plain array that does
+	// not collapse to one item.
+	result := []any{}
+	err := evaluator.EachLeaf("spread", arr, -1, env, func(item any) error {
+		if evaluator.IsMap(item) {
+			var err error
+			result, err = spreadObject(item, result, env)
+			return err
 		}
-		if result == nil {
-			return nil, nil
-		}
-		return result, nil
+		result = append(result, evaluator.NilAsNull(item))
+		return env.CheckSequence(len(result))
+	})
+	if err != nil {
+		return nil, err
 	}
-	return args[0], nil
+	return result, nil
+}
+
+// spreadObject appends a one-key object to dst for each key of obj.
+func spreadObject(obj any, dst []any, env *evaluator.Environment) ([]any, error) {
+	keys := evaluator.MapKeys(obj)
+	if err := env.CheckSequence(len(dst) + len(keys)); err != nil {
+		return nil, err
+	}
+	for _, k := range keys {
+		om := evaluator.NewOrderedMap()
+		val, _ := evaluator.MapGet(obj, k)
+		om.Set(k, val)
+		dst = append(dst, om)
+	}
+	return dst, nil
 }
 
 // ── $merge ────────────────────────────────────────────────────────────────────
@@ -177,36 +229,38 @@ func fillSiftArgs(buf []any, value any, key string, obj any) {
 
 func makeFnSift(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 	return func(args []any, focus any, env *evaluator.Environment) (any, error) {
-		var objVal any
-		var fn any
-		switch len(args) {
-		case 0:
-			return nil, &evaluator.JSONataError{Code: "D3006", Message: "$sift: requires at least 1 argument"}
-		case 1:
-			objVal = focus
-			fn = args[0]
-		default:
+		var objVal, fn any
+		if len(args) > 0 {
 			objVal = args[0]
+		}
+		if len(args) > 1 {
 			fn = args[1]
 		}
 		if objVal == nil {
 			return nil, nil
 		}
 		if !evaluator.IsMap(objVal) {
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$sift: argument 1 must be an object"}
+			// Validation rejects anything else. Called unvalidated, through a
+			// partial application, jsonata-js finds no keys in it, except an
+			// array's indexes, which gnata does not iterate.
+			return nil, nil
 		}
 
 		result := evaluator.NewOrderedMap()
 		keys := evaluator.MapKeys(objVal)
-		callArgs := hofArgsBuf(hofArity(fn))
+		callArgs := make([]any, hofArity(fn, 1))
 		for _, ks := range keys {
 			val, _ := evaluator.MapGet(objVal, ks)
 			fillSiftArgs(callArgs, val, ks, objVal)
-			res, err := evalFn(fn, callArgs, focus, env)
+			res, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
-			if evaluator.ToBoolean(res) {
+			truthy, err := evaluator.ToBooleanEnv(res, env)
+			if err != nil {
+				return nil, err
+			}
+			if truthy {
 				result.Set(ks, val)
 			}
 		}
@@ -221,32 +275,30 @@ func makeFnSift(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 
 func makeFnEach(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 	return func(args []any, focus any, env *evaluator.Environment) (any, error) {
-		var objVal any
-		var fn any
-		switch len(args) {
-		case 0:
-			return nil, &evaluator.JSONataError{Code: "D3006", Message: "$each: requires at least 1 argument"}
-		case 1:
-			objVal = focus
-			fn = args[0]
-		default:
+		var objVal, fn any
+		if len(args) > 0 {
 			objVal = args[0]
+		}
+		if len(args) > 1 {
 			fn = args[1]
 		}
 		if objVal == nil {
 			return nil, nil
 		}
 		if !evaluator.IsMap(objVal) {
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$each: argument 1 must be an object"}
+			// Validation rejects anything else. Called unvalidated, through a
+			// partial application, jsonata-js finds no keys in it, except an
+			// array's indexes, which gnata does not iterate.
+			return nil, nil
 		}
 
 		keys := evaluator.MapKeys(objVal)
 		seq := evaluator.CreateSequence()
-		callArgs := hofArgsBuf(max(hofArity(fn), 2))
+		callArgs := make([]any, hofArity(fn, 2))
 		for _, ks := range keys {
 			val, _ := evaluator.MapGet(objVal, ks)
 			fillSiftArgs(callArgs, val, ks, objVal)
-			res, err := evalFn(fn, callArgs, focus, env)
+			res, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
@@ -280,7 +332,7 @@ func fnError(args []any, _ any) (any, error) {
 
 // ── $lookup ───────────────────────────────────────────────────────────────────
 
-func fnLookup(args []any, _ any) (any, error) {
+func fnLookup(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) < 2 {
 		return nil, &evaluator.JSONataError{Code: "D3006", Message: "$lookup: requires 2 arguments"}
 	}
@@ -291,30 +343,77 @@ func fnLookup(args []any, _ any) (any, error) {
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("$lookup: key must be a string, got %T", args[1])}
 	}
-
-	if evaluator.IsMap(args[0]) {
-		val, exists := evaluator.MapGet(args[0], key)
-		if !exists {
-			return nil, nil
-		}
-		return val, nil
+	if arr, ok := evaluator.AsArray(args[0]); ok {
+		return lookupArray(arr, key, env)
 	}
-	if arr, ok := args[0].([]any); ok {
-		var result []any
-		for _, item := range arr {
-			if evaluator.IsMap(item) {
-				if val, exists := evaluator.MapGet(item, key); exists {
-					result = append(result, val)
-				}
+	return fieldOrNull(args[0], key), nil
+}
+
+// maxLookupSize caps a $lookup result, as $append caps its own: one
+// array value repeated through shared arrays can otherwise allocate far
+// more than the input holds before the deadline is next read.
+const maxLookupSize = 10_000_000
+
+// lookupArray returns, as jsonata-js lookup does, a sequence of the values
+// of key in the objects of arr and of the arrays nested in it, flattening
+// array values. It walks the nested arrays with EachLeaf, which keeps deeply
+// nested input off the Go stack, polls Err as arrays shared at several
+// nesting levels can make the walk exponential in the expression's size,
+// and reports an array that contains itself.
+func lookupArray(arr []any, key string, env *evaluator.Environment) (any, error) {
+	seq := evaluator.CreateSequence()
+	err := evaluator.EachLeaf("look up", arr, -1, env, func(item any) error {
+		val := fieldOrNull(item, key)
+		values, isArray := evaluator.AsArray(val)
+		switch {
+		case val == nil:
+			return nil
+		case !isArray:
+			values = []any{val}
+		}
+		if err := env.CheckSequence(len(seq.Values) + len(values)); err != nil {
+			return err
+		}
+		if len(seq.Values)+len(values) > maxLookupSize {
+			return &evaluator.JSONataError{
+				Code:    "D3010",
+				Message: fmt.Sprintf("$lookup: result array exceeds maximum size of %d elements", maxLookupSize),
 			}
 		}
-		if len(result) == 0 {
-			return nil, nil
+		for _, v := range values {
+			seq.Values = append(seq.Values, evaluator.NilAsNull(v))
 		}
-		if len(result) == 1 {
-			return result[0], nil
-		}
-		return result, nil
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, nil
+	return seq, nil
+}
+
+// fieldOrNull returns the value of key in an object, with a JSON null field
+// as Null, or nil when obj is not an object or lacks the key.
+func fieldOrNull(obj any, key string) any {
+	val, ok := evaluator.MapGet(obj, key)
+	if ok && val == nil {
+		return evaluator.Null
+	}
+	return val
+}
+
+// ── $clone ────────────────────────────────────────────────────────────────────
+
+// fnClone deep-copies an object or array as jsonata-js does (see
+// evaluator.CloneValue).
+func fnClone(args []any, _ any, env *evaluator.Environment) (any, error) {
+	if len(args) == 0 || args[0] == nil {
+		return nil, nil
+	}
+	if len(args) > 1 {
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$clone: takes 1 argument"}
+	}
+	if !evaluator.IsArray(args[0]) && !evaluator.IsMap(args[0]) {
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$clone: argument must be an object or array"}
+	}
+	return evaluator.CloneValue(args[0], env)
 }

@@ -53,22 +53,11 @@ func decResult(d decimal.Decimal, err error, prec int, overflowErr func() error)
 	return nil, false, nil
 }
 
-// argOrFocus returns the single optional argument, or the focus without one.
-func argOrFocus(args []any, focus any) (any, bool) {
-	switch len(args) {
-	case 0:
-		return focus, true
-	case 1:
-		return args[0], true
-	}
-	return nil, false
-}
-
-func decNumber(args []any, focus any, prec int) (res any, ok bool, err error) {
-	arg, ok := argOrFocus(args, focus)
-	if !ok {
+func decNumber(args []any, _ any, prec int) (res any, ok bool, err error) {
+	if len(args) != 1 {
 		return nil, false, nil
 	}
+	arg := args[0]
 	var s string
 	switch v := arg.(type) {
 	case json.Number:
@@ -78,7 +67,7 @@ func decNumber(args []any, focus any, prec int) (res any, ok bool, err error) {
 	default:
 		return nil, false, nil
 	}
-	if base, digitBits := radixPrefix(s); base != 0 {
+	if base, digitBits := evaluator.RadixPrefix(s); base != 0 {
 		// Bound the digits before parsing so a long string cannot become a huge integer.
 		if len(s[2:])*digitBits > decimal.MaxIntegerBits {
 			return nil, false, nil
@@ -312,11 +301,4 @@ func decSqrt(args []any, _ any, prec int) (res any, ok bool, err error) {
 	}
 	d, err = d.Sqrt(prec)
 	return decResult(d, err, prec, errNumberOutOfRange)
-}
-
-// decString lays out numbers, including those inside arrays and objects, as
-// JavaScript does but with every significant digit.
-func decString(args []any, focus any, prec int) (res any, ok bool, err error) {
-	res, err = stringify(args, focus, prec)
-	return res, true, err
 }

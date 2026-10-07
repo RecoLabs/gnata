@@ -13,36 +13,14 @@ import (
 
 // ── $number ───────────────────────────────────────────────────────────────────
 
-// radixPrefix returns the base of a hex (0x), binary (0b) or octal (0o) prefix
-// on s, and the bits each digit carries, or 0, 0 when there is none.
-func radixPrefix(s string) (base, digitBits int) {
-	if len(s) < 2 || s[0] != '0' {
-		return 0, 0
-	}
-	switch s[1] {
-	case 'x', 'X':
-		return 16, 4
-	case 'b', 'B':
-		return 2, 1
-	case 'o', 'O':
-		return 8, 3
-	}
-	return 0, 0
-}
-
-func fnNumber(args []any, focus any) (any, error) {
-	var arg any
-	switch len(args) {
-	case 0:
-		arg = focus
-	case 1:
-		arg = args[0]
-	default:
+func fnNumber(args []any, _ any) (any, error) {
+	if len(args) > 1 {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$number: too many arguments"}
 	}
-	if arg == nil {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
+	arg := args[0]
 	if evaluator.IsNull(arg) {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$number: cannot cast null to number"}
 	}
@@ -57,7 +35,7 @@ func fnNumber(args []any, focus any) (any, error) {
 		return f, nil
 	case string:
 		s := strings.TrimSpace(v)
-		if base, _ := radixPrefix(s); base != 0 {
+		if base, _ := evaluator.RadixPrefix(s); base != 0 {
 			if n, err := strconv.ParseInt(s[2:], base, 64); err == nil {
 				return float64(n), nil
 			}
@@ -253,8 +231,12 @@ func fnPower(args []any, _ any) (any, error) {
 	if len(args) < 2 {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$power: requires 2 arguments"}
 	}
-	if args[0] == nil || args[1] == nil {
+	if args[0] == nil {
 		return nil, nil
+	}
+	if args[1] == nil {
+		// jsonata-js computes Math.pow(base, undefined), which is NaN.
+		return nil, &evaluator.JSONataError{Code: "D3061", Message: "$power: result is non-finite"}
 	}
 	base, ok1 := evaluator.ToFloat64(args[0])
 	exp, ok2 := evaluator.ToFloat64(args[1])

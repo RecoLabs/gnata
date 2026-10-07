@@ -14,27 +14,14 @@ import (
 
 // ── $string ──────────────────────────────────────────────────────────────────
 
-func fnString(args []any, focus any) (any, error) {
-	return stringify(args, focus, 0)
-}
-
-// stringify is $string, laying out numbers in decimal to prec significant
-// digits, or through float64 when prec is 0.
-func stringify(args []any, focus any, prec int) (any, error) {
-	if len(args) == 0 {
-		if focus == nil {
-			return nil, nil
-		}
-		switch focus.(type) {
-		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-			return nil, nil
-		}
-		return valueToString(focus, false, prec)
-	}
-	arg := args[0]
-	if arg == nil {
+// fnString is $string, laying out numbers, including those inside arrays
+// and objects, in decimal to env's precision, or through float64 when
+// decimal precision is off.
+func fnString(args []any, _ any, env *evaluator.Environment) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil // undefined → undefined
 	}
+	arg := args[0]
 	if len(args) > 2 {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$string: takes at most 2 arguments"}
 	}
@@ -43,18 +30,24 @@ func stringify(args []any, focus any, prec int) (any, error) {
 		switch v := args[1].(type) {
 		case bool:
 			prettify = v
-		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-			return nil, &evaluator.JSONataError{Code: "D3011", Message: "$string: second argument cannot be a function"}
 		default:
+			if evaluator.IsFunction(v) {
+				return nil, &evaluator.JSONataError{Code: "D3011", Message: "$string: second argument cannot be a function"}
+			}
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: fmt.Sprintf("$string: second argument must be a boolean, got %T", v)}
 		}
 	}
-	return valueToString(arg, prettify, prec)
+	return valueToString(arg, prettify, env)
 }
 
-func valueToString(v any, prettify bool, prec int) (string, error) {
+func valueToString(v any, prettify bool, env *evaluator.Environment) (string, error) {
+	v = evaluator.CollapseSequences(v)
+	prec := env.DecimalPrecision()
 	if evaluator.IsNull(v) {
 		return parser.NullJSON, nil
+	}
+	if evaluator.IsFunction(v) {
+		return "", nil // functions serialize as empty string in JSONata
 	}
 	switch val := v.(type) {
 	case string:
@@ -79,12 +72,12 @@ func valueToString(v any, prettify bool, prec int) (string, error) {
 		return "false", nil
 	case nil:
 		return "", nil // undefined → caller returns nil
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return "", nil // functions serialize as empty string in JSONata
-	case *evaluator.Sequence:
-		return valueToString(evaluator.CollapseSequence(val), prettify, prec)
 	default:
-		out, err := evaluator.AppendJSON(nil, sanitizeForJSON(v, prec))
+		prepared, err := evaluator.JSONValue(v, env)
+		if err != nil {
+			return "", err
+		}
+		out, err := evaluator.AppendJSON(nil, prepared)
 		if err != nil {
 			return "", &evaluator.JSONataError{Code: "D1001", Message: "Number out of range"}
 		}
@@ -96,47 +89,6 @@ func valueToString(v any, prettify bool, prec int) (string, error) {
 			return buf.String(), nil
 		}
 		return string(out), nil
-	}
-}
-
-// sanitizeForJSON replaces function values with "" so they can be JSON-marshaled,
-// and under decimal precision prec lays out numbers as valueToString does.
-// For *OrderedMap, returns a new *OrderedMap preserving insertion order.
-func sanitizeForJSON(v any, prec int) any {
-	if evaluator.IsNull(v) {
-		return nil
-	}
-	switch val := v.(type) {
-	case *evaluator.Sequence:
-		return sanitizeForJSON(evaluator.CollapseSequence(val), prec)
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return ""
-	case *evaluator.OrderedMap:
-		out := evaluator.NewOrderedMapWithCapacity(val.Len())
-		val.Range(func(k string, v any) bool {
-			out.Set(k, sanitizeForJSON(v, prec))
-			return true
-		})
-		return out
-	case map[string]any:
-		out := evaluator.NewOrderedMapWithCapacity(len(val))
-		for _, k := range evaluator.MapKeys(val) {
-			out.Set(k, sanitizeForJSON(val[k], prec))
-		}
-		return out
-	case []any:
-		out := make([]any, 0, len(val))
-		for _, v := range val {
-			out = append(out, sanitizeForJSON(v, prec))
-		}
-		return out
-	case json.Number, float64:
-		if s, ok := evaluator.FormatDecimal(val, prec); ok {
-			return json.Number(s)
-		}
-		return v
-	default:
-		return v
 	}
 }
 
@@ -175,19 +127,28 @@ func fnSubstring(args []any, _ any) (any, error) {
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$substring: argument 1 must be a string"}
 	}
-	startF, startOk := evaluator.ToFloat64(args[1])
-	if !startOk {
-		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$substring: argument 2 must be a number"}
-	}
-
-	var lengthF float64
+	var startF, lengthF float64
+	hasStart := args[1] != nil
 	hasLength := len(args) >= 3 && args[2] != nil
+	if hasStart {
+		var ok bool
+		if startF, ok = evaluator.ToFloat64(args[1]); !ok {
+			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$substring: argument 2 must be a number"}
+		}
+	}
 	if hasLength {
-		var ok2 bool
-		lengthF, ok2 = evaluator.ToFloat64(args[2])
-		if !ok2 {
+		var ok bool
+		if lengthF, ok = evaluator.ToFloat64(args[2]); !ok {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$substring: argument 3 must be a number"}
 		}
+	}
+	if !hasStart {
+		// jsonata-js slices from an undefined start, so there is no end
+		// position for a length to count from.
+		if hasLength {
+			return "", nil
+		}
+		return s, nil
 	}
 
 	runes := []rune(s)
@@ -218,39 +179,25 @@ func fnSubstring(args []any, _ any) (any, error) {
 type substringCutFunc func(before, after string) string
 
 func fnSubstringCut(name string, cutFn substringCutFunc) func([]any, any) (any, error) {
-	return func(args []any, focus any) (any, error) {
+	return func(args []any, _ any) (any, error) {
 		if len(args) > 2 {
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": too many arguments"}
 		}
-		var str, sep any
-		fromContext := false
-		switch len(args) {
-		case 0:
-			return nil, &evaluator.JSONataError{Code: "T0411", Message: name + ": requires 2 arguments"}
-		case 1:
-			str = focus
-			sep = args[0]
-			fromContext = true
-		default:
-			str = args[0]
-			sep = args[1]
-		}
-		if str == nil {
+		if len(args) == 0 || args[0] == nil {
 			return nil, nil
 		}
-		s, ok1 := str.(string)
-		if !ok1 {
-			code := "T0410"
-			if fromContext {
-				code = "T0411"
+		s, isString := args[0].(string)
+		if !isString {
+			return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": argument 1 must be a string"}
+		}
+		// jsonata-js searches for an undefined separator as "undefined".
+		sep := "undefined"
+		if len(args) > 1 && args[1] != nil {
+			if sep, isString = args[1].(string); !isString {
+				return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": argument 2 must be a string"}
 			}
-			return nil, &evaluator.JSONataError{Code: code, Message: name + ": argument 1 must be a string"}
 		}
-		sep2, ok2 := sep.(string)
-		if !ok2 {
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: name + ": argument 2 must be a string"}
-		}
-		if before, after, ok := strings.Cut(s, sep2); ok {
+		if before, after, ok := strings.Cut(s, sep); ok {
 			return cutFn(before, after), nil
 		}
 		return s, nil
@@ -264,51 +211,33 @@ var (
 
 // ── $uppercase / $lowercase / $trim ──────────────────────────────────────────
 
-func fnUppercase(args []any, focus any) (any, error) {
-	var val any
-	if len(args) == 0 {
-		val = focus
-	} else {
-		val = args[0]
-	}
-	if val == nil {
+func fnUppercase(args []any, _ any) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	s, ok := val.(string)
+	s, ok := args[0].(string)
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$uppercase: argument must be a string"}
 	}
 	return strings.ToUpper(s), nil
 }
 
-func fnLowercase(args []any, focus any) (any, error) {
-	var val any
-	if len(args) == 0 {
-		val = focus
-	} else {
-		val = args[0]
-	}
-	if val == nil {
+func fnLowercase(args []any, _ any) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	s, ok := val.(string)
+	s, ok := args[0].(string)
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$lowercase: argument must be a string"}
 	}
 	return strings.ToLower(s), nil
 }
 
-func fnTrim(args []any, focus any) (any, error) {
-	var val any
-	if len(args) == 0 {
-		val = focus
-	} else {
-		val = args[0]
-	}
-	if val == nil {
+func fnTrim(args []any, _ any) (any, error) {
+	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	s, ok := val.(string)
+	s, ok := args[0].(string)
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$trim: argument must be a string"}
 	}
@@ -327,6 +256,9 @@ func fnPad(args []any, _ any) (any, error) {
 	s, ok := args[0].(string)
 	if !ok {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$pad: argument 1 must be a string"}
+	}
+	if args[1] == nil {
+		return s, nil
 	}
 	widthF, widthOk := evaluator.ToFloat64(args[1])
 	if !widthOk {
@@ -374,9 +306,9 @@ func fnPad(args []any, _ any) (any, error) {
 // ── $contains ─────────────────────────────────────────────────────────────────
 
 func fnContains(args []any, focus any) (any, error) {
-	// When called as a path step (e.g., str.$contains("x")), focus holds the
-	// path context; prepend it as the first argument so the function receives
-	// the string to search in.
+	// Direct calls arrive with the context already filled. A single argument
+	// that does not match the signature, such as $contains(5), is reported
+	// as argument 2 so the code is T0410, as in jsonata-js.
 	if len(args) == 1 && focus != nil {
 		args = []any{focus, args[0]}
 	}
@@ -422,7 +354,7 @@ func fnContains(args []any, focus any) (any, error) {
 	switch p := args[1].(type) {
 	case string:
 		return strings.Contains(s, p), nil
-	case map[string]any:
+	case *evaluator.RegexLiteral:
 		re, err := compileRegex(p)
 		if err != nil {
 			return nil, err
@@ -472,7 +404,7 @@ func fnSplit(args []any, _ any) (any, error) {
 		} else {
 			parts = strings.Split(s, p)
 		}
-	case map[string]any:
+	case *evaluator.RegexLiteral:
 		re, err := compileRegex(p)
 		if err != nil {
 			return nil, err
@@ -481,12 +413,10 @@ func fnSplit(args []any, _ any) (any, error) {
 			return nil, err
 		}
 	default:
-		switch args[1].(type) {
-		case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+		if evaluator.IsFunction(args[1]) {
 			return nil, &evaluator.JSONataError{Code: "T1010", Message: "$split: second argument must be a string or regex"}
-		default:
-			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$split: second argument must be a string or regex"}
 		}
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$split: second argument must be a string or regex"}
 	}
 
 	result := make([]any, len(parts))
@@ -508,7 +438,7 @@ func fnJoin(args []any, _ any) (any, error) {
 	if s, ok := args[0].(string); ok {
 		return s, nil
 	}
-	arr := wrapArray(args[0])
+	arr := evaluator.AppendItems(args[0])
 
 	sep := ""
 	if len(args) >= 2 && args[1] != nil {

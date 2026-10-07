@@ -9,26 +9,38 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-// hofArity returns the callback argument count for the given HOF function.
-// For lambdas, uses the declared parameter count (capped at 3).
-// For built-in functions, defaults to 1 (value only).
-func hofArity(fn any) int {
-	if lambda, ok := fn.(*evaluator.Lambda); ok {
-		n := len(lambda.Params)
-		if n > 3 {
-			return 3
-		}
-		return n
+// hofArity returns how many of (value, index, array) a HOF passes fn, or
+// unknown when FunctionArity does not know. Like jsonata-js's hofFuncArgs, the
+// value is always passed.
+func hofArity(fn any, unknown int) int {
+	arity, known := evaluator.FunctionArity(fn)
+	if !known {
+		return unknown
 	}
-	return 1
+	return min(max(arity, 1), 3)
 }
 
-// hofArgsBuf allocates a reusable buffer for HOF callback arguments.
-func hofArgsBuf(arity int) []any {
-	if arity == 0 {
-		return nil
+// hofItems returns the items a higher-order function iterates, where a nil
+// item of Go data is a JSON null rather than undefined. The signature wraps
+// any other argument in an array, so one reaches here only from a partial
+// application, which jsonata-js does not validate: its loop over the
+// argument's length then visits a string's characters (code points here,
+// as elsewhere in gnata) and nothing of a number, object or function.
+func hofItems(v any) []any {
+	switch val := v.(type) {
+	case nil, *evaluator.Sequence:
+	case string:
+		chars := make([]any, 0, len(val))
+		for _, r := range val {
+			chars = append(chars, string(r))
+		}
+		return chars
+	default:
+		if _, isArray := evaluator.AsArray(v); !isArray {
+			return nil
+		}
 	}
-	return make([]any, arity)
+	return evaluator.NullItems(evaluator.AppendItems(v))
 }
 
 // fillHofArgs populates a pre-allocated argument buffer for a HOF callback.
@@ -69,14 +81,14 @@ func makeFnMap(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			}
 			return nil, &evaluator.JSONataError{Code: "T0410", Message: "$map: array argument is undefined"}
 		}
-		arr := wrapArray(arrVal)
+		arr := hofItems(arrVal)
 
 		seq := evaluator.CreateSequence()
 		arrAny := slices.Clone(arr)
-		callArgs := hofArgsBuf(hofArity(fn))
+		callArgs := make([]any, hofArity(fn, 1))
 		for i, item := range arr {
 			fillHofArgs(callArgs, item, float64(i), arrAny)
-			val, err := evalFn(fn, callArgs, focus, env)
+			val, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
@@ -87,7 +99,7 @@ func makeFnMap(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 				}
 			}
 		}
-		return evaluator.CollapseSequence(seq), nil
+		return seq, nil
 	}
 }
 
@@ -110,34 +122,29 @@ func makeFnFilter(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		if arrVal == nil {
 			return nil, nil
 		}
-		_, inputWasArray := arrVal.([]any)
-		arr := wrapArray(arrVal)
+		arr := hofItems(arrVal)
 
 		seq := evaluator.CreateSequence()
 		arrAny := slices.Clone(arr)
-		callArgs := hofArgsBuf(hofArity(fn))
+		callArgs := make([]any, hofArity(fn, 1))
 		for i, item := range arr {
 			fillHofArgs(callArgs, item, float64(i), arrAny)
-			val, err := evalFn(fn, callArgs, focus, env)
+			val, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
-			if evaluator.ToBoolean(val) {
+			truthy, err := evaluator.ToBooleanEnv(val, env)
+			if err != nil {
+				return nil, err
+			}
+			if truthy {
 				seq.Values = append(seq.Values, item)
 				if err := env.CheckSequence(len(seq.Values)); err != nil {
 					return nil, err
 				}
 			}
 		}
-		if inputWasArray {
-			if len(seq.Values) == 0 {
-				return nil, nil
-			}
-			out := make([]any, len(seq.Values))
-			copy(out, seq.Values)
-			return out, nil
-		}
-		return evaluator.CollapseSequence(seq), nil
+		return seq, nil
 	}
 }
 
@@ -149,7 +156,7 @@ func makeFnSingle(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			if focus == nil {
 				return nil, nil
 			}
-			arr := wrapArray(focus)
+			arr := hofItems(focus)
 			if len(arr) == 1 {
 				return arr[0], nil
 			}
@@ -161,7 +168,7 @@ func makeFnSingle(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		if args[0] == nil {
 			return nil, nil
 		}
-		arr := wrapArray(args[0])
+		arr := hofItems(args[0])
 
 		if len(args) < 2 || args[1] == nil {
 			if len(arr) == 1 {
@@ -176,14 +183,18 @@ func makeFnSingle(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		fn := args[1]
 		var matched []any
 		arrAny := slices.Clone(arr)
-		callArgs := hofArgsBuf(hofArity(fn))
+		callArgs := make([]any, hofArity(fn, 1))
 		for i, item := range arr {
 			fillHofArgs(callArgs, item, float64(i), arrAny)
-			val, err := evalFn(fn, callArgs, focus, env)
+			val, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
-			if evaluator.ToBoolean(val) {
+			truthy, err := evaluator.ToBooleanEnv(val, env)
+			if err != nil {
+				return nil, err
+			}
+			if truthy {
 				matched = append(matched, item)
 			}
 		}
@@ -214,7 +225,7 @@ func makeFnReduce(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		default:
 			arrVal = args[0]
 			fn = args[1]
-			if len(args) >= 3 {
+			if len(args) >= 3 && args[2] != nil {
 				initVal = args[2]
 				hasInit = true
 			}
@@ -222,10 +233,15 @@ func makeFnReduce(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		if arrVal == nil {
 			return nil, nil
 		}
-		if lambda, ok := fn.(*evaluator.Lambda); ok && len(lambda.Params) < 2 {
+		reduceArity, known := evaluator.FunctionArity(fn)
+		if !known {
+			reduceArity = 2
+		}
+		reduceArity = min(reduceArity, 4)
+		if reduceArity < 2 {
 			return nil, &evaluator.JSONataError{Code: "D3050", Message: "$reduce: function must have arity of at least 2"}
 		}
-		arr := wrapArray(arrVal)
+		arr := hofItems(arrVal)
 
 		if len(arr) == 0 {
 			if hasInit {
@@ -244,25 +260,17 @@ func makeFnReduce(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		}
 
 		arrAny := slices.Clone(arr)
-		var reduceArity int
-		if lambda, ok := fn.(*evaluator.Lambda); ok {
-			reduceArity = max(min(len(lambda.Params), 4), 1)
-		} else {
-			reduceArity = 2
-		}
 		callArgs := make([]any, reduceArity)
 		for i := startIdx; i < len(arr); i++ {
 			callArgs[0] = acc
-			if reduceArity > 1 {
-				callArgs[1] = arr[i]
-			}
+			callArgs[1] = arr[i]
 			if reduceArity > 2 {
 				callArgs[2] = float64(i)
 			}
 			if reduceArity > 3 {
 				callArgs[3] = arrAny
 			}
-			val, err := evalFn(fn, callArgs, focus, env)
+			val, err := evalFn(fn, callArgs, env)
 			if err != nil {
 				return nil, err
 			}
@@ -281,10 +289,12 @@ func fnAssert(args []any, _ any) (any, error) {
 	if len(args) > 2 {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$assert: takes at most 2 arguments"}
 	}
-	if _, ok := args[0].(bool); !ok {
+	// An undefined condition matches the boolean parameter and fails.
+	holds, isBool := args[0].(bool)
+	if !isBool && args[0] != nil {
 		return nil, &evaluator.JSONataError{Code: "T0410", Message: "$assert: first argument must be a boolean"}
 	}
-	if !args[0].(bool) {
+	if !holds {
 		msg := "assertion failed"
 		if len(args) >= 2 {
 			if s, ok := args[1].(string); ok {
@@ -316,9 +326,9 @@ func fnTypeOf(args []any, _ any) (any, error) {
 		return "array", nil
 	case *evaluator.OrderedMap, map[string]any:
 		return "object", nil
-	case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
-		return "function", nil
-	default:
-		return nil, nil
 	}
+	if evaluator.IsFunction(args[0]) {
+		return "function", nil
+	}
+	return nil, nil
 }

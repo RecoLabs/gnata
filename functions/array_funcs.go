@@ -19,14 +19,10 @@ func fnCount(args []any, _ any) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return float64(0), nil
 	}
-	switch v := args[0].(type) {
-	case []any:
-		return float64(len(v)), nil
-	case evaluator.ConsArray:
-		return float64(len(v)), nil
-	default:
-		return float64(1), nil
+	if arr, ok := evaluator.AsArray(args[0]); ok {
+		return float64(len(arr)), nil
 	}
+	return float64(1), nil
 }
 
 // ── $append ───────────────────────────────────────────────────────────────────
@@ -42,8 +38,8 @@ func fnAppend(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if args[1] == nil {
 		return args[0], nil
 	}
-	a := wrapArray(args[0])
-	b := wrapArray(args[1])
+	a := evaluator.AppendItems(args[0])
+	b := evaluator.AppendItems(args[1])
 	if err := env.CheckSequence(len(a) + len(b)); err != nil {
 		return nil, err
 	}
@@ -54,23 +50,13 @@ func fnAppend(args []any, _ any, env *evaluator.Environment) (any, error) {
 			Message: fmt.Sprintf("$append: result array exceeds maximum size of %d elements", maxAppendSize),
 		}
 	}
-	return slices.Concat(a, b), nil
+	if out := slices.Concat(a, b); out != nil {
+		return out, nil
+	}
+	return []any{}, nil
 }
 
-func wrapArray(v any) []any {
-	if v == nil {
-		return []any{}
-	}
-	if arr, ok := evaluator.AsArray(v); ok {
-		return arr
-	}
-	if seq, ok := v.(*evaluator.Sequence); ok {
-		return evaluator.CollapseToSlice(seq)
-	}
-	return []any{v}
-}
-
-// tryAsArray returns a []any if v is an array-like type ([]any, ConsArray, or *Sequence),
+// tryAsArray returns a []any if v is an array (see evaluator.AsArray) or a *Sequence,
 // or nil if v is a scalar. Used for auto-mapping: functions that expect a
 // scalar can map over arrays when one is provided.
 func tryAsArray(v any) []any {
@@ -95,12 +81,11 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		case 0:
 			arrVal = focus
 		case 1:
-			switch args[0].(type) {
-			case evaluator.BuiltinFunction, evaluator.EnvAwareBuiltin, *evaluator.Lambda, *evaluator.SignedBuiltin:
+			if evaluator.IsFunction(args[0]) {
 				// arg is a function → use focus as the array
 				arrVal = focus
 				fn = args[0]
-			default:
+			} else {
 				arrVal = args[0]
 			}
 		default:
@@ -110,7 +95,10 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 		if arrVal == nil {
 			return nil, nil
 		}
-		arr := wrapArray(arrVal)
+		arr := evaluator.AppendItems(arrVal)
+		if len(arr) <= 1 {
+			return arr, nil
+		}
 
 		if fn == nil && len(arr) > 0 {
 			allNum := true
@@ -140,11 +128,11 @@ func makeFnSort(evalFn EvalFn) evaluator.EnvAwareBuiltin {
 			cmpFn = func(a, b any) (int, error) {
 				sortArgs[0] = b
 				sortArgs[1] = a
-				result, err := evalFn(fn, sortArgs, focus, env)
+				result, err := evalFn(fn, sortArgs, env)
 				if err != nil {
 					return 0, err
 				}
-				if evaluator.ToBoolean(result) {
+				if jsTruthy(result) {
 					return -1, nil
 				}
 				return 0, nil
@@ -196,7 +184,10 @@ func fnReverse(args []any, _ any) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	arr := wrapArray(args[0])
+	arr := evaluator.AppendItems(args[0])
+	if len(arr) <= 1 {
+		return arr, nil
+	}
 	result := slices.Clone(arr)
 	slices.Reverse(result)
 	return result, nil
@@ -208,7 +199,10 @@ func fnShuffle(args []any, _ any) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	arr := wrapArray(args[0])
+	arr := evaluator.AppendItems(args[0])
+	if len(arr) <= 1 {
+		return arr, nil
+	}
 	result := slices.Clone(arr)
 	rand.Shuffle(len(result), func(i, j int) {
 		result[i], result[j] = result[j], result[i]
@@ -221,18 +215,10 @@ func fnShuffle(args []any, _ any) (any, error) {
 // numberKey keys a number by its canonical decimal form, apart from strings.
 type numberKey string
 
-func fnDistinct(args []any, _ any) (any, error) {
-	return distinct(args, 0)
-}
-
-func decDistinct(args []any, _ any, prec int) (res any, ok bool, err error) {
-	res, err = distinct(args, prec)
-	return res, true, err
-}
-
-// distinct deduplicates, comparing numbers in decimal to prec significant
-// digits, or in float64 when prec is 0.
-func distinct(args []any, prec int) (any, error) {
+// fnDistinct deduplicates, comparing numbers in decimal to env's decimal
+// precision, or in float64 when it is off.
+func fnDistinct(args []any, _ any, env *evaluator.Environment) (any, error) {
+	prec, equaler := env.DecimalPrecision(), evaluator.NewEqualer(env)
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
@@ -292,12 +278,9 @@ func distinct(args []any, prec int) (any, error) {
 				}
 				continue
 			}
-			found := false
-			for _, existing := range complexItems {
-				if evaluator.DeepEqualPrec(v, existing, prec) {
-					found = true
-					break
-				}
+			found, err := holdsEqual(complexItems, v, equaler)
+			if err != nil {
+				return nil, err
 			}
 			if !found {
 				complexItems = append(complexItems, v)
@@ -305,16 +288,26 @@ func distinct(args []any, prec int) (any, error) {
 			}
 		}
 	}
-	return &evaluator.Sequence{Values: result}, nil
+	return &evaluator.Sequence{Values: result, ArgShaped: true}, nil
+}
+
+// holdsEqual reports whether items holds a value equal to v.
+func holdsEqual(items []any, v any, equaler *evaluator.Equaler) (bool, error) {
+	for _, item := range items {
+		if equal, err := equaler.Equal(v, item); equal || err != nil {
+			return equal, err
+		}
+	}
+	return false, nil
 }
 
 // ── $flatten ──────────────────────────────────────────────────────────────────
 
-func fnFlatten(args []any, _ any) (any, error) {
+func fnFlatten(args []any, _ any, env *evaluator.Environment) (any, error) {
 	if len(args) == 0 || args[0] == nil {
 		return nil, nil
 	}
-	arr := wrapArray(args[0])
+	arr := evaluator.AppendItems(args[0])
 
 	depth := -1 // unlimited
 	if len(args) >= 2 && args[1] != nil {
@@ -325,30 +318,23 @@ func fnFlatten(args []any, _ any) (any, error) {
 		depth = evaluator.ToIntClamped(df)
 	}
 
-	return flattenArray(arr, depth), nil
-}
-
-func flattenArray(arr []any, depth int) []any {
 	result := make([]any, 0, len(arr))
-	for _, v := range arr {
-		if nested, ok := v.([]any); ok && depth != 0 {
-			nextDepth := depth - 1
-			if depth < 0 {
-				nextDepth = -1
-			}
-			result = append(result, flattenArray(nested, nextDepth)...)
-		} else {
-			result = append(result, v)
-		}
+	err := evaluator.EachLeaf("flatten", arr, depth, env, func(item any) error {
+		result = append(result, item)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return result
+	return result, nil
 }
 
 // ── $zip ──────────────────────────────────────────────────────────────────────
 
 func fnZip(args []any, _ any) (any, error) {
 	if len(args) == 0 {
-		return []any{}, nil
+		// jsonata-js's <a+> signature needs an argument.
+		return nil, &evaluator.JSONataError{Code: "T0410", Message: "argument 1 does not match function signature"}
 	}
 	// Determine shortest length.
 	minLen := -1
@@ -362,7 +348,7 @@ func fnZip(args []any, _ any) (any, error) {
 			}
 			continue
 		}
-		arr := wrapArray(arg)
+		arr := evaluator.AppendItems(arg)
 		arrays = append(arrays, arr)
 		if minLen < 0 || len(arr) < minLen {
 			minLen = len(arr)

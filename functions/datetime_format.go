@@ -2,7 +2,6 @@ package functions
 
 import (
 	"fmt"
-	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -76,12 +75,20 @@ const noWidth = -1
 
 // dateMarker is a parsed variable marker such as [MNn,*-3] (XPath F&O §9.8.4).
 type dateMarker struct {
-	component    byte
-	modifier     string // everything after the component, for the f/Z/z/P formatters
-	presentation string // first presentation modifier, e.g. "Nn", "01" or "w"
-	ordinal      bool
-	minWidth     int
-	maxWidth     int
+	component byte
+	ordinal   bool
+	zulu      bool // a "t" second presentation modifier: [Z] and [z] write Z for UTC
+	// tzSeparator is the rune between an offset's hours and minutes that
+	// $toMillis expects for [Z] and [z], 0 for none.
+	tzSeparator rune
+	// maxWidthGiven is set for any maximum but "*", even one that reads as
+	// noWidth, like "2-" or "*-x", which jsonata-js's parseInt reads as NaN.
+	maxWidthGiven bool
+	modifier      string // everything after the component, for the f/Z/z/P formatters
+	presentation  string // first presentation modifier, e.g. "Nn", "01" or "w"
+	minWidth      int
+	maxWidth      int
+	parseWidth    int // exact digits $toMillis reads; 0 reads every digit
 }
 
 // datePicturePart is a literal or, when isMarker is set, a variable marker.
@@ -177,8 +184,9 @@ func parseDateMarker(marker string) (dateMarker, error) {
 	presentation := m.modifier
 	if comma := strings.LastIndexByte(marker, ','); comma > 0 {
 		presentation = marker[1:comma]
-		minSpec, maxSpec, _ := strings.Cut(marker[comma+1:], "-")
+		minSpec, maxSpec, hasMax := strings.Cut(marker[comma+1:], "-")
 		m.minWidth, m.maxWidth = parseMarkerWidth(minSpec), parseMarkerWidth(maxSpec)
+		m.maxWidthGiven = hasMax && maxSpec != "*"
 	}
 	switch last := presentation[max(len(presentation)-1, 0):]; {
 	case presentation == "":
@@ -190,6 +198,7 @@ func parseDateMarker(marker string) (dateMarker, error) {
 		}
 	case len(presentation) > 1 && strings.ContainsAny(last, "atco"):
 		m.ordinal = last == "o"
+		m.zulu = last == "t"
 		presentation = presentation[:len(presentation)-1]
 	}
 	m.presentation = presentation
@@ -220,22 +229,18 @@ func paddingWidth(m dateMarker) int {
 	return max(m.minWidth, 0)
 }
 
-// parseMarkerWidth reads a width the way JavaScript's parseInt does, taking the
-// leading digits and ignoring the rest; "*" or no digits means no width, and a
-// width too large for an int reads as math.MaxInt.
+// parseMarkerWidth reads a width as JavaScript's parseInt reads a decimal one,
+// taking an optional "+" and the leading digits and ignoring the rest; "*" or
+// no digits means no width, and a width too large for an int reads as
+// math.MaxInt. A negative or "0x" width is no width (README known
+// difference #11).
 func parseMarkerWidth(spec string) int {
-	end := 0
-	for end < len(spec) && spec[end] >= '0' && spec[end] <= '9' {
-		end++
-	}
+	digits := []rune(strings.TrimPrefix(spec, "+"))
+	end := leadingDigits(digits, 0)
 	if end == 0 {
 		return noWidth
 	}
-	width, err := strconv.Atoi(spec[:end])
-	if err != nil {
-		return math.MaxInt
-	}
-	return width
+	return atoiSaturating(digits[:end])
 }
 
 func formatMarker(t time.Time, m dateMarker) (string, error) {
@@ -243,7 +248,7 @@ func formatMarker(t time.Time, m dateMarker) (string, error) {
 	case 'f':
 		return formatFracSecond(t.Nanosecond(), m), nil
 	case 'Z', 'z':
-		return formatTimezone(m.component, m.modifier, t)
+		return formatTimezone(m, t)
 	case 'P':
 		return formatAMPM(t.Hour(), m.presentation), nil
 	case 'C', 'E':
@@ -455,35 +460,33 @@ func weekOfMonth(t time.Time) int {
 	return (t.Day() + 6) / 7
 }
 
-func formatTimezone(component byte, modifier string, t time.Time) (string, error) {
+// formatTimezone formats t's offset for a [Z] or [z] marker. As in
+// jsonata-js, a width modifier is ignored and only the presentation's
+// picture before a ";" sets the format.
+func formatTimezone(m dateMarker, t time.Time) (string, error) {
 	_, offset := t.Zone()
-
-	useZ := strings.HasSuffix(modifier, "t")
-	mod := strings.TrimSuffix(modifier, "t")
-
-	if offset == 0 && useZ {
-		return "Z", nil
+	picture := m.presentation
+	if semicolon := strings.LastIndexByte(picture, ';'); semicolon >= 0 {
+		picture = picture[:semicolon]
 	}
-
-	if mod == "" {
-		mod = "01:01"
-	}
-
 	prefix := "+"
 	if offset < 0 {
 		prefix = "-"
 		offset = -offset
 	}
-	if component == 'z' {
+	if m.component == 'z' {
 		prefix = "GMT" + prefix
 	}
 
-	value, err := formatOffset(int64(offset/3600), int64(offset%3600/60), mod)
+	value, err := formatOffset(int64(offset/3600), int64(offset%3600/60), picture)
 	if err != nil {
 		return "", err
 	}
 	if value == "" {
-		return "", &evaluator.JSONataError{Code: "D3134", Message: fmt.Sprintf("invalid picture component: [%c%s]", component, modifier)}
+		return "", &evaluator.JSONataError{Code: "D3134", Message: fmt.Sprintf("invalid picture component: [%c%s]", m.component, m.modifier)}
+	}
+	if offset == 0 && m.zulu {
+		return "Z", nil
 	}
 	return prefix + value, nil
 }
@@ -501,7 +504,7 @@ func formatOffset(hours, mins int64, picture string) (string, error) {
 		}
 	}
 	switch {
-	case regularGrouping(picture) || digits == 3 || digits == 4:
+	case regularGroupingSeparator(picture) != 0 || digits == 3 || digits == 4:
 		return formatIntegerDecimal(hours*100+mins, picture)
 	case digits == 1 || digits == 2:
 		formatted, err := formatIntegerDecimal(hours, picture)
@@ -513,9 +516,9 @@ func formatOffset(hours, mins int64, picture string) (string, error) {
 	return "", nil
 }
 
-// regularGrouping reports whether picture's grouping separators are one
-// character placed at equal digit intervals counted from the right.
-func regularGrouping(picture string) bool {
+// regularGroupingSeparator returns picture's grouping separator when it is one
+// character placed at equal digit intervals counted from the right, else 0.
+func regularGroupingSeparator(picture string) rune {
 	var sep rune
 	var positions []int
 	digits := 0
@@ -525,18 +528,18 @@ func regularGrouping(picture string) bool {
 			continue
 		}
 		if sep != 0 && c != sep {
-			return false
+			return 0
 		}
 		sep = c
 		positions = append(positions, digits)
 	}
 	if len(positions) == 0 || positions[0] == 0 {
-		return false
+		return 0
 	}
 	for i, pos := range positions {
 		if pos != (i+1)*positions[0] {
-			return false
+			return 0
 		}
 	}
-	return true
+	return sep
 }

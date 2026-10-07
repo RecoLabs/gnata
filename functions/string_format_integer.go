@@ -13,14 +13,11 @@ import (
 
 // ── $formatBase ───────────────────────────────────────────────────────────────
 
-func fnFormatBase(args []any, focus any) (any, error) {
+func fnFormatBase(args []any, _ any) (any, error) {
 	if len(args) < 1 {
 		return nil, &evaluator.JSONataError{Code: "D3006", Message: "$formatBase: requires at least 1 argument"}
 	}
 	numArg := args[0]
-	if numArg == nil {
-		numArg = focus
-	}
 	if numArg == nil {
 		return nil, nil
 	}
