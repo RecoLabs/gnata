@@ -1,12 +1,17 @@
 package evaluator
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"regexp/syntax"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -16,6 +21,9 @@ import (
 type Regex struct {
 	re          *regexp.Regexp
 	leftContext bool // has ^, \A, \b or \B, which a match on a suffix of the input misreads
+	// afterRune is re after any one rune and as few more as it needs, with re
+	// as group 1, for a left context regex whose source allows it.
+	afterRune *regexp.Regexp
 }
 
 // Match represents a single regex match.
@@ -55,6 +63,53 @@ func (r *Regex) FindStringMatch(s string) (*Match, error) {
 		allLocs:  allLocs,
 		matchIdx: 0,
 	}, nil
+}
+
+// findMatchFrom returns the first match in s that starts at or after the
+// byte offset from, the one JavaScript's exec finds from there. A regex
+// without left context matches the suffix exactly, and one with it matches
+// the suffix together with the rune before it, which its assertions read.
+// Without afterRune it is matched on all of s, so a match that starts before
+// from and ends at or after it can hide one that starts at from.
+func (r *Regex) findMatchFrom(s string, from int) *Match {
+	if from > 0 && r.afterRune != nil {
+		_, width := utf8.DecodeLastRuneInString(s[:from])
+		loc := r.afterRune.FindStringSubmatchIndex(s[from-width:])
+		if loc == nil {
+			return nil
+		}
+		loc = loc[2:]
+		for i := range loc {
+			if loc[i] >= 0 {
+				loc[i] += from - width
+			}
+		}
+		return r.matchAt(s, loc)
+	}
+	if from > 0 && r.leftContext {
+		// Matches start at distinct bytes, so at most from of them start
+		// before from.
+		for _, loc := range r.re.FindAllStringSubmatchIndex(s, from+1) {
+			if loc[0] >= from {
+				return r.matchAt(s, loc)
+			}
+		}
+		return nil
+	}
+	loc := r.re.FindStringSubmatchIndex(s[from:])
+	if loc == nil {
+		return nil
+	}
+	for i := range loc {
+		if loc[i] >= 0 {
+			loc[i] += from
+		}
+	}
+	return r.matchAt(s, loc)
+}
+
+func (r *Regex) matchAt(s string, loc []int) *Match {
+	return &Match{Index: loc[0], Length: loc[1] - loc[0], input: s, regex: r, loc: loc}
 }
 
 func (r *Regex) MatchString(s string) (bool, error) {
@@ -205,6 +260,12 @@ func CachedCompileRegex(pattern, flags string) (*Regex, error) {
 		return nil, err
 	}
 	r := &Regex{re: re, leftContext: readsLeftContext(parsed)}
+	if r.leftContext {
+		// The lazy .*? makes the match the leftmost one, as re would find it.
+		// An unterminated \Q quotes the closing parenthesis, which fails to
+		// compile and leaves afterRune nil.
+		r.afterRune, _ = regexp.Compile(`\A(?s:.)(?s:.*?)(` + fullPattern + `)`)
+	}
 	evalRegexCache.Store(key, r)
 	return r, nil
 }
@@ -214,37 +275,227 @@ func CompileLiteralRegex(literal string) (*Regex, error) {
 	return CachedCompileRegex(regexp.QuoteMeta(literal), "")
 }
 
-// ── Chain operator (~>) with regex ────────────────────────────────────────────
+// ── Regex as a function (~> and calls) ────────────────────────────────────────
 
-// applyRegexTest implements the JSONata chain operator (~>) with a regex on the
-// right-hand side. It returns the first match object (like $match with limit 1)
-// when the regex matches, or nil (undefined) when it does not.
-func applyRegexTest(input any, regexMap map[string]any) (any, error) {
+// RegexLiteral is the value a regex literal evaluates to. jsonata-js treats it
+// as a function, and so does the evaluator. At the API edges, in results and
+// in custom function arguments and return values, it is the map ToMap returns.
+type RegexLiteral struct {
+	Pattern string
+	Flags   string
+}
+
+// Compile compiles the regex, caching it by pattern and flags.
+func (r *RegexLiteral) Compile() (*Regex, error) {
+	return CachedCompileRegex(r.Pattern, r.Flags)
+}
+
+// ToMap returns the {"pattern", "flags"} map that stands for r at the API edges.
+func (r *RegexLiteral) ToMap() map[string]any {
+	return map[string]any{"pattern": r.Pattern, "flags": r.Flags}
+}
+
+// MarshalJSON encodes r as its ToMap form.
+func (r *RegexLiteral) MarshalJSON() ([]byte, error) {
+	return AppendJSON(nil, r)
+}
+
+// CallRegexArity is the parameter count of jsonata-js's regex closure,
+// (str, fromIndex), which sets how many arguments a callback receives.
+const CallRegexArity = 2
+
+// callRegex applies a regex called as a function, like jsonata-js's closure:
+// the first match in the first argument, searching from the code point offset
+// in the second.
+func callRegex(r *RegexLiteral, args []any) (any, error) {
+	if len(args) == 0 {
+		return applyRegex(nil, r, 0)
+	}
+	from := 0
+	if len(args) > 1 {
+		from = regexOffset(args[1])
+	}
+	return applyRegex(args[0], r, from)
+}
+
+// regexOffset converts a fromIndex argument the way JavaScript sets a regex's
+// lastIndex: a number, or a value that converts to one, truncated toward zero;
+// anything else, or a negative number, is 0.
+func regexOffset(v any) int {
+	switch val := v.(type) {
+	case float64:
+		return max(ToIntClamped(val), 0)
+	case json.Number:
+		return regexOffset(jsStringToNumber(string(val)))
+	case string:
+		return regexOffset(jsStringToNumber(val))
+	case bool:
+		if val {
+			return 1
+		}
+	}
+	// JavaScript converts an array through its string, where a boolean item
+	// is a word, not a number.
+	if arr, ok := AsArray(v); ok && len(arr) == 1 {
+		if _, isBool := arr[0].(bool); !isBool {
+			return regexOffset(arr[0])
+		}
+	}
+	return 0
+}
+
+// jsStringToNumber converts s the way JavaScript's Number does: a decimal,
+// Infinity, or a hex, binary or octal integer, around white space; "" is 0
+// and anything else NaN. A number too large for float64 is infinite.
+func jsStringToNumber(s string) float64 {
+	s = strings.TrimFunc(s, isJSWhiteSpace)
+	switch s {
+	case "":
+		return 0
+	case "Infinity", "+Infinity":
+		return math.Inf(1)
+	case "-Infinity":
+		return math.Inf(-1)
+	}
+	if base, _ := RadixPrefix(s); base != 0 {
+		n, err := strconv.ParseUint(s[2:], base, 64)
+		switch {
+		case err == nil:
+			return float64(n)
+		case errors.Is(err, strconv.ErrRange):
+			return math.Inf(1)
+		}
+		return math.NaN()
+	}
+	// Go also reads inf, nan, hex floats and digit underscores, which
+	// JavaScript does not.
+	if strings.ContainsAny(s, "iInNxXpP_") {
+		return math.NaN()
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return math.NaN()
+	}
+	return f
+}
+
+// isJSWhiteSpace reports whether JavaScript's Number trims r: a space
+// separator, a line terminator, tab, vertical tab, form feed or U+FEFF.
+func isJSWhiteSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', '\u2028', '\u2029', '\uFEFF':
+		return true
+	}
+	return unicode.Is(unicode.Zs, r)
+}
+
+// applyRegex applies a regex the way jsonata-js applies it as a function, in
+// a call (/re/(s)) or on the right of ~>. It returns the first match object at
+// or after the code point offset from, or nil (undefined) when there is none.
+// The input is matched as the string JavaScript converts it to.
+func applyRegex(input any, r *RegexLiteral, from int) (any, error) {
 	s, ok := input.(string)
+	if !ok {
+		b, ok := appendJSString(nil, input)
+		if !ok {
+			return nil, nil
+		}
+		s = string(b)
+	}
+	start, ok := byteOffset(s, from)
 	if !ok {
 		return nil, nil
 	}
-	pattern, _ := regexMap["pattern"].(string)
-	flags, _ := regexMap["flags"].(string)
-	re, err := CachedCompileRegex(pattern, flags)
+	re, err := r.Compile()
 	if err != nil {
 		return nil, &JSONataError{Code: "D1002", Message: fmt.Sprintf("invalid regex: %v", err)}
 	}
-	m, err := re.FindStringMatch(s)
-	if err != nil {
-		return nil, &JSONataError{Code: "D1002", Message: fmt.Sprintf("regex error: %v", err)}
-	}
+	m := re.findMatchFrom(s, start)
 	if m == nil {
 		return nil, nil
 	}
 	return NewMatchObject(s, m), nil
 }
 
+// appendJSString appends the string JavaScript's String gives v: an array's
+// items joined by commas, with null and undefined items empty, and an object
+// "[object Object]". It reports false for a function, whose JavaScript string
+// is its source text. jsonata-js throws a TypeError for an object an
+// expression constructs, which has no prototype, rather than one from the
+// input; gnata cannot tell them apart.
+func appendJSString(b []byte, v any) ([]byte, bool) {
+	switch val := v.(type) {
+	case nil:
+		return append(b, "undefined"...), true
+	case string:
+		return append(b, val...), true
+	case bool:
+		return strconv.AppendBool(b, val), true
+	case float64:
+		return appendNumberToString(b, val), true
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil && !errors.Is(err, strconv.ErrRange) {
+			return append(b, val...), true
+		}
+		return appendNumberToString(b, f), true
+	}
+	if IsNull(v) {
+		return append(b, "null"...), true
+	}
+	if arr, ok := AsArray(v); ok {
+		for i, item := range arr {
+			if i > 0 {
+				b = append(b, ',')
+			}
+			if item == nil || IsNull(item) {
+				continue
+			}
+			if b, ok = appendJSString(b, item); !ok {
+				return nil, false
+			}
+		}
+		return b, true
+	}
+	if IsMap(v) {
+		return append(b, "[object Object]"...), true
+	}
+	return nil, false
+}
+
+// appendNumberToString appends JavaScript's Number.toString of f.
+func appendNumberToString(b []byte, f float64) []byte {
+	switch {
+	case math.IsNaN(f):
+		return append(b, "NaN"...)
+	case math.IsInf(f, 1):
+		return append(b, "Infinity"...)
+	case math.IsInf(f, -1):
+		return append(b, "-Infinity"...)
+	case f == 0:
+		return append(b, '0')
+	}
+	b, _ = appendJSONFloat(b, f, 64) // only NaN and Inf fail
+	return b
+}
+
+// byteOffset returns the byte offset of the code point offset runes into s,
+// and false when s is shorter than that.
+func byteOffset(s string, runes int) (int, bool) {
+	for i := range s {
+		if runes == 0 {
+			return i, true
+		}
+		runes--
+	}
+	return len(s), runes == 0
+}
+
 // NewMatchObject builds the {match, start, end, groups} object jsonata-js
 // produces for a regex match, with rune offsets into s. A capture group that
 // did not participate in the match is "": jsonata-js leaves it undefined,
-// which gnata cannot hold in an array, and "" behaves the same in string
-// operations whereas nil would read as null.
+// which gnata cannot hold in an array, and "" reads as that undefined does
+// in & and $replace's $1, where nil would read as null.
 func NewMatchObject(s string, m *Match) *OrderedMap {
 	groups := make([]any, 0, m.GroupCount()-1)
 	for _, g := range m.Groups() {
@@ -260,14 +511,14 @@ func NewMatchObject(s string, m *Match) *OrderedMap {
 
 // ── Regex parsing ─────────────────────────────────────────────────────────────
 
-func evalRegex(raw string) map[string]any {
+func evalRegex(raw string) *RegexLiteral {
 	if idx := strings.LastIndex(raw, "/"); idx >= 0 {
 		suffix := raw[idx+1:]
 		if isRegexFlags(suffix) {
-			return map[string]any{"pattern": raw[:idx], "flags": suffix}
+			return &RegexLiteral{Pattern: raw[:idx], Flags: suffix}
 		}
 	}
-	return map[string]any{"pattern": raw, "flags": ""}
+	return &RegexLiteral{Pattern: raw}
 }
 
 func isRegexFlags(s string) bool {

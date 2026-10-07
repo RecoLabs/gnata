@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -159,6 +160,30 @@ func TestDecodedStringsDoNotAliasInput(t *testing.T) {
 	}
 	if n, _ := m.Get("n"); n != json.Number("12") {
 		t.Fatalf("decoded number changed with the input buffer: %v", n)
+	}
+}
+
+// The legacy decoder can return a value nested deeper than maxDecodeDepth,
+// which freezeTree walks without recursing: under a 16 MB stack limit it
+// freezes 200,000 nested objects.
+func TestFreezeTreeDeepNesting(t *testing.T) {
+	prev := debug.SetMaxStack(16 << 20)
+	t.Cleanup(func() { debug.SetMaxStack(prev) })
+	const depth = 200_000
+	var v any = 1.0
+	for range depth {
+		m := NewOrderedMap()
+		m.Set("a", []any{v})
+		v = m
+	}
+	freezeTree(v)
+	for n := range depth {
+		m := v.(*OrderedMap)
+		if !m.frozen {
+			t.Fatalf("object at depth %d is not frozen", depth-n)
+		}
+		a, _ := m.Get("a")
+		v = a.([]any)[0]
 	}
 }
 

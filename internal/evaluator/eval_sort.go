@@ -8,7 +8,7 @@ import (
 )
 
 func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
-	items, err := Eval(node.Left, input, env)
+	items, err := evalSortInput(node, input, env)
 	if err != nil {
 		return nil, err
 	}
@@ -18,9 +18,16 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 
 	var arr []any
 	wasArray := true
+	items = spreadSortIndexStage(node.Left, items)
 	switch v := items.(type) {
 	case []any:
 		arr = v
+	case KeptArray, RawSequence:
+		// A sort step flattens a kept array or raw sequence like any sequence.
+		if arr, _ = AsArray(v); len(arr) == 0 {
+			return nil, nil
+		}
+		wasArray = false
 	case *Sequence:
 		collapsed := CollapseSequence(v)
 		if collapsed == nil {
@@ -36,6 +43,11 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 		arr = []any{items}
 		wasArray = false
 	}
+	// The sort is a step after its operand, which jsonata-js flattens
+	// into a sequence.
+	if err := env.CheckSequence(len(arr)); err != nil {
+		return nil, err
+	}
 
 	if len(node.Terms) == 0 {
 		if !wasArray && len(arr) == 1 {
@@ -45,6 +57,9 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 	}
 
 	sorted := slices.Clone(arr)
+	for i, item := range sorted {
+		sorted[i] = NilAsNull(item)
+	}
 
 	if err := SortItemsErr(sorted, func(a, b any) (int, error) {
 		if err := env.Err(); err != nil {
@@ -54,10 +69,81 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if !wasArray && len(sorted) == 1 {
-		return sorted[0], nil
+	// jsonata-js collapses the sorted result like a sequence: one item
+	// becomes the item and none undefined, unless [] keeps the array (see
+	// evalSortNode). An array item stays a one-item sequence, since a later
+	// stage or step must still see it as one item; evalSortNode collapses
+	// it as the value leaves the expression.
+	switch len(sorted) {
+	case 0:
+		return nil, nil
+	case 1:
+		if _, isArr := AsArray(sorted[0]); !isArr {
+			return sorted[0], nil
+		}
+		return &Sequence{Values: sorted}, nil
 	}
 	return sorted, nil
+}
+
+// evalSortInput evaluates the items a sort orders. jsonata-js makes the
+// sort a path, so a Left that is not a path is its first step (see
+// startsRootPath).
+func evalSortInput(node *parser.Node, input any, env *Environment) (any, error) {
+	switch {
+	case startsRootPath(node.Left, input, env):
+		return evalStepOnce(node.Left, input, unwrapRoot(env))
+	case filtersStep(node.Left):
+		// A step's filter stages select a sequence, whose items the sort
+		// orders; any other filter collapses its selection (see
+		// filtersStep).
+		return rawSelection(evalSubscriptStage(node.Left, input, env))
+	case endsInFilter(node.Left):
+		// A path whose last step is a filter also selects a sequence.
+		items, _, err := evalPathSimpleSteps(node.Left, input, env)
+		return rawSelection(items, err)
+	case isSimplePath(node.Left):
+		return evalPathSequence(node.Left, input, env)
+	}
+	return Eval(node.Left, input, env)
+}
+
+// endsInFilter reports whether path is a simple path whose last step is a
+// subscript the path returns uncollapsed.
+func endsInFilter(path *parser.Node) bool {
+	return isSimplePath(path) && isSubscript(path.Steps[len(path.Steps)-1])
+}
+
+// isSimplePath reports whether node is a path with no group, [] or tuple
+// step, which evalPathSimpleSteps evaluates.
+func isSimplePath(node *parser.Node) bool {
+	return node.Type == parser.NodePath && node.Group == nil && !node.KeepSingletonArray &&
+		len(node.Steps) > 0 && !pathHasTupleStep(node.Steps)
+}
+
+// evalPathSequence evaluates a simple path that a sort or group applies
+// to, which jsonata-js does to the path's sequence before it collapses: a
+// sequence holding one array is one item, returned as a RawSequence.
+func evalPathSequence(path *parser.Node, input any, env *Environment) (any, error) {
+	result, _, err := evalPathSimpleSteps(path, input, env)
+	seq, ok := result.(*Sequence)
+	if err != nil || !ok {
+		return result, err
+	}
+	if len(seq.Values) == 1 {
+		if _, isArr := seq.Values[0].([]any); isArr {
+			return RawSequence(seq.Values), nil
+		}
+	}
+	return CollapseSequence(seq), nil
+}
+
+// rawSelection returns a filter's selection sequence as a RawSequence.
+func rawSelection(items any, err error) (any, error) {
+	if seq, ok := items.(*Sequence); ok && err == nil {
+		return RawSequence(seq.Values), nil
+	}
+	return items, err
 }
 
 // SortItemsErr performs a stable sort on items using the provided comparator,
@@ -103,4 +189,30 @@ func compareSortTerms(terms []parser.SortTerm, aVal, bVal any, aEnv, bEnv *Envir
 		}
 	}
 	return 0, nil
+}
+
+// classifySortStep reports whether step is a sort, with or without predicates as
+// in ^(x)[p], and whether its last predicate is a number literal. A sort
+// keeps one constructed array as one item, except that jsonata-js
+// evaluateFilter returns an array that a number-literal predicate picks as
+// the whole result sequence, so later steps map over its elements.
+func classifySortStep(step *parser.Node) (isSort, indexStage bool) {
+	if step == nil {
+		return false, false
+	}
+	base, stages := splitTupleStages(step)
+	isSort = base.Type == parser.NodeSort
+	indexStage = isSort && len(stages) > 0 && stages[len(stages)-1].predicate.Type == parser.NodeNumber
+	return isSort, indexStage
+}
+
+// spreadSortIndexStage returns a constructed array picked by a sort's
+// number-literal predicate as a plain array (see classifySortStep).
+func spreadSortIndexStage(step *parser.Node, result any) any {
+	if cons, ok := result.(ConsArray); ok {
+		if _, indexStage := classifySortStep(step); indexStage {
+			return []any(cons)
+		}
+	}
+	return result
 }

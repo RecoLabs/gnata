@@ -23,14 +23,14 @@ const inlineBindingCap = 2
 // callCounter tracks the current recursive call depth across all child environments.
 // A pointer is shared so all nested envs increment/decrement the same counter.
 type callCounter struct {
-	// int32 keeps the struct in the same allocation size class as before the
-	// deadline and context fields were added; it is allocated per evaluation.
-	depth        int32
-	max          int32
-	maxSequence  int32 // 0 = unlimited; guardrail set via WithSequence (error D2015)
-	evalDepth    int16 // $eval nesting, capped at a small constant by IncrEvalDepth's caller
-	stackIsLimit bool  // true when max was set via the WithStack guardrail (error D1011 instead of U1001)
-	hasNow       bool  // nowMillis has been captured
+	// The field widths and the packed flags keep the struct at 64 bytes, an
+	// allocation size class; it is allocated per evaluation.
+	depth       int32
+	max         int32
+	maxSequence int32  // 0 = unlimited; guardrail set via WithSequence (error D2015)
+	nested      uint16 // nesting budget spent by calls in progress, see callNested
+	evalDepth   int8   // $eval nesting, capped by IncrEvalDepth
+	flags       counterFlags
 
 	// nowMillis is the evaluation's timestamp, captured on first use so every
 	// $now, $millis and $toMillis call in one evaluation sees the same instant.
@@ -44,6 +44,53 @@ type callCounter struct {
 	// ctx is the evaluation's context, shared by every environment using this
 	// counter (see SetContext).
 	ctx context.Context
+
+	// applyFocus is the context of the call that entered the lambda being
+	// evaluated, which a call in tail position of its body takes.
+	applyFocus any
+}
+
+// counterFlags are a callCounter's booleans, packed into one byte.
+type counterFlags uint8
+
+const (
+	stackIsLimit counterFlags = 1 << iota // max was set via the WithStack guardrail (error D1011 instead of U1001)
+	hasNow                                // nowMillis has been captured
+)
+
+// maxNestedCalls bounds the nesting budget of calls in progress into partial
+// applications, compositions, wrappers of builtin function arguments,
+// transforms, builtins passed as higher-order functions' callbacks, and
+// lambdas with deep bodies (see lambdaFreeDepth). Each calls further
+// functions on the Go stack and the call depth does not count it, so a long
+// chain of them would overflow the Go stack, which cannot be recovered. It
+// is fixed, unlike the call depth WithStack sets. Native builds have room
+// for far more, but under js/wasm in Node with go_js_wasm_exec's 8 MB stack,
+// the stack CI runs, $sort comparators that are partial applications, the
+// costliest unit measured, overflow at about 12,500 on a fresh stack and at
+// about 4,900 once an earlier chain in the same evaluation has grown it, and
+// 100 lambda calls with grouping-constructor bodies overflow a grown stack at
+// about 16,000 levels: the limit stays about a third of the former and, with
+// lambdaFreeDepth, about half of the latter. Hosts with a smaller stack,
+// such as Node's default, can overflow below the limit.
+const maxNestedCalls = 1_500
+
+// callCounter.nested must hold maxNestedCalls.
+const _ uint16 = maxNestedCalls
+
+// callNested calls call, spending cost of the nesting budget while it runs,
+// or returns U1001 when the budget does not cover it.
+func (c *callCounter) callNested(cost int, call func() (any, error)) (any, error) {
+	if int(c.nested)+cost > maxNestedCalls {
+		return nil, &JSONataError{
+			Code:    "U1001",
+			Message: fmt.Sprintf("stack overflow error: nested calls exceeded the nesting budget of %d", maxNestedCalls),
+		}
+	}
+	c.nested += uint16(cost)
+	result, err := call()
+	c.nested -= uint16(cost)
+	return result, err
 }
 
 type deadlineState struct {
@@ -76,18 +123,33 @@ type binding struct {
 type Environment struct {
 	parent  *Environment
 	inline  [inlineBindingCap]binding
-	inlineN int32
+	inlineN int8
+	// plainInline marks, by inline slot, the bindings to an array of two or
+	// more items that jsonata-js holds as a plain array rather than a
+	// sequence (see argShape and markPlainArray).
+	plainInline uint8
 	// hasDeadline mirrors whether the call counter has a WithTimeout deadline
 	// so Err's fast path needs no pointer chase. SetDeadline is called before
 	// evaluation starts, and child environments inherit it. It sits beside
 	// inlineN to reuse that field's padding.
 	hasDeadline bool
+	// tuple marks an environment holding one tuple's bindings in a path's
+	// tuple stream (see mergeGroupEnvs). It also fits in inlineN's padding,
+	// leaving the inline slots to the tuple's own bindings.
+	tuple bool
+	// sequenceLimited mirrors whether the call counter has a WithSequence
+	// limit, so that without one CheckSequence returns at once and the work
+	// done only to check it is skipped. It is set with the limit before
+	// evaluation starts, and children inherit it.
+	sequenceLimited bool
 	// decimalPrecision is the significant digits set via WithDecimalPrecision
 	// (0 = float64 only), inherited by children. At most 100, so it fits in
-	// the padding after hasDeadline.
-	decimalPrecision uint16
+	// the padding after sequenceLimited.
+	decimalPrecision uint8
 	bindings         map[string]any // nil until inline overflows
-	calls            *callCounter   // shared call-depth counter; nil inherits from parent
+	// plainArrays is plainInline for bindings, nil until one is marked.
+	plainArrays map[string]struct{}
+	calls       *callCounter // shared call-depth counter; nil inherits from parent
 	// done caches ctx.Done() so the per-node cancellation check in Eval is a
 	// nil check for non-cancellable contexts instead of a walk up both the
 	// environment chain and the context.valueCtx chain.
@@ -108,6 +170,7 @@ func NewChildEnvironment(parent *Environment) *Environment {
 		env.calls = parent.callCounter()
 		env.done = parent.done
 		env.hasDeadline = parent.hasDeadline
+		env.sequenceLimited = parent.sequenceLimited
 		env.decimalPrecision = parent.decimalPrecision
 	}
 	return env
@@ -128,11 +191,15 @@ func (e *Environment) callCounter() *callCounter {
 func (e *Environment) Bind(name string, value any) {
 	if e.bindings != nil {
 		e.bindings[name] = value
+		if e.plainArrays != nil {
+			delete(e.plainArrays, name)
+		}
 		return
 	}
 	for i := range e.inlineN {
 		if e.inline[i].name == name {
 			e.inline[i].value = value
+			e.plainInline &^= 1 << i
 			return
 		}
 	}
@@ -146,9 +213,60 @@ func (e *Environment) Bind(name string, value any) {
 	e.bindings = make(map[string]any, inlineBindingCap+1)
 	for i := range e.inlineN {
 		e.bindings[e.inline[i].name] = e.inline[i].value
+		if e.plainInline&(1<<i) != 0 {
+			e.markPlainArray(e.inline[i].name)
+		}
 	}
 	e.bindings[name] = value
-	e.inlineN = 0
+	e.inlineN, e.plainInline = 0, 0
+}
+
+// markPlainArray records that name, bound here, holds an array of two or
+// more items that is a plain array in jsonata-js; a later Bind of name
+// clears the mark.
+func (e *Environment) markPlainArray(name string) {
+	if e.bindings == nil {
+		for i := range e.inlineN {
+			if e.inline[i].name == name {
+				e.plainInline |= 1 << i
+			}
+		}
+		return
+	}
+	if e.plainArrays == nil {
+		e.plainArrays = make(map[string]struct{}, 1)
+	}
+	e.plainArrays[name] = struct{}{}
+}
+
+// boundPlainArray reports whether the scope that binds name marked its
+// value a plain array (see markPlainArray).
+func (e *Environment) boundPlainArray(name string) bool {
+	for ; e != nil; e = e.parent {
+		if e.bindings != nil {
+			if _, found := e.bindings[name]; found {
+				_, plain := e.plainArrays[name]
+				return plain
+			}
+			continue
+		}
+		for i := range e.inlineN {
+			if e.inline[i].name == name {
+				return e.plainInline&(1<<i) != 0
+			}
+		}
+	}
+	return false
+}
+
+// rootInputKey binds the input jsonata-js wraps as one item when it is an
+// array; a character outside JSONata identifiers keeps it from colliding.
+const rootInputKey = "%%root"
+
+// SetRootInput records data as the root input: the evaluation's input, or the
+// context argument of $eval.
+func (e *Environment) SetRootInput(data any) {
+	e.Bind(rootInputKey, data)
 }
 
 // Parent returns the parent environment (nil for root environments).
@@ -168,21 +286,6 @@ func (e *Environment) Lookup(name string) (any, bool) {
 	return nil, false
 }
 
-// LookupWithEnv looks up a variable and returns both the value and the
-// specific environment in which the binding was found. This is used by the
-// parent operator (%) so that chained %.% navigations correctly use the
-// parent of the binding's environment, not the parent of the starting env.
-// Returns (nil, nil, false) if not found.
-func (e *Environment) LookupWithEnv(name string) (any, *Environment, bool) {
-	if v, ok := e.LookupDirect(name); ok {
-		return v, e, true
-	}
-	if e.parent != nil {
-		return e.parent.LookupWithEnv(name)
-	}
-	return nil, nil, false
-}
-
 // ResetCallCounter installs a fresh call-depth counter on this environment,
 // decoupling it from any inherited parent counter. Use this when creating a
 // per-eval child environment from a shared parent to avoid cross-eval interference.
@@ -191,11 +294,12 @@ func (e *Environment) ResetCallCounter() {
 }
 
 // IncrEvalDepth increments the $eval nesting counter and returns an error if
-// the maximum depth is exceeded. Must be paired with DecrEvalDepth via defer.
+// the maximum depth is exceeded; a maximum above 126 counts as 126. Must be
+// paired with DecrEvalDepth via defer.
 func (e *Environment) IncrEvalDepth(maxDepth int) error {
 	c := e.callCounter()
 	c.evalDepth++
-	if int(c.evalDepth) > maxDepth {
+	if int(c.evalDepth) > min(maxDepth, math.MaxInt8-1) {
 		c.evalDepth--
 		return &JSONataError{Code: "D3121", Message: "$eval: maximum nesting depth exceeded"}
 	}
@@ -206,8 +310,9 @@ func (e *Environment) IncrEvalDepth(maxDepth int) error {
 // for every call within one evaluation as jsonata-js requires.
 func (e *Environment) Now() time.Time {
 	c := e.callCounter()
-	if !c.hasNow {
-		c.nowMillis, c.hasNow = time.Now().UnixMilli(), true
+	if c.flags&hasNow == 0 {
+		c.nowMillis = time.Now().UnixMilli()
+		c.flags |= hasNow
 	}
 	return time.UnixMilli(c.nowMillis).UTC()
 }
@@ -223,13 +328,14 @@ func (e *Environment) DecrEvalDepth() {
 func (e *Environment) SetMaxStackDepth(n int) {
 	c := e.callCounter()
 	c.max = clampInt32(n)
-	c.stackIsLimit = true
+	c.flags |= stackIsLimit
 }
 
 // SetMaxSequence sets the guardrail sequence-length limit (0 = unlimited).
 // Exceeding it at a checked growth site returns error D2015.
 func (e *Environment) SetMaxSequence(n int) {
 	e.callCounter().maxSequence = clampInt32(n)
+	e.sequenceLimited = n > 0
 }
 
 // clampInt32 saturates a configured limit to the int32 range; larger limits
@@ -241,7 +347,7 @@ func clampInt32(n int) int32 {
 // SetDecimalPrecision enables decimal arithmetic to digits significant digits
 // (0 = disabled) for this environment and children created after it.
 func (e *Environment) SetDecimalPrecision(digits int) {
-	e.decimalPrecision = uint16(digits)
+	e.decimalPrecision = uint8(digits)
 }
 
 // DecimalPrecision returns the decimal precision in significant digits, or 0 when disabled.
@@ -252,6 +358,9 @@ func (e *Environment) DecimalPrecision() int {
 // CheckSequence returns a D2015 error if n exceeds the configured sequence
 // guardrail. No-op when no guardrail is set.
 func (e *Environment) CheckSequence(n int) error {
+	if !e.sequenceLimited {
+		return nil
+	}
 	c := e.callCounter()
 	if c.maxSequence > 0 && n > int(c.maxSequence) {
 		return &JSONataError{Code: "D2015", Message: fmt.Sprintf("The maximum sequence length of %d was exceeded", c.maxSequence)}
@@ -304,6 +413,9 @@ func (e *Environment) errSlow() error {
 // custom function) can take arbitrarily long, so the deadline overrun stays
 // bounded by one call rather than by deadlinePollMask calls.
 func (e *Environment) errNow() error {
+	if e.done == nil && !e.hasDeadline {
+		return nil
+	}
 	if err := e.ctxErr(); err != nil {
 		return err
 	}
@@ -397,23 +509,49 @@ type BuiltinFunction func(args []any, focus any) (any, error)
 // that create child scopes ($eval).
 type EnvAwareBuiltin func(args []any, focus any, env *Environment) (any, error)
 
-// SignedBuiltin wraps a BuiltinFunction with a type signature for arity and
-// type validation at the direct call site. HOF callbacks that invoke the
-// function via ApplyFunction bypass signature validation, allowing extra
-// arguments (key, index, array) to be passed silently.
+// SignedBuiltin is a native function value: a builtin with its name,
+// jsonata-js signature and arity; or, with no name or signature, a partial
+// application or composition with its arity, or a wrapper that applies a
+// function argument (Argument, never itself a wrapper) with a null context.
+// Every call except a partial application fills a missing context argument
+// from the call's context and, when Validated is set, validates its
+// arguments, as jsonata-js's apply does.
 type SignedBuiltin struct {
-	Fn        BuiltinFunction
-	Sig       string
-	ParsedSig []parser.ParamSpec // pre-parsed signature; avoids re-parsing on every call
+	Name      string // the builtin's name; "" for a partial application, composition or argument wrapper
+	Fn        EnvAwareBuiltin
+	Plain     BuiltinFunction // Fn without its environment, called directly when set
+	Signature *Signature      // nil: no signature
+	Validated bool            // validate the arguments against Signature, not just fill the context
+	Arity     int             // parameters of the jsonata-js implementation, for HOF callbacks; -1 if unknown
+	Argument  any             // a function argument this applies with a null context, or nil
+	// CallsLambdas reports that a wrapper calls only lambdas directly, so
+	// the call depth bounds it and it spends no nesting budget.
+	CallsLambdas bool
+}
+
+// isWrapper reports whether sb is a partial application, composition or
+// function-argument wrapper, which calls the function it wraps.
+func (sb *SignedBuiltin) isWrapper() bool {
+	return sb.Name == ""
+}
+
+// IsFunction reports whether v is a function value, including a regex,
+// which jsonata-js treats as a function.
+func IsFunction(v any) bool {
+	switch v.(type) {
+	case BuiltinFunction, EnvAwareBuiltin, *Lambda, *SignedBuiltin, *RegexLiteral:
+		return true
+	}
+	return false
 }
 
 // Lambda represents a user-defined function (lambda expression).
 type Lambda struct {
-	Params        []string           // parameter names
-	Body          *parser.Node       // function body AST node
-	Closure       *Environment       // lexical scope at definition site
-	Thunk         bool               // for tail-call optimization
-	Sig           string             // type signature (Wave 5)
-	ParsedSig     []parser.ParamSpec // pre-parsed signature; avoids re-parsing per call
-	CapturedFocus any                // focus ($) captured at definition time for zero-param closures
+	Params        []string     // parameter names
+	Body          *parser.Node // function body AST node
+	Closure       *Environment // lexical scope at definition site
+	Thunk         bool         // for tail-call optimization
+	Signature     *Signature   // validates every call; nil without a signature
+	CapturedFocus any          // focus ($) at definition time, which the body evaluates against
+	DeepBody      int          // nesting budget each call spends, see lambdaFreeDepth
 }

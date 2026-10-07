@@ -7,16 +7,10 @@ import (
 	"github.com/recolabs/gnata/internal/parser"
 )
 
-type groupEntry struct {
-	items    []any
-	firstIdx int
-}
-
 func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
-	// For paths with #$var position bindings or % references (in steps or in the
-	// group expression itself), delegate directly to evalPathTuple which handles
-	// the group expression with per-tuple environments.
-	if node.Type == parser.NodePath && (pathHasTupleStep(node.Steps) || groupHasParentRef(node.Group)) {
+	// A path with #$var, @$var or ancestor bindings runs as a tuple stream,
+	// whose evalPathTuple applies the group with per-tuple environments.
+	if node.Type == parser.NodePath && pathHasTupleStep(node.Steps) {
 		return evalPathTuple(node, input, env)
 	}
 
@@ -24,27 +18,46 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	// recursion and without mutating the shared AST (concurrent safety).
 	baseCopy := *node
 	baseCopy.Group = nil
-	base, err := Eval(&baseCopy, input, env)
-	if err != nil || base == nil {
+	var base any
+	var err error
+	switch baseCopy.Type {
+	case parser.NodeFunction:
+		base, err = evalFunctionSequence(&baseCopy, input, env)
+	case parser.NodeSort:
+		base, err = evalSortStep(&baseCopy, input, env)
+	case parser.NodePath:
+		if isSimplePath(&baseCopy) {
+			base, err = evalPathSequence(&baseCopy, input, env)
+			break
+		}
+		base, err = Eval(&baseCopy, input, env)
+	default:
+		base, err = Eval(&baseCopy, input, env)
+	}
+	if err != nil {
 		return nil, err
 	}
+	// jsonata-js's trampoline applies a tail-position call without its
+	// group, so the group is ignored.
+	if _, tailCall := base.(*TailCall); tailCall {
+		return base, nil
+	}
 
-	var items []any
-	switch v := base.(type) {
-	case []any:
-		items = v
-	case ConsArray:
-		items = v
-	case *Sequence:
-		if collapsed := CollapseSequence(v); collapsed == nil {
-			return nil, nil
-		} else if arr, ok := collapsed.([]any); ok {
-			items = arr
-		} else {
-			items = []any{collapsed}
-		}
-	default:
+	// A call's or sort's result sequence is grouped before it collapses, as
+	// in jsonata-js.
+	if seq, ok := base.(*Sequence); ok && len(seq.Values) > 0 &&
+		(baseCopy.Type == parser.NodeFunction || baseCopy.Type == parser.NodeSort) {
+		return groupItems(groupPairs(node.Group.Pairs), seq.Values, env)
+	}
+	if seq, ok := base.(*Sequence); ok {
+		base = CollapseSequence(seq)
+	}
+	items, ok := AsArray(base)
+	if !ok {
 		items = []any{base}
+	} else {
+		// A nil item of Go data is a JSON null, not an undefined context.
+		items = NullItems(items)
 	}
 	return groupItems(groupPairs(node.Group.Pairs), items, env)
 }
@@ -79,7 +92,7 @@ func groupContext(items []any) any {
 	if len(items) == 1 {
 		return items[0]
 	}
-	var merged []any
+	merged := []any{}
 	for _, item := range items {
 		if arr, ok := AsArray(item); ok {
 			merged = append(merged, arr...)
@@ -90,62 +103,106 @@ func groupContext(items []any) any {
 	return merged
 }
 
-// groupItems builds the {key: value} object of a group expression over items.
+// groupItems builds the {key: value} object of a group expression over
+// items, as jsonata-js evaluateGroupExpression does. Each item is keyed by
+// every pair in turn, so keys appear in the order items produce them, and a
+// key two pairs produce raises D1009. An empty input groups one undefined
+// item, so constant keys still yield an object: []{"a": 1} is {"a":1}.
 func groupItems(pairs iter.Seq2[*parser.Node, *parser.Node], items []any, env *Environment) (any, error) {
-	outObj, keySet := NewOrderedMap(), map[string]bool{}
-	for keyNode, valNode := range pairs {
-		var groupOrder []string
-		groups := map[string]*groupEntry{}
+	if len(items) == 0 {
+		items = []any{nil}
+	}
+	return groupBy(pairs, items, nil, env)
+}
 
-		for i, item := range items {
-			keyVal, err := Eval(keyNode, item, env)
+// groupEntry collects the items one key of a group gathers.
+type groupEntry struct {
+	key   string
+	pair  int          // which pair produced the key
+	value *parser.Node // that pair's value expression
+	items []any
+	envs  []*Environment
+	size  appendCount
+}
+
+// appendCount counts the items of values appended in turn as jsonata-js
+// fn.append does. The first value is taken as is, so only appending a later
+// one counts against the sequence guardrail.
+type appendCount struct{ items, values int }
+
+func (c *appendCount) add(v any, env *Environment) error {
+	if !env.sequenceLimited {
+		return nil
+	}
+	c.items += appendLength(v)
+	c.values++
+	if c.values == 1 {
+		return nil
+	}
+	return env.CheckSequence(c.items)
+}
+
+// groupBy groups items by each pair's key and evaluates each key's value
+// expression against its items. With envs, the items are tuples, keyed in
+// their own environments, and each group's value sees their bindings merged
+// (see mergeGroupEnvs); otherwise every expression runs in env.
+func groupBy(pairs iter.Seq2[*parser.Node, *parser.Node], items []any, envs []*Environment, env *Environment) (any, error) {
+	var order []*groupEntry
+	byKey := map[string]*groupEntry{}
+	for i, item := range items {
+		itemEnv := env
+		if envs != nil {
+			itemEnv = envs[i]
+		}
+		pair := 0
+		for keyNode, valNode := range pairs {
+			index := pair
+			pair++
+			keyVal, err := Eval(keyNode, item, itemEnv)
 			if err != nil {
 				return nil, err
 			}
-			keyStr, ok := keyVal.(string)
 			if keyVal == nil {
 				continue
-			} else if !ok {
+			}
+			key, ok := keyVal.(string)
+			if !ok {
 				return nil, &JSONataError{Code: "T1003", Message: fmt.Sprintf("key expression must evaluate to a string, got %T", keyVal)}
 			}
-			if g, exists := groups[keyStr]; exists {
-				g.items = append(g.items, item)
-			} else {
-				groupOrder = append(groupOrder, keyStr)
-				groups[keyStr] = &groupEntry{items: []any{item}, firstIdx: i}
+			entry := byKey[key]
+			if entry == nil {
+				entry = &groupEntry{key: key, pair: index, value: valNode}
+				byKey[key] = entry
+				order = append(order, entry)
+			} else if entry.pair != index {
+				return nil, &JSONataError{Code: "D1009", Message: fmt.Sprintf("duplicate key: %q", key)}
 			}
-		}
-
-		for _, keyStr := range groupOrder {
-			if keySet[keyStr] {
-				return nil, &JSONataError{Code: "D1009", Message: fmt.Sprintf("duplicate key: %q", keyStr)}
+			if err := entry.size.add(item, itemEnv); err != nil {
+				return nil, err
 			}
-			entry := groups[keyStr]
-			groupInput := groupContext(entry.items)
-
-			childEnv := NewChildEnvironment(env)
-			childEnv.Bind("$index", float64(entry.firstIdx))
-			childEnv.Bind("$key", keyStr)
-
-			valResult := groupInput
-			if valNode != nil {
-				var err error
-				if valResult, err = Eval(valNode, groupInput, childEnv); err != nil {
-					return nil, err
-				}
-				if valNode.KeepArray && valResult == nil {
-					valResult = []any{}
-				} else if valNode.KeepArray {
-					if _, isArr := valResult.([]any); !isArr {
-						valResult = []any{valResult}
-					}
-				}
-			}
-			if valResult != nil {
-				keySet[keyStr] = true
-				outObj.Set(keyStr, valResult)
+			entry.items = append(entry.items, item)
+			if envs != nil {
+				entry.envs = append(entry.envs, itemEnv)
 			}
 		}
 	}
-	return outObj, nil
+
+	out := NewOrderedMap()
+	for _, entry := range order {
+		valEnv := env
+		if envs != nil {
+			valEnv = mergeGroupEnvs(entry.envs)
+		}
+		val := groupContext(entry.items)
+		if entry.value != nil {
+			var err error
+			if val, err = Eval(entry.value, val, valEnv); err != nil {
+				return nil, err
+			}
+		}
+		if val != nil {
+			out.Set(entry.key, val)
+		}
+	}
+	return out, nil
 }
