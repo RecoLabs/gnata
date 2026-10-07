@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -233,6 +235,177 @@ func TestCustomFunctionPanicIsRecovered(t *testing.T) {
 			_, err = expr.EvalWithCustomFuncs(context.Background(), nil, env)
 			if err == nil || !strings.Contains(err.Error(), tC.want) {
 				t.Fatalf("err = %v, want it to contain %q", err, tC.want)
+			}
+		})
+	}
+}
+
+// TestEvalResultHasNoInternalArrays checks that results, including values
+// inside objects the expression built, reach the caller as plain slices.
+func TestEvalResultHasNoInternalArrays(t *testing.T) {
+	for _, expr := range []string{
+		`{"k": o.b[]}`,
+		`{"k": o.[b, c]}`,
+		`{"k": [{"j": o.b[]}]}`,
+		`$map([{"a":1}], $keys)`,
+		`{"k": $map([{"a":1}], $keys)}`,
+		`$ ~> |o|{"z": b[]}|`,
+	} {
+		t.Run(expr, func(t *testing.T) {
+			compiled, err := gnata.Compile(expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := compiled.Eval(context.Background(), map[string]any{"o": map[string]any{"b": 5.0, "c": 6.0}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNoInternalArrays(t, got)
+		})
+	}
+}
+
+func assertNoInternalArrays(t *testing.T, v any) {
+	t.Helper()
+	switch val := v.(type) {
+	case []any:
+		for _, elem := range val {
+			assertNoInternalArrays(t, elem)
+		}
+	case *gnata.OrderedMap:
+		for _, k := range val.Keys() {
+			elem, _ := val.Get(k)
+			assertNoInternalArrays(t, elem)
+		}
+	case map[string]any:
+		for _, elem := range val {
+			assertNoInternalArrays(t, elem)
+		}
+	default:
+		// The internal array types are unexported from gnata, so match any
+		// type of the evaluator package rather than a list that can go stale.
+		if typ := fmt.Sprintf("%T", v); strings.HasPrefix(typ, "evaluator.") {
+			t.Fatalf("result holds internal type %s", typ)
+		}
+	}
+}
+
+// TestTransformKeepsGoMaps checks that a transform over Go map input returns
+// Go maps, with internal array types stripped from them, and leaves the
+// input unchanged.
+func TestTransformKeepsGoMaps(t *testing.T) {
+	input := func() map[string]any {
+		return map[string]any{"o": map[string]any{"b": 5.0}, "p": map[string]any{"c": map[string]any{"d": 1.0}}}
+	}
+	testCases := []struct {
+		expr string
+		want any
+	}{
+		{expr: `$ ~> |o|{"z": b[]}|`, want: map[string]any{"o": map[string]any{"b": 5.0, "z": []any{5.0}}, "p": input()["p"]}},
+		{expr: `{"k": p} ~> |k|{"z": 1}|`, want: map[string]any{"k": map[string]any{"c": map[string]any{"d": 1.0}, "z": 1.0}}},
+		{expr: `({"x": p.c[]} ~> |x|{"z": 1}|; p)`, want: input()["p"]},
+		{expr: `($ ~> |o|{"z": 1}|) ~> |p|{"w": 1}|`, want: map[string]any{
+			"o": map[string]any{"b": 5.0, "z": 1.0}, "p": map[string]any{"c": map[string]any{"d": 1.0}, "w": 1.0},
+		}},
+		{expr: `$ ~> |p.c|{"self": $}|`, want: map[string]any{
+			"o": input()["o"], "p": map[string]any{"c": map[string]any{"d": 1.0, "self": map[string]any{"d": 1.0}}},
+		}},
+		{expr: `($ ~> |$$.p.c|{"self": $$.p}|; $$)`, want: input()},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) {
+			compiled, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := input()
+			got, err := compiled.Eval(context.Background(), data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if om, ok := got.(*gnata.OrderedMap); ok {
+				got = om.ToMap()
+			}
+			if !reflect.DeepEqual(got, tC.want) {
+				t.Fatalf("got %#v, want %#v", got, tC.want)
+			}
+			if !reflect.DeepEqual(data, input()) {
+				t.Fatalf("input changed to %#v", data)
+			}
+		})
+	}
+}
+
+// TestStripSharedResults checks that results sharing subtrees, also through
+// a transform's update, reach the caller without a walk or copy per path:
+// here 2^40 paths lead to the kept array.
+func TestStripSharedResults(t *testing.T) {
+	for _, expr := range []string{
+		`$reduce([1..40], function($acc, $i){{"a": $acc, "b": [$acc]}}, {"x": [1][]})`,
+		`$reduce([1..40], function($acc, $i){[[$acc], [$acc]]}, [1][])`,
+		`{} ~> |$|{"a": $reduce([1..40], function($acc, $i){{"a": $acc, "b": $acc}}, {"x": [1][]})}|`,
+	} {
+		t.Run(expr, func(t *testing.T) {
+			compiled, err := gnata.Compile(expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := compiled.Eval(context.Background(), nil)
+			if err != nil || got == nil {
+				t.Fatalf("got %v, %v", got, err)
+			}
+			// Follow one path down: walking every path would take 2^40 steps.
+			for got != nil {
+				if typ := fmt.Sprintf("%T", got); strings.HasPrefix(typ, "evaluator.") {
+					t.Fatalf("result holds internal type %s", typ)
+				}
+				switch v := got.(type) {
+				case *gnata.OrderedMap:
+					got, _ = v.Get("a")
+				case []any:
+					got = v[0]
+				default:
+					got = nil
+				}
+			}
+		})
+	}
+}
+
+// TestTransformNeverBuildsCycles checks that transforms whose update values
+// lead back to the target, also through a variable the pattern or an
+// earlier target's update bound, return results that encode as JSON.
+func TestTransformNeverBuildsCycles(t *testing.T) {
+	for _, tC := range []struct {
+		expr string
+		code string // the error expected instead of a result
+	}{
+		{expr: `$ ~> |nested.x|{"z": $}|`},
+		{expr: `$ ~> |[$, nested]|{"w": $g, "z": $g := $}|`},
+		{expr: `$ ~> |[$g := $, nested][1]|{"w": $g}|`},
+		// Cloning a function makes it "", so calling it fails, as in jsonata-js.
+		{expr: `($t := |$|{"k": $g := $.f()}, ["f"]|; $ ~> |[$, nested]|{"w": $g, "z": $t({"f": function(){$}})}|)`, code: "T1006"},
+		{expr: `$ ~> |**|{"w": [$g], "z": $g := $}|`},
+		{expr: `$ ~> |**|{"w": {"v": $g}, "z": $g := $}|`},
+		{expr: `$ ~> |**|{"s": $exists($f) ? $f() : 0, "k": $f := function(){$}}| ~> |**|{}, ["k"]|`},
+	} {
+		t.Run(tC.expr, func(t *testing.T) {
+			compiled, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := compiled.EvalBytes(context.Background(), json.RawMessage(`{"nested":{"x":{"y":3}}}`))
+			if tC.code != "" {
+				if err == nil || !strings.Contains(err.Error(), tC.code) {
+					t.Fatalf("got %v, %v; want error %s", got, err, tC.code)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := json.Marshal(got); err != nil {
+				t.Fatalf("encoding the result: %v", err)
 			}
 		})
 	}

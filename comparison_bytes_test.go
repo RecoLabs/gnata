@@ -103,6 +103,76 @@ func TestEvalBytes_ExistsContainsAcrossArrays_MatchesEval(t *testing.T) {
 	}
 }
 
+// TestEvalBytes_KeepArray_MatchesEval checks that the EvalBytes fast paths
+// leave a [] suffix to the evaluator.
+func TestEvalBytes_KeepArray_MatchesEval(t *testing.T) {
+	testCases := []struct {
+		desc string
+		expr string
+	}{
+		{desc: "kept field", expr: `Account[]`},
+		{desc: "builtin of a kept field", expr: `$type(Account[])`},
+		{desc: "kept builtin result", expr: `$keys(Account)[]`},
+	}
+
+	rawData := json.RawMessage(comparisonBytesTestData)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	noFastPath := func(e *gnata.Expression) bool { return !e.IsFastPath() && !e.IsFuncFastPath() }
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			evalBytesMatchesEvalCase(t, tC.expr, rawData, decoded, noFastPath)
+		})
+	}
+}
+
+// TestEvalBytes_PathGroup_MatchesEval checks that a path that groups its
+// result stays off the gjson fast paths, which would drop the group.
+func TestEvalBytes_PathGroup_MatchesEval(t *testing.T) {
+	testCases := []struct {
+		desc string
+		expr string
+	}{
+		{desc: "grouped path", expr: `Account.Order{OrderID: $count(Product)}`},
+		{desc: "builtin of a grouped path", expr: `$count(Account.Order{OrderID: 1})`},
+		{desc: "comparison of a grouped path", expr: `Account.Order{OrderID: 1} = 1`},
+		{desc: "boolean of a grouped path", expr: `$exists(Account.Order{OrderID: 1}) and true`},
+		{desc: "grouped builtin", expr: `$count(Account.Order){"k": $}`},
+		{desc: "comparison of a grouped builtin", expr: `$count(Account.Order){"k": $} = 3`},
+	}
+
+	rawData := json.RawMessage(comparisonBytesTestData)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	noFastPath := func(e *gnata.Expression) bool {
+		return !e.IsFastPath() && !e.IsFuncFastPath() && !e.IsComparisonFastPath() && !e.IsBooleanFastPath()
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			evalBytesMatchesEvalCase(t, tC.expr, rawData, decoded, noFastPath)
+		})
+	}
+}
+
+// TestEvalBytes_DistinctKeepsArray checks that the $distinct fast path, which
+// handles only a path that crosses no array, keeps its plain array an array.
+func TestEvalBytes_DistinctKeepsArray(t *testing.T) {
+	rawData := json.RawMessage(`{"m":["x","x"],"o":{"m":["x","x","y"]}}`)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	for _, expr := range []string{`$distinct(m)`, `$distinct(o.m)`} {
+		t.Run(expr, func(t *testing.T) {
+			evalBytesMatchesEvalCase(t, expr, rawData, decoded, (*gnata.Expression).IsFuncFastPath)
+		})
+	}
+}
+
 func TestEvalMap_ArrayAutoMap_MatchesEval(t *testing.T) {
 	testCases := []struct {
 		desc string
@@ -222,4 +292,21 @@ func TestEvalBytes_ComparisonLoneArrayAcrossArrays_MatchesEval(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Number comparisons on the raw-JSON fast paths compare float64 values, as
+// Eval and jsonata-js do, so an integer beyond 2^53 equals every literal
+// that rounds to the same float. Expected values are jsonata-js 2.2.2's.
+func TestEvalBytes_LargeIntegerComparison_MatchesEval(t *testing.T) {
+	const data = `{"f":123456789012345678,"a":{"g":9007199254740993},"h":-123456789012345678,"n":[{"f":123456789012345678}]}`
+	runExprCasesAllAPIs(t, []exprCase{
+		{expr: `f = 123456789012345680`, data: data, want: `true`},
+		{expr: `f = 123456789012345678`, data: data, want: `true`},
+		{expr: `f != 123456789012345680`, data: data, want: `false`},
+		{expr: `f = 123456789012345000`, data: data, want: `false`},
+		{expr: `a.g = 9007199254740992`, data: data, want: `true`},
+		{expr: `a.g != 9007199254740992`, data: data, want: `false`},
+		{expr: `h = -123456789012345680`, data: data, want: `true`},
+		{expr: `n.f = 123456789012345680`, data: data, want: `true`},
+	})
 }

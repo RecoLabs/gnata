@@ -389,7 +389,7 @@ func TestRegressionJSON(t *testing.T) { //nolint:funlen // TDT data
 			desc:    "empty_array_filter_keepArray",
 			expr:    `arr[][$contains($, "x")]`,
 			payload: `{"arr":[]}`,
-			want:    []any{},
+			want:    nil,
 		},
 		// $string serialization
 		{
@@ -501,9 +501,9 @@ func TestRegressionExpr(t *testing.T) {
 		expr: "$distinct([1])",
 		want: []any{float64(1)},
 	}, {
-		desc: "distinct_all_duplicates_literal_unwraps",
+		desc: "distinct_all_duplicates_literal_stays_array",
 		expr: "$distinct([1, 1, 1])",
-		want: float64(1),
+		want: []any{float64(1)},
 	}, {
 		desc: "distinct_no_unwrap_all_unique",
 		expr: "$distinct([1,2,3])",
@@ -603,7 +603,7 @@ func TestRegressionBytes(t *testing.T) {
 		payload json.RawMessage
 		want    any
 	}{{
-		desc:    "string_large_integer_preserves_precision",
+		desc:    "string_large_integer_keeps_digits",
 		expr:    "$string(id)",
 		payload: json.RawMessage(`{"id":123456789012345678}`),
 		want:    "123456789012345678",
@@ -617,6 +617,167 @@ func TestRegressionBytes(t *testing.T) {
 				t.Fatalf("eval: %v", err)
 			} else if !gnata.DeepEqual(got, tC.want) {
 				t.Fatalf("got %v, want %v", got, tC.want)
+			}
+		})
+	}
+}
+
+// rawNumberPayload holds numbers whose JSON text differs from the string
+// jsonata-js's $string gives for them, and integer literals beyond 2^53,
+// whose digits gnata keeps.
+const rawNumberPayload = `{"n":1.50,"a":0.1000000000000000055,"b":1.23456789012345678,"c":100.0,"d":1e2,"e":-0.0,` +
+	`"f":123456789012345678,"g":1E-7,"h":1e21,"o":{"x":1.50,"y":[100.0,-0.0,1e2]},` +
+	`"id":12345678901234567890,"neg":-12345678901234567890,"s":9007199254740993,"m":9007199254740992,` +
+	`"bigf":12345678901234567890.0,"bige":1.2345678901234567890e19,"huge":1234567890123456789012345,` +
+	`"obj":{"id":12345678901234567890,"tags":[12345678901234567890]}}`
+
+// rawNumberEntryPoints evaluate an expression against rawNumberPayload
+// through every entry point that decodes numbers as json.Number.
+var rawNumberEntryPoints = []struct {
+	desc string
+	eval func(t *testing.T, e *gnata.Expression) (any, error)
+}{{
+	desc: "Eval_DecodeJSON",
+	eval: func(t *testing.T, e *gnata.Expression) (any, error) {
+		t.Helper()
+		data, err := gnata.DecodeJSON(json.RawMessage(rawNumberPayload))
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return e.Eval(context.Background(), data)
+	},
+}, {
+	desc: "Eval_UseNumber",
+	eval: func(t *testing.T, e *gnata.Expression) (any, error) {
+		t.Helper()
+		dec := json.NewDecoder(strings.NewReader(rawNumberPayload))
+		dec.UseNumber()
+		var data any
+		if err := dec.Decode(&data); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return e.Eval(context.Background(), data)
+	},
+}, {
+	desc: "EvalBytes",
+	eval: func(_ *testing.T, e *gnata.Expression) (any, error) {
+		return e.EvalBytes(context.Background(), json.RawMessage(rawNumberPayload))
+	},
+}, {
+	desc: "EvalMap",
+	eval: func(t *testing.T, e *gnata.Expression) (any, error) {
+		t.Helper()
+		var data map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(rawNumberPayload), &data); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return e.EvalMap(context.Background(), data)
+	},
+}, {
+	desc: "StreamEvalMany",
+	eval: func(_ *testing.T, e *gnata.Expression) (any, error) {
+		se := gnata.NewStreamEvaluator([]*gnata.Expression{e})
+		results, err := se.EvalMany(context.Background(), json.RawMessage(rawNumberPayload), "k", []int{0})
+		if err != nil {
+			return nil, err
+		}
+		return results[0], nil
+	},
+}, {
+	desc: "StreamEvalMap",
+	eval: func(t *testing.T, e *gnata.Expression) (any, error) {
+		t.Helper()
+		var data map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(rawNumberPayload), &data); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		results, err := gnata.NewStreamEvaluator([]*gnata.Expression{e}).EvalMap(context.Background(), data, "k", []int{0})
+		if err != nil {
+			return nil, err
+		}
+		return results[0], nil
+	},
+}, {
+	desc: "StreamEvalPreparsed",
+	eval: func(t *testing.T, e *gnata.Expression) (any, error) {
+		t.Helper()
+		data, err := gnata.DecodeJSON(json.RawMessage(rawNumberPayload))
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		results, err := gnata.NewStreamEvaluator([]*gnata.Expression{e}).EvalPreparsed(context.Background(), data, "k", []int{0})
+		if err != nil {
+			return nil, err
+		}
+		return results[0], nil
+	},
+}}
+
+// TestStringRawNumbers checks that $string and & lay out numbers read from
+// raw JSON as jsonata-js does, through every entry point that keeps their text.
+func TestStringRawNumbers(t *testing.T) {
+	testCases := []struct {
+		desc    string
+		expr    string
+		decimal bool // compiled WithDecimalPrecision(30), which keeps every digit
+		want    any
+	}{
+		{desc: "trailing zero", expr: `$string(n)`, want: "1.5"},
+		{desc: "concat trailing zero", expr: `n & ""`, want: "1.5"},
+		{desc: "rounds to 15 digits", expr: `$string(a)`, want: "0.1"},
+		{desc: "rounds long fraction", expr: `$string(b)`, want: "1.23456789012346"},
+		{desc: "integer with fraction zero", expr: `$string(c)`, want: "100"},
+		{desc: "integer in exponent form", expr: `$string(d)`, want: "100"},
+		{desc: "negative zero", expr: `$string(e)`, want: "0"},
+		{desc: "concat negative zero", expr: `"x" & e`, want: "x0"},
+		// An integer literal beyond 2^53 keeps its digits (README known
+		// difference #36); jsonata-js prints the float64, as in the comments.
+		{desc: "beyond 2^53", expr: `$string(f)`, want: "123456789012345678"},            // 123456789012345680
+		{desc: "concat beyond 2^53", expr: `f & n`, want: "1234567890123456781.5"},       // 1234567890123456801.5
+		{desc: "large id", expr: `$string(id)`, want: "12345678901234567890"},            // 12345678901234567000
+		{desc: "concat large id", expr: `id & ""`, want: "12345678901234567890"},         // 12345678901234567000
+		{desc: "negative large id", expr: `$string(neg)`, want: "-12345678901234567890"}, // -12345678901234567000
+		{desc: "2^53 plus one", expr: `$string(s)`, want: "9007199254740993"},            // 9007199254740992
+		{desc: "beyond 1e21", expr: `$string(huge)`, want: "1234567890123456789012345"},  // 1.2345678901234568e+24
+		{desc: "nested large id", expr: `$string(obj)`, want: `{"id":12345678901234567890,"tags":[12345678901234567890]}`},
+		{desc: "concat nested large id", expr: `obj & ""`, want: `{"id":12345678901234567890,"tags":[12345678901234567890]}`},
+		// As in jsonata-js: 2^53 itself, a fraction or exponent, and a
+		// computed number print the float64, and comparisons use it.
+		{desc: "exactly 2^53", expr: `$string(m)`, want: "9007199254740992"},
+		{desc: "large with fraction", expr: `$string(bigf)`, want: "12345678901234567000"},
+		{desc: "large in exponent form", expr: `$string(bige)`, want: "12345678901234567000"},
+		{desc: "computed from large id", expr: `$string(id + 0)`, want: "12345678901234567000"},
+		{desc: "large ids compare as float64", expr: `id = 12345678901234567891`, want: true},
+		{desc: "small exponent", expr: `$string(g)`, want: "1e-7"},
+		{desc: "concat exponents", expr: `g & h`, want: "1e-71e+21"},
+		{desc: "large exponent", expr: `$string(h)`, want: "1e+21"},
+		{desc: "object", expr: `$string(o)`, want: `{"x":1.5,"y":[100,0,100]}`},
+		{desc: "concat object", expr: `o & ""`, want: `{"x":1.5,"y":[100,0,100]}`},
+		{desc: "prettified object", expr: `$string(o, true)`, want: "{\n  \"x\": 1.5,\n  \"y\": [\n    100,\n    0,\n    100\n  ]\n}"},
+		{desc: "array", expr: `$string([n, f])`, want: "[1.5,123456789012345678]"},
+		{desc: "mapped over array", expr: `o.y.$string()`, want: []any{"100", "0", "100"}},
+		{desc: "decimal keeps digits", expr: `$string(f)`, decimal: true, want: "123456789012345678"},
+		{desc: "decimal concat keeps digits", expr: `f & ""`, decimal: true, want: "123456789012345678"},
+		{desc: "decimal object keeps digits", expr: `$string([f, b])`, decimal: true, want: "[123456789012345678,1.23456789012345678]"},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			var opts []gnata.Option
+			if tC.decimal {
+				opts = append(opts, gnata.WithDecimalPrecision(30))
+			}
+			e, err := gnata.Compile(tC.expr, opts...)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			for _, ep := range rawNumberEntryPoints {
+				got, err := ep.eval(t, e)
+				if err != nil {
+					t.Fatalf("%s: %v", ep.desc, err)
+				}
+				if !gnata.DeepEqual(got, tC.want) {
+					t.Fatalf("%s: got %#v, want %#v", ep.desc, got, tC.want)
+				}
 			}
 		})
 	}
@@ -819,8 +980,8 @@ func TestDecimalPaths(t *testing.T) {
 		{desc: "path_array_mixed", expr: "a.b", payload: `{"a":[{"b":"x"},{"b":null},{"b":true},{"b":2}]}`, want: `["x",null,true,2]`, sameInFloat64: true},
 		{desc: "path_eq_beyond_2^53", expr: "a = 9007199254740992", payload: `{"a":9007199254740993}`, want: `false`}, // float64: 2^53 rounding
 		{desc: "path_eq_string", expr: `a = "x"`, payload: `{"a":"x"}`, want: `true`, sameInFloat64: true},
-		{desc: "path_distinct", expr: "$distinct(a)", payload: `{"a":[9007199254740993.5,9007199254740993.5]}`, want: `9007199254740993.5`}, // float64: 2^53 rounding
-		{desc: "path_string", expr: "$string(a)", payload: `{"a":9007199254740993}`, want: `"9007199254740993"`, sameInFloat64: true},
+		{desc: "path_distinct", expr: "$distinct(a)", payload: `{"a":[9007199254740993.5,9007199254740993.5]}`, want: `[9007199254740993.5]`}, // float64: 2^53 rounding
+		{desc: "path_string", expr: "$string(a)", payload: `{"a":9007199254740993}`, want: `"9007199254740993"`},
 	})
 }
 
@@ -834,8 +995,8 @@ func TestDecimalComparison(t *testing.T) {
 		{desc: "eq_float_operand", expr: "$count([1,2]) = a", payload: `{"a":2.0}`, want: `true`, sameInFloat64: true},
 		{desc: "lt_uint256", expr: "a < " + u256, payload: `{"a":` + u255 + `}`, want: `true`, sameInFloat64: true},
 		{desc: "ge_uint256", expr: "a >= " + u256, payload: `{"a":` + u256 + `}`, want: `true`, sameInFloat64: true},
-		{desc: "order_by_beyond_2^53", expr: "a^(>$).$string()", payload: `{"a":[9007199254740993,9007199254740995,9007199254740994]}`, want: `["9007199254740995","9007199254740994","9007199254740993"]`, sameInFloat64: true},
-		{desc: "sort_beyond_2^53", expr: "$sort(a).$string()", payload: `{"a":[9007199254740995,9007199254740993,9007199254740994]}`, want: `["9007199254740993","9007199254740994","9007199254740995"]`, sameInFloat64: true},
+		{desc: "order_by_beyond_2^53", expr: "a^(>$).$string()", payload: `{"a":[9007199254740993,9007199254740995,9007199254740994]}`, want: `["9007199254740995","9007199254740994","9007199254740993"]`},
+		{desc: "sort_beyond_2^53", expr: "$sort(a).$string()", payload: `{"a":[9007199254740995,9007199254740993,9007199254740994]}`, want: `["9007199254740993","9007199254740994","9007199254740995"]`},
 		{desc: "sort_strings", expr: `$sort(["b","a"])`, want: `["a","b"]`, sameInFloat64: true},
 		{desc: "sort_mixed", expr: `$sort([1,"a"])`, code: "D3070", sameInFloat64: true},
 		{desc: "le_decimal", expr: "1.5 <= 2", want: `true`, sameInFloat64: true},
@@ -875,7 +1036,7 @@ func TestDecimalFunctions(t *testing.T) {
 		{desc: "number_binary", expr: `$number("0b101")`, want: `5`, sameInFloat64: true},
 		{desc: "number_octal", expr: `$number("0o17")`, want: `15`, sameInFloat64: true},
 		{desc: "number_hex_invalid", expr: `$number("0xzz")`, code: "D3030", sameInFloat64: true},
-		{desc: "abs_no_args", expr: "$abs()", code: "T0410", sameInFloat64: true},
+		{desc: "abs_object_context", expr: "$abs()", code: "T0411", sameInFloat64: true},
 		{desc: "abs_float", expr: `$abs($length("ab"))`, want: `2`, sameInFloat64: true},
 		{desc: "round_float", expr: `$round($length("ab"))`, want: `2`, sameInFloat64: true},
 		{desc: "round_overflow", expr: "$round(a, -308)", payload: `{"a":9.5e308}`, code: "T0410", sameInFloat64: true},
@@ -912,7 +1073,7 @@ func TestDecimalFunctions(t *testing.T) {
 		{desc: "format_number_scale_overflow", expr: `$formatNumber(a, "0‰")`, payload: `{"a":9e307}`, want: `"+Inf‰"`, sameInFloat64: true},
 		{desc: "format_number_long_picture", expr: `$formatNumber(1.5, p)`, payload: `{"p":"0.` + strings.Repeat("0", 10_001) + `"}`, want: `"1.5` + strings.Repeat("0", 10_000) + `"`, sameInFloat64: true},
 		{desc: "format_number_picture_number", expr: `$formatNumber(1.5, 1)`, code: "T0410", sameInFloat64: true},
-		{desc: "format_number_no_picture", expr: `$formatNumber(a)`, payload: `{"a":1.5}`, code: "D3006", sameInFloat64: true},
+		{desc: "format_number_no_picture", expr: `$formatNumber(a)`, payload: `{"a":1.5}`, code: "T0410", sameInFloat64: true},
 		{desc: "format_number_bad_negative_picture", expr: `$formatNumber(1.5, "0;0.0.0")`, code: "D3081", sameInFloat64: true},
 		{desc: "format_number_two_separators", expr: `$formatNumber(1.5, "#;#;#")`, code: "D3080", sameInFloat64: true},
 		{desc: "format_base_uint256", expr: `$formatBase(a, 16)`, payload: `{"a":` + u256 + `}`, want: `"` + strings.Repeat("f", 64) + `"`}, // float64: int64 overflow
@@ -930,7 +1091,7 @@ func TestDecimalFunctions(t *testing.T) {
 		{desc: "power_fractional_exponent", expr: `$power(4, 0.5)`, want: `2`, sameInFloat64: true},
 		{desc: "power_zero_negative", expr: `$power(0, -1)`, code: "D3061", sameInFloat64: true},
 		{desc: "power_overflow", expr: `$power(10, 400)`, code: "D3061", sameInFloat64: true},
-		{desc: "power_one_argument", expr: `$power(2)`, code: "T0410", sameInFloat64: true},
+		{desc: "power_object_context", expr: `$power(2)`, code: "T0411", sameInFloat64: true},
 		{desc: "sqrt", expr: `$sqrt(2)`, want: "1.41421356237309504880168872420969807856967187537694807317667973799073247846211"},
 		{desc: "sqrt_exact", expr: `$sqrt(a)`, payload: `{"a":152415787532388367504942236884722755800955129}`, want: "12345678901234567890123"},
 		{desc: "sqrt_negative", expr: `$sqrt(-1)`, code: "D3060", sameInFloat64: true},
@@ -994,7 +1155,7 @@ func TestDecimalString(t *testing.T) {
 		{desc: "string_computed_small", expr: `$string(0.000001 / 10)`, want: `"1e-7"`, sameInFloat64: true},
 		{desc: "concat_computed_exponent", expr: `"x" & 10 ** 21`, want: `"x1e+21"`, sameInFloat64: true},
 		{desc: "string_array", expr: `$string([1e21, 0.5, a])`, payload: `{"a":0.30000000000000001}`, want: `"[1e+21,0.5,0.30000000000000001]"`},
-		{desc: "string_matches_value", expr: `$string(a) = "0.3"`, payload: `{"a":0.30000000000000004}`, want: "false", sameInFloat64: true},
+		{desc: "string_matches_value", expr: `$string(a) = "0.3"`, payload: `{"a":0.30000000000000004}`, want: "false"},
 		{desc: "string_small_exponent", expr: `$string(1.5e-7)`, want: `"1.5e-7"`, sameInFloat64: true},
 		{desc: "string_small_plain", expr: `$string(a)`, payload: `{"a":1.5e-6}`, want: `"0.0000015"`, sameInFloat64: true},
 	})

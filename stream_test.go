@@ -502,6 +502,57 @@ func TestStreamEvaluator_EvalMap_NilAndEmpty(t *testing.T) {
 	}
 }
 
+// TestStreamEvaluator_EvalMap_EmptyObject verifies that an empty map is the
+// empty object {}, through the fast paths and the full evaluator alike, and
+// that a nil map is no input.
+func TestStreamEvaluator_EvalMap_EmptyObject(t *testing.T) {
+	testCases := []struct {
+		expr      string
+		wantEmpty any
+		wantNil   any
+	}{
+		{expr: `$`, wantEmpty: map[string]any{}},
+		{expr: `$type($)`, wantEmpty: "object"},
+		{expr: `$count($keys($))`, wantEmpty: float64(0), wantNil: float64(0)},
+		{expr: `$exists($)`, wantEmpty: true, wantNil: false},
+		{expr: `$count($)`, wantEmpty: float64(1), wantNil: float64(0)},
+		{expr: `$string($)`, wantEmpty: "{}"},
+		{expr: `$boolean($)`, wantEmpty: false},
+		{expr: `$keys($)`},
+		{expr: `a`},
+		{expr: `$exists(a)`, wantEmpty: false, wantNil: false},
+		{expr: `a = 1`, wantEmpty: false, wantNil: false},
+		{expr: `$count(a)`, wantEmpty: float64(0), wantNil: float64(0)},
+		{expr: `$not($exists(a))`, wantEmpty: true, wantNil: true},
+		{expr: `$merge([$, {"b":1}])`, wantEmpty: map[string]any{"b": float64(1)}, wantNil: map[string]any{"b": float64(1)}},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) {
+			se := gnata.NewStreamEvaluator(nil)
+			idx, err := se.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			for _, schemaKey := range []string{"", "s"} {
+				results, err := se.EvalMap(context.Background(), map[string]json.RawMessage{}, schemaKey, []int{idx})
+				if err != nil {
+					t.Fatalf("EvalMap(empty, %q): %v", schemaKey, err)
+				}
+				if !gnata.DeepEqual(results[0], tC.wantEmpty) {
+					t.Fatalf("EvalMap(empty, %q): got %#v, want %#v", schemaKey, results[0], tC.wantEmpty)
+				}
+				results, err = se.EvalMap(context.Background(), nil, schemaKey, []int{idx})
+				if err != nil {
+					t.Fatalf("EvalMap(nil, %q): %v", schemaKey, err)
+				}
+				if !gnata.DeepEqual(results[0], tC.wantNil) {
+					t.Fatalf("EvalMap(nil, %q): got %#v, want %#v", schemaKey, results[0], tC.wantNil)
+				}
+			}
+		})
+	}
+}
+
 // TestStreamEvaluator_EvalMap_FastPaths verifies that EvalMap takes the same
 // fast paths (pure path, comparison, function) as EvalMany, using MetricsHook
 // to confirm fastPath=true.

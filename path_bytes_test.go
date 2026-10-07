@@ -30,14 +30,16 @@ const pathBytesTestData = `{
 // evalBytesMatchesEvalCase runs one EvalBytes-vs-Eval differential check,
 // shared by the pure-path and aggregate-fast test suites below (they differ
 // only in which fast-path classifier they assert and the fixture used).
-func evalBytesMatchesEvalCase(t *testing.T, expr string, rawData json.RawMessage, decoded any, wantFastPath func(*gnata.Expression) bool) {
+func evalBytesMatchesEvalCase(
+	t *testing.T, expr string, rawData json.RawMessage, decoded any, wantClassifier func(*gnata.Expression) bool,
+) {
 	t.Helper()
 	compiled, err := gnata.Compile(expr)
 	if err != nil {
 		t.Fatalf("Compile(%q): %v", expr, err)
 	}
-	if !wantFastPath(compiled) {
-		t.Fatalf("Compile(%q): expected the relevant fast-path classifier to be true", expr)
+	if !wantClassifier(compiled) {
+		t.Fatalf("Compile(%q): fast-path classification mismatch", expr)
 	}
 
 	wantResult, wantErr := compiled.Eval(context.Background(), decoded)
@@ -175,5 +177,31 @@ func TestEvalBytes_ArrayAutoMap_FallsBackOnScalarStep(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("EvalBytes(%q) = %#v, want nil (undefined)", "Account.Name.Missing", got)
+	}
+}
+
+func TestEvalBytes_GroupOrIndex_NotFastPath(t *testing.T) {
+	testCases := []struct {
+		desc string
+		expr string
+	}{
+		{desc: "group after a plain path", expr: `Account.Order{OrderID: $count(Product)}`},
+		{desc: "group after an index binding", expr: `Account.Order#$i{OrderID: $i}`},
+		{desc: "group after a bound [] step", expr: `Account.Order#$i[]{OrderID: $i}`},
+		{desc: "index binding on a name step", expr: `Account.Order.OrderID#$i`},
+		{desc: "index binding after a dropped []", expr: `Account.Order.Product.SKU#$i[]`},
+	}
+
+	rawData := json.RawMessage(pathBytesTestData)
+	var decoded any
+	if err := json.Unmarshal(rawData, &decoded); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+
+	notFastPath := func(e *gnata.Expression) bool { return !e.IsFastPath() }
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			evalBytesMatchesEvalCase(t, tC.expr, rawData, decoded, notFastPath)
+		})
 	}
 }
