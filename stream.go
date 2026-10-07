@@ -255,6 +255,7 @@ func (se *StreamEvaluator) EvalManyWithVars(
 
 // EvalMap evaluates the specified expressions against a map of raw JSON values.
 //   - data: map of field names to raw JSON-encoded values (decoded individually).
+//     An empty map is the empty object {}; a nil map means no input, so $ is undefined.
 //   - schemaKey: external key identifying the event schema. On first encounter, builds
 //     and caches a GroupPlan. Subsequent calls are lock-free. Pass "" to disable caching.
 //   - exprIndices: which compiled expressions to evaluate.
@@ -439,7 +440,7 @@ func (b *evalBatch) tryFastPaths(i, idx int, start time.Time, expr *Expression) 
 func (b *evalBatch) fullEval(ctx context.Context, idx int, expr *Expression, start time.Time) (any, error) {
 	if !b.parseAttempted {
 		b.parseAttempted = true
-		if len(b.mapData) > 0 {
+		if b.mapData != nil {
 			b.parsed, b.parsedErr = evaluator.DecodeRawMap(b.mapData)
 		} else if len(b.data) > 0 {
 			b.parsed, b.parsedErr = evaluator.DecodeInput(b.data)

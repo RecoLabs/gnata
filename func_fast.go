@@ -97,18 +97,39 @@ func evalFunc(f *parser.FuncFastPath, data json.RawMessage, mapData map[string]j
 		exists := pathExistsWalked(f, data, mapData)
 		return exists, true, nil
 	}
+	if f.Kind == parser.FuncFastContains {
+		return containsWalked(f, data, mapData)
+	}
 	values, ok := walkedValues(f, data, mapData)
 	if !ok {
 		return nil, false, nil
 	}
-	//nolint:exhaustive // only the aggregate and contains kinds are handled; other kinds fall through to the (nil, false, nil) fallback below
+	//nolint:exhaustive // only the aggregate kinds are handled; other kinds fall through to the (nil, false, nil) fallback below
 	switch f.Kind {
 	case parser.FuncFastSum, parser.FuncFastCount, parser.FuncFastMax, parser.FuncFastMin, parser.FuncFastAverage:
 		if aggResult, aggOK := aggregateFastValues(f.Kind, values); aggOK {
 			return aggResult, true, nil
 		}
-	case parser.FuncFastContains:
-		return containsAnyValue(values, f.StrArg), true, nil
+	}
+	return nil, false, nil
+}
+
+// containsWalked applies $contains to f's path resolved across array
+// boundaries: one value is the argument itself, which a non-string scalar or
+// an object fails as T0410 in the full evaluator, and a sequence is an array
+// searched for strings.
+func containsWalked(
+	f *parser.FuncFastPath, data json.RawMessage, mapData map[string]json.RawMessage,
+) (result any, handled bool, err error) {
+	resolved, ok := walkPureStepsResolved(f.PathSteps, data, mapData)
+	if !ok {
+		return nil, false, nil
+	}
+	switch val := resolved.(type) {
+	case gjson.Result:
+		return evalFuncContains(&val, f)
+	case []gjson.Result:
+		return containsAnyValue(val, f.StrArg), true, nil
 	}
 	return nil, false, nil
 }
@@ -311,9 +332,7 @@ func evalFuncDistinct(r *gjson.Result, _ *parser.FuncFastPath) (result any, hand
 		seen := map[string]struct{}{}
 		out := make([]any, 0)
 		hasComplex := false
-		inputLen := 0
 		r.ForEach(func(_, elem gjson.Result) bool {
-			inputLen++
 			var key string
 			//nolint:exhaustive // only handle scalar types; complex types fall through
 			switch elem.Type {
@@ -340,13 +359,8 @@ func evalFuncDistinct(r *gjson.Result, _ *parser.FuncFastPath) (result any, hand
 		if hasComplex {
 			return nil, false, nil
 		}
-		// Singleton unwrap: mirrors *Sequence + CollapseSequence in the full
-		// evaluator path. inputLen > 1 corresponds to the len(arr) <= 1
-		// early-return guard in fnDistinct that skips Sequence wrapping
-		// when no dedup was needed.
-		if len(out) == 1 && inputLen > 1 {
-			return out[0], true, nil
-		}
+		// The path resolves without crossing an array, so its value is one
+		// plain array, which $distinct keeps an array (see argShape).
 		return out, true, nil
 	}
 	return nil, false, nil

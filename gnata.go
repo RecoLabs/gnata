@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -65,6 +64,12 @@ type Option func(*compileOptions)
 // error D1011. Without this option, gnata still enforces its built-in limit
 // of 100 (error U1001) — WithStack only changes the limit and the resulting
 // error code, matching jsonata-js's `stack` guardrail.
+// Calls through partial applications, compositions, builtin function
+// arguments, transforms and builtins passed as higher-order functions'
+// callbacks have a separate fixed limit of 1,500 nested calls (U1001), which
+// WithStack does not change. A call to a lambda whose body nests more than 32
+// levels deep also spends one unit per 3 levels beyond from that limit, and a
+// call to a transform one unit plus one per 3 levels of its clauses.
 func WithStack(n int) Option {
 	return func(o *compileOptions) { o.stack = n }
 }
@@ -82,11 +87,19 @@ func WithTimeout(d time.Duration) Option {
 	return func(o *compileOptions) { o.timeout = d }
 }
 
-// WithSequence limits the length of sequences built during evaluation: the
-// range operator (..), $append, $map, $filter, $each, wildcard (*), and
-// descendant (**). Exceeding it returns error D2015, matching jsonata-js's
-// `sequence` guardrail. Without this option, only the built-in 10,000,000
-// element hard caps (D2014 / D3010) apply.
+// WithSequence limits the length of sequences built during evaluation, as
+// jsonata-js's `sequence` guardrail does: the range operator (..), array
+// constructors, group-by, sorts, filters (including positions a filter
+// repeats, a[[0,0]]), $append, $map, $filter, $each, $keys, $spread,
+// $lookup, $match, wildcard (*), descendant (**), every path step and every
+// tuple stream of a #/@ binding. Exceeding it returns error D2015. As in
+// jsonata-js, a path step mapping over input data counts too, so a.b over
+// more than n items of a exceeds it; a last step returning an array stored
+// in the data, the value of its only context that yields one, is exempt.
+// The gjson fast paths keep only lookups that never cross an array, and
+// $keys, whose result is bounded, falls back to the full evaluator too.
+// Without this option, only the built-in 10,000,000 element hard caps
+// (D2014 / D3010) apply.
 func WithSequence(n int) Option {
 	return func(o *compileOptions) { o.sequence = n }
 }
@@ -112,12 +125,7 @@ func WithDecimalPrecision(digits int) Option {
 // Compile parses a JSONata expression string and returns an Expression.
 // The returned Expression is goroutine-safe and should be reused across calls.
 func Compile(expr string, opts ...Option) (*Expression, error) {
-	p := parser.NewParser(expr)
-	ast, err := p.Parse()
-	if err != nil {
-		return nil, err
-	}
-	ast, err = parser.ProcessAST(ast)
+	ast, err := parser.ParseAndProcess(expr)
 	if err != nil {
 		return nil, err
 	}
@@ -135,8 +143,11 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 		if o.decimalPrecision > 0 {
 			fp.DecimalSafe()
 		}
+		if o.sequence > 0 {
+			fp.SequenceLimited()
+		}
 	}
-	return &Expression{
+	e := &Expression{
 		src:       expr,
 		ast:       ast,
 		fastPath:  fp.IsFastPath,
@@ -146,7 +157,8 @@ func Compile(expr string, opts ...Option) (*Expression, error) {
 		funcFast:  fp.FuncFast,
 		boolFast:  fp.BoolFast,
 		options:   o,
-	}, nil
+	}
+	return e, nil
 }
 
 // CustomFunc is a user-defined function that can be registered with gnata.
@@ -185,99 +197,50 @@ func newEnv(customFuncs map[string]CustomFunc, sharedArgs bool) *evaluator.Envir
 	functions.RegisterAll(env, evaluator.ApplyFunction)
 	for name, fn := range customFuncs {
 		wrapped := wrapCustomFunc(fn, sharedArgs)
-		env.Bind(name, evaluator.BuiltinFunction(wrapped))
+		env.Bind(name, wrapped)
 	}
 	return env
 }
 
 // wrapCustomFunc wraps a user-provided custom function to normalize
-// internal evaluator types (OrderedMap, Null sentinel) into standard
-// Go types (map[string]any, nil) before the function sees them.
-func wrapCustomFunc(fn CustomFunc, sharedArgs bool) CustomFunc {
-	return func(args []any, focus any) (any, error) {
+// internal evaluator types (OrderedMap, Null sentinel, regex) into standard
+// Go types (map[string]any, nil) before the function sees them. A regex
+// argument arrives as a {"pattern", "flags"} map, and returning that same map
+// returns the regex; any other map of that shape is an object.
+func wrapCustomFunc(fn CustomFunc, sharedArgs bool) evaluator.EnvAwareBuiltin {
+	return func(args []any, focus any, env *evaluator.Environment) (any, error) {
+		var passed evaluator.RegexMaps
 		for i, a := range args {
-			args[i] = normalizeValue(a, sharedArgs)
+			normalized, err := evaluator.NormalizeTree(a, sharedArgs, &passed, env)
+			if err != nil {
+				return nil, err
+			}
+			args[i] = normalized
 		}
-		return fn(args, normalizeValue(focus, sharedArgs))
+		focus, err := evaluator.NormalizeTree(focus, sharedArgs, &passed, env)
+		if err != nil {
+			return nil, err
+		}
+		result, err := fn(args, focus)
+		if re := passed.Lookup(result); re != nil {
+			return re, err
+		}
+		return result, err
 	}
 }
 
 // NormalizeValue converts internal evaluator types to standard Go types.
-// OrderedMap becomes map[string]any, the null sentinel becomes nil,
-// and slices are recursively normalized only when they contain internal types.
+// OrderedMap becomes map[string]any, the null sentinel becomes nil, a regex
+// becomes its {"pattern", "flags"} map, and slices are recursively normalized
+// only when they contain internal types.
 // Scalar values and slices of pure scalars pass through without allocation:
 // maps in the result are always freshly allocated and may be modified, but
 // slices may be the caller's own and must not be modified in place.
+// Arrays holding no map that the input shares may come back shared, but
+// every occurrence of an object gets a map of its own.
 func NormalizeValue(v any) any {
-	return normalizeValue(v, false)
-}
-
-// normalizeValue implements NormalizeValue. With shared, objects decoded from
-// input JSON return a normalized map cached on the object and shared by every
-// caller, which must therefore not modify it.
-func normalizeValue(v any, shared bool) any {
-	if v == nil {
-		return nil
-	}
-	if evaluator.IsNull(v) {
-		return nil
-	}
-	switch val := v.(type) {
-	case *evaluator.Sequence:
-		return normalizeValue(evaluator.CollapseSequence(val), shared)
-	case *evaluator.OrderedMap:
-		if shared {
-			return evaluator.NormalizedView(val, normalizeOrderedMapShared)
-		}
-		return normalizeOrderedMap(val, false)
-	case []any:
-		return normalizeSlice(val, shared)
-	case evaluator.ConsArray:
-		return normalizeSlice([]any(val), shared)
-	}
-	return v
-}
-
-func normalizeOrderedMapShared(om *evaluator.OrderedMap) map[string]any {
-	return normalizeOrderedMap(om, true)
-}
-
-func normalizeOrderedMap(om *evaluator.OrderedMap, shared bool) map[string]any {
-	m := om.ToMap()
-	out := make(map[string]any, len(m))
-	for k, mv := range m {
-		out[k] = normalizeValue(mv, shared)
-	}
+	out, _ := evaluator.NormalizeTree(v, false, nil, nil)
 	return out
-}
-
-// normalizeSlice only allocates a copy when at least one element
-// needs conversion (OrderedMap, null sentinel, or nested slice).
-func normalizeSlice(s []any, shared bool) any {
-	needsCopy := slices.ContainsFunc(s, needsNormalize)
-	if !needsCopy {
-		return s
-	}
-	out := make([]any, len(s))
-	for i, elem := range s {
-		out[i] = normalizeValue(elem, shared)
-	}
-	return out
-}
-
-func needsNormalize(v any) bool {
-	if v == nil {
-		return false
-	}
-	switch v.(type) {
-	case *evaluator.OrderedMap:
-		return true
-	case *evaluator.Sequence:
-		return true
-	case []any:
-		return true
-	}
-	return evaluator.IsNull(v)
 }
 
 func recoverEvalPanic(errp *error) { //nolint:gocritic // ptrToRefParam: must mutate caller's error via pointer
@@ -314,6 +277,7 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 		}
 	}
 	env.Bind("$", data)
+	env.SetRootInput(data)
 	for k, v := range vars {
 		env.Bind(k, v)
 	}
@@ -327,7 +291,10 @@ func (e *Expression) evalCore(ctx context.Context, data any, parent *evaluator.E
 	if seq, ok := result.(*evaluator.Sequence); ok {
 		result = evaluator.CollapseSequence(seq)
 	}
-	return evaluator.StripCons(result), nil
+	if re, ok := result.(*evaluator.RegexLiteral); ok {
+		return re.ToMap(), nil
+	}
+	return evaluator.StripTypedArrays(result), nil
 }
 
 // Eval evaluates the expression against pre-parsed Go data (map[string]any, []any, scalar, nil).
@@ -533,6 +500,10 @@ func resolvePurePath(
 		return gjsonValue(&res, useNumber), true
 	}
 	switch {
+	case len(steps) == 0:
+		// The analysis gave no walk to fall back to (see
+		// parser's SequenceLimited).
+		return nil, false
 	case data != nil:
 		return walkPureStepsBytes(steps, data, useNumber)
 	case mapData != nil:
@@ -600,14 +571,9 @@ func matchComparison(lhs *gjson.Result, c *parser.ComparisonFastPath) (match, ok
 	case parser.RHSKindString:
 		match = lhs.Type == gjson.String && lhs.String() == c.RHSString
 	case parser.RHSKindNumber:
-		if lhs.Type != gjson.Number {
-			break
-		}
-		if isCanonicalInteger(lhs.Raw) && isCanonicalInteger(c.RHSNumberStr) {
-			match = lhs.Raw == c.RHSNumberStr
-		} else {
-			match = lhs.Float() == c.RHSNumber
-		}
+		// Compared as float64, as Eval and jsonata-js compare numbers, so
+		// integers beyond 2^53 that round to the same float are equal.
+		match = lhs.Type == gjson.Number && lhs.Float() == c.RHSNumber
 	case parser.RHSKindBool:
 		if c.RHSBool {
 			match = lhs.Type == gjson.True
@@ -737,10 +703,10 @@ func (e *Expression) RequiredPaths() []string {
 
 // DeepEqual reports whether two JSONata values are structurally equal.
 // This is the same equality used by the = and != operators.
+// The null sentinel equals nil, so evaluator output compares equal to values
+// decoded by encoding/json, where JSON null becomes nil.
 func DeepEqual(a, b any) bool {
-	// Delegates to the internal evaluator implementation.
-	// Imported here so callers don't need to reference internal packages.
-	return deepEqualInternal(a, b)
+	return evaluator.DeepEqualNullAsNil(a, b)
 }
 
 // IsNull reports whether v is the JSONata null sentinel value.
