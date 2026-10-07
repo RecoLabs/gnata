@@ -32,7 +32,7 @@ const (
 	TokenStar      // *  bp=60
 	TokenSlash     // /  bp=60
 	TokenPercent   // %  bp=60
-	TokenPipe      // |  bp=20
+	TokenPipe      // |  bp=0
 	TokenEquals    // =  bp=40
 	TokenLT        // <  bp=40
 	TokenGT        // >  bp=40

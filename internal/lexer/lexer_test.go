@@ -270,8 +270,27 @@ func TestLexerRegex(t *testing.T) {
 		// Asymmetric escaping: only one side of a bracket pair is escaped.
 		{"asym escaped open bracket", `/a\[b]/`, `a\[b]`, "g", false, ""},
 		{"asym escaped open brace", `/a\{b}/`, `a\{b}`, "g", false, ""},
-		{"asym escaped open paren", `/\(a)/`, `\(a)`, "g", false, ""},
-		{"asym escaped close paren", `/(a\)/`, `(a\)`, "g", false, ""},
+		{"unbalanced close paren", `/\(a)/`, "", "", true, "S0302"},
+		// An escaped closer closes nothing, as in jsonata-js, so ( stays open.
+		{"asym escaped close paren", `/(a\)/`, "", "", true, "S0302"},
+		// Escaped closers and slashes, inside a group and outside one.
+		{"escaped } in group", `/(\})/`, `(\})`, "g", false, ""},
+		{"escaped } outside group", `/a\}/`, `a\}`, "g", false, ""},
+		{"escaped ] in group", `/(\])/`, `(\])`, "g", false, ""},
+		{"escaped ] outside group", `/a\]/`, `a\]`, "g", false, ""},
+		{"escaped ) in group", `/(\))/`, `(\))`, "g", false, ""},
+		{"escaped ) outside group", `/a\)/`, `a\)`, "g", false, ""},
+		{"escaped / in group", `/(\/)/`, `(\/)`, "g", false, ""},
+		{"escaped / outside group", `/\//`, `\/`, "g", false, ""},
+		{"escaped } in nested groups", `/((a\})b)/`, `((a\})b)`, "g", false, ""},
+		{"escaped } in a quantified group", `/(\}){2}/`, `(\}){2}`, "g", false, ""},
+		{"escaped } and ) in a class in a group", `/([\}\)])/`, `([\}\)])`, "g", false, ""},
+		// A } that closes no { is a literal, also inside a group.
+		{"literal } in group", `/(a})/`, `(a})`, "g", false, ""},
+		// A { left open in a group keeps the group open, as in jsonata-js.
+		{"unclosed { in group", `/({)/`, "", "", true, "S0302"},
+		{"unclosed { after a literal in group", `/(a{)/`, "", "", true, "S0302"},
+		{"quantifier in group", `/(a{2})/`, `(a{2})`, "g", false, ""},
 		{"escaped ] inside class", `/[a\]b]/`, `[a\]b]`, "g", false, ""},
 		{"escaped ) inside class", `/[\)]/`, `[\)]`, "g", false, ""},
 		{"slash inside class", `/[a/b]/`, `[a/b]`, "g", false, ""},
@@ -281,11 +300,22 @@ func TestLexerRegex(t *testing.T) {
 			`(-foo|\bbar\b)\s*\(?\s*x\.y\s+-?eq\s+"z"`,
 			"g", false, "",
 		},
-		// Even backslash count means a literal '\' then an unescaped '('.
-		{"even backslashes nest", `/\\(/x)/`, `\\(/x)`, "g", false, ""},
+		// As in jsonata-js, a bracket right after a '\' opens nothing, even
+		// when that '\' is itself escaped, so the next / closes the regex.
+		{"bracket after an escaped backslash", `/\\(/x)/`, `\\(`, "g", false, ""},
+		// jsonata-js's one depth count, classes included, closes these.
+		{"} closing a { left open in a group", `/(a{)}/`, `(a{)}`, "g", false, ""},
+		{") and ] closing { and [ in a group", `/({[)])/`, `({[)])`, "g", false, ""},
+		{"} and ] closing [ and { in a group", `/({[}])/`, `({[}])`, "g", false, ""},
+		{") closing [ then ) closing {", `/([)]{)/`, `([)]{)`, "g", false, ""},
+		// Where jsonata-js finds no closing /, gnata reads classes and takes
+		// a ] or } that closes nothing as a literal, as RE2 does.
+		{") in a class", `/[)]/`, `[)]`, "g", false, ""},
+		{"stray ]", `/a]/`, `a]`, "g", false, ""},
+		{"stray }", `/a}/`, `a}`, "g", false, ""},
 		{"empty pattern", `//`, "", "", true, "S0301"},
 		{"unterminated", `/hello`, "", "", true, "S0302"},
-		{"invalid flag", `/foo/x`, "", "", true, "S0302"},
+		{"letter after flags", `/foo/ix`, "foo", "ig", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -607,4 +637,14 @@ func TestLexerSequence(t *testing.T) { //nolint:funlen // test data table
 			t.Fatalf("token[2]: got type=%v value=%q", tokens[2].Type, tokens[2].Value)
 		}
 	})
+}
+
+func TestLongCommentRun(t *testing.T) {
+	tokens, err := tokenizeAll(strings.Repeat("/* c */", 1_000_000) + "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 1 || tokens[0].Type != lexer.TokenNumber {
+		t.Fatalf("want a single number token, got %v", tokens)
+	}
 }

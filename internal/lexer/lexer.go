@@ -5,7 +5,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -45,10 +44,70 @@ func isEscapedAt(src string, start, pos int) bool {
 	return bsCount%2 == 1
 }
 
+// regexEnd returns the position of the / closing the regex whose pattern
+// starts at start, as jsonata-js's scanRegex finds it: one depth count, which
+// every (, [ or { not right after a \ raises and every ), ] or } lowers,
+// classes included, must be zero at a / not escaped by an odd run of \.
+func regexEnd(src string, start int) (int, bool) {
+	depth := 0
+	for pos := start; pos < len(src); pos++ {
+		switch c := src[pos]; {
+		case c == '/' && depth == 0 && !isEscapedAt(src, start, pos):
+			return pos, true
+		case src[pos-1] == '\\':
+		case c == '(' || c == '[' || c == '{':
+			depth++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+		}
+	}
+	return 0, false
+}
+
+// lenientRegexEnd is regexEnd for a regex jsonata-js cannot close, read as
+// RE2 reads it: a / or bracket in a character class is part of the class,
+// a ] or a } that closes nothing is a literal, and a ) closes the innermost
+// open ( or {, so a { left open in a group keeps the group open.
+func lenientRegexEnd(src string, start int) (int, bool) {
+	// open holds the unclosed ( and { outside classes, innermost last;
+	// unmatched counts ) that closed nothing, which a later ( cancels.
+	var open []byte
+	unmatched := 0
+	inClass := false
+	for pos := start; pos < len(src); pos++ {
+		c := src[pos]
+		if isEscapedAt(src, start, pos) {
+			continue
+		}
+		switch {
+		case c == '[' || c == ']':
+			inClass = c == '['
+		case inClass:
+		case c == '(' && unmatched > 0:
+			unmatched--
+		case c == '(' || c == '{':
+			open = append(open, c)
+		case c == ')' && len(open) > 0:
+			open = open[:len(open)-1]
+		case c == ')':
+			unmatched++
+		case c == '}' && len(open) > 0 && open[len(open)-1] == '{':
+			open = open[:len(open)-1]
+		case c == '/' && len(open) == 0 && unmatched == 0:
+			return pos, true
+		}
+	}
+	return 0, false
+}
+
 // Next returns the next token.
 // infix=true means we are after a value (closing bracket, identifier, etc.).
 // infix=false means we are in prefix position; a '/' starts a regex literal.
 func (l *Lexer) Next(infix bool) (Token, error) { //nolint:gocyclo,funlen // dispatch
+	// After a comment or an unrecognized character, scanning starts over
+	// here: a loop rather than recursion, so a long run of them cannot
+	// exhaust the stack.
+start:
 	// Skip whitespace.
 	for l.pos < len(l.src) {
 		ch := l.src[l.pos]
@@ -70,7 +129,7 @@ func (l *Lexer) Next(infix bool) (Token, error) { //nolint:gocyclo,funlen // dis
 		for l.pos += 2; l.pos < len(l.src); l.pos++ {
 			if l.src[l.pos] == '*' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '/' {
 				l.pos += 2
-				return l.Next(infix)
+				goto start
 			}
 		}
 		return Token{}, lexError("S0106", "unclosed block comment")
@@ -79,78 +138,35 @@ func (l *Lexer) Next(infix bool) (Token, error) { //nolint:gocyclo,funlen // dis
 	// Regex literal — only in prefix position.
 	if ch == '/' && !infix {
 		l.pos++ // consume opening '/'
-		patStart, depth := l.pos, 0
-		inClass := false
-		for l.pos < len(l.src) {
-			c := l.src[l.pos]
-			if isEscapedAt(l.src, patStart, l.pos) {
-				// Escaped \) / \} outside a class still reduce depth so
-				// /(a\)/ can terminate; escaped \] never closes a class.
-				if !inClass && depth > 0 && (c == ')' || c == '}') {
-					depth--
-				}
-				l.pos++
-				continue
-			}
-			switch c {
-			case '[':
-				inClass = true
-				l.pos++
-			case ']':
-				inClass = false
-				l.pos++
-			case '(':
-				if !inClass {
-					depth++
-				}
-				l.pos++
-			case ')':
-				if !inClass && depth > 0 {
-					depth--
-				}
-				l.pos++
-			case '{':
-				if !inClass {
-					depth++
-				}
-				l.pos++
-			case '}':
-				if !inClass && depth > 0 {
-					depth--
-				}
-				l.pos++
-			case '/':
-				if !inClass && depth == 0 {
-					pattern := l.src[patStart:l.pos]
-					if pattern == "" {
-						return Token{}, lexError("S0301", "empty regex pattern")
-					}
-					l.pos++ // consume closing '/'
-
-					// Collect flags: only 'i' and 'm' are valid.
-					var flags strings.Builder
-					for l.pos < len(l.src) && unicode.IsLetter(rune(l.src[l.pos])) {
-						if fc := l.src[l.pos]; fc == 'i' || fc == 'm' {
-							flags.WriteByte(fc)
-							l.pos++
-						} else {
-							return Token{}, lexError("S0302", "invalid regex flag")
-						}
-					}
-					flags.WriteByte('g')
-
-					return Token{
-						Type:     TokenRegex,
-						RegexPat: pattern,
-						RegexFlg: flags.String(),
-						Pos:      startPos,
-					}, nil
-				}
-				l.pos++
-			default:
-				l.pos++
-			}
+		patStart := l.pos
+		end, closed := regexEnd(l.src, patStart)
+		if !closed {
+			end, closed = lenientRegexEnd(l.src, patStart)
 		}
+		if closed {
+			pattern := l.src[patStart:end]
+			if pattern == "" {
+				return Token{}, lexError("S0301", "empty regex pattern")
+			}
+			l.pos = end + 1 // consume closing '/'
+
+			// Flags are i and m; as in jsonata-js, any other letter
+			// starts the next token.
+			var flags strings.Builder
+			for l.pos < len(l.src) && (l.src[l.pos] == 'i' || l.src[l.pos] == 'm') {
+				flags.WriteByte(l.src[l.pos])
+				l.pos++
+			}
+			flags.WriteByte('g')
+
+			return Token{
+				Type:     TokenRegex,
+				RegexPat: pattern,
+				RegexFlg: flags.String(),
+				Pos:      startPos,
+			}, nil
+		}
+		l.pos = len(l.src)
 		return Token{}, lexError("S0302", "unterminated regex")
 	}
 
@@ -226,7 +242,7 @@ func (l *Lexer) Next(infix bool) (Token, error) { //nolint:gocyclo,funlen // dis
 		// Unrecognised character — skip it and try again.
 		_, size := utf8.DecodeRuneInString(l.src[l.pos:])
 		l.pos += size
-		return l.Next(infix)
+		goto start
 	}
 
 	if id[0] == '$' {
@@ -305,7 +321,7 @@ func (l *Lexer) scanString(quote byte, startPos int) (Token, error) {
 		// Escape sequence.
 		l.pos++
 		if l.pos >= len(l.src) {
-			return Token{}, lexError("S0101", "unterminated string literal")
+			return Token{}, lexError("S0103", "invalid escape sequence at end of input")
 		}
 		esc := l.src[l.pos]
 		l.pos++
@@ -316,14 +332,15 @@ func (l *Lexer) scanString(quote byte, startPos int) (Token, error) {
 		if esc != 'u' {
 			return Token{}, lexError("S0103", "invalid escape sequence: \\"+string(esc))
 		}
-		if l.pos+4 > len(l.src) {
-			return Token{}, lexError("S0104", "invalid unicode escape: too short")
-		}
-		hex := l.src[l.pos : l.pos+4]
-		r, err := strconv.ParseInt(hex, 16, 32)
-		if err != nil {
+		hex := l.src[l.pos:min(l.pos+4, len(l.src))]
+		if hex == "" || strings.Trim(hex, "0123456789abcdefABCDEF") != "" {
 			return Token{}, lexError("S0104", "invalid unicode escape: \\u"+hex)
 		}
+		if len(hex) < 4 {
+			// jsonata-js accepts the short escape and then runs out of input.
+			return Token{}, lexError("S0101", "unterminated string literal")
+		}
+		r, _ := strconv.ParseInt(hex, 16, 32) // four hex digits, checked above
 		l.pos += 4
 		// Handle UTF-16 surrogate pairs: high surrogate + low surrogate -> single code point.
 		if r >= 0xD800 && r <= 0xDBFF && l.pos+6 <= len(l.src) && l.src[l.pos] == '\\' && l.src[l.pos+1] == 'u' {
@@ -360,14 +377,18 @@ func (l *Lexer) scanNumber(startPos int) (Token, error) {
 		// If next char after '.' is not a digit, leave '.' for the parser (e.g., "0.foo").
 	}
 
-	// Exponent part.
+	// Exponent part, only when digits follow, as in jsonata-js: 2.5e is the
+	// number 2.5 followed by the name e.
 	if l.pos < len(l.src) && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E') {
-		l.pos++
-		if l.pos < len(l.src) && (l.src[l.pos] == '+' || l.src[l.pos] == '-') {
-			l.pos++
+		end := l.pos + 1
+		if end < len(l.src) && (l.src[end] == '+' || l.src[end] == '-') {
+			end++
 		}
-		for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
-			l.pos++
+		if end < len(l.src) && l.src[end] >= '0' && l.src[end] <= '9' {
+			l.pos = end
+			for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
+				l.pos++
+			}
 		}
 	}
 
