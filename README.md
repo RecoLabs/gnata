@@ -185,7 +185,52 @@ Custom functions implement the `CustomFunc` signature:
 type CustomFunc func(args []any, focus any) (any, error)
 ```
 
-Where `args` are the evaluated arguments passed by the JSONata expression and `focus` is the current context value.
+Where `args` are the evaluated arguments passed by the JSONata expression and `focus` is the current context value. `focus` follows jsonata-js:
+
+- it is `nil` when the function is passed as an argument, to `$map` or to a lambda, or applied by a bare `x ~> $f`;
+- a call in tail position of a lambda body gets the context of the call that entered the lambda.
+
+A custom function named `clone` replaces `$clone`, including the copy the transform operator (`~> |…|…|`) makes of its input.
+
+### Regex Arguments (breaking change in v0.6.0)
+
+A regex is a function inside an expression, as in jsonata-js. A custom function receives a regex argument as a `map[string]any{"pattern": …, "flags": …}`, and returning **that same map** returns the regex. Any other map of that shape is a plain object: one the function builds, a copy of the map it received, and one from input data, even when the function passes it through.
+
+Before v0.6.0 a regex was such a map everywhere, so any `{pattern, flags}` map a custom function returned acted as a regex:
+
+```go
+// v0.5.x: $match("abc", $regex("b")) matched. Since v0.6.0 it raises T0410.
+"regex": func(args []any, _ any) (any, error) {
+    return map[string]any{"pattern": args[0], "flags": "g"}, nil
+},
+```
+
+To migrate, take the regex as an argument and return the value you received; a custom function that passes an argument through, such as a `$coalesce(a, /b/)`, keeps working:
+
+```go
+// $match("abc", $pick(cond, /b/, /c/)) matches with either regex.
+"pick": func(args []any, _ any) (any, error) {
+    if args[0] == true {
+        return args[1], nil
+    }
+    return args[2], nil
+},
+```
+
+### Lambda Context (breaking change in v0.6.0)
+
+A lambda's body evaluates against the context the lambda was defined in, as in jsonata-js. Before v0.6.0, a call that passed arguments evaluated the body against the context of the call, so over `{"name": "root", "items": [{"name": "a"}, {"name": "b"}]}`:
+
+```
+($f := function($x){ name & $x }; items.$f("!"))
+// v0.5.x: ["a!", "b!"]. Since v0.6.0: ["root!", "root!"].
+```
+
+To read the item a call is made on, pass it as an argument, as in `($f := function($v, $x){ $v.name & $x }; items.$f($, "!"))`, which gives `["a!", "b!"]`. A lambda defined in the path step, as in `items.(function($x){ name & $x })("!")`, also reads each item.
+
+### `functions.EvalFn` (breaking change in v0.6.0)
+
+`functions.EvalFn`, the callback `functions.RegisterAll` takes to apply a function value, lost its `focus` parameter: it is now `func(fn any, args []any, env *evaluator.Environment) (any, error)`. As in jsonata-js, the standard library applies a function it is given, such as a `$map` callback, with a null context. `EvalFn` refers to the internal `evaluator.Environment` type, so code outside this module cannot implement it in practice.
 
 ### Registration
 
@@ -332,7 +377,7 @@ expr, err := gnata.Compile(userExpr,
 
 `WithTimeout` is enforced by checking a deadline on every function call and periodically between expression nodes, rather than with a timer, so it also applies inside a synchronous call on single-threaded WebAssembly hosts. A single builtin or custom function call is not interrupted, so evaluation can exceed the timeout by at most the duration of the call in progress.
 
-All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds every major sequence-growth path: the range operator, `$append`, `$map`, `$filter`, `$each`, wildcard (`*`), descendant (`**`), and repeated positions in a filter directly after a `#`/`@` binding (`a.b#$i[...]`). Use guardrails when evaluating expressions from an untrusted source.
+All three are opt-in; without them gnata keeps its existing defaults (100-deep call stack → `U1001`, no timeout beyond the caller's `context.Context`, and the built-in 10,000,000-element hard caps on the range operator and `$append`). `WithSequence` bounds the sequences jsonata-js bounds: the range operator, array constructors, group-by, sorts, filters (including positions a filter repeats, `a[[0,0]]`), `$append`, `$map`, `$filter`, `$each`, `$keys`, `$spread`, `$lookup`, `$match`, wildcard (`*`), descendant (`**`), every path step (field, variable, block and function steps) and every tuple stream of a `#`/`@` binding, including its filter stages (`a.b#$i[p1][p2]`) and a binding with nothing after it (`a#$i`). As in jsonata-js, a step that maps over input data counts too: `a.b` over more than `n` items of `a` raises `D2015`. A last step returns the value of a lone context as is when that value is an array stored in the data: exactly one context yields a value, from a field of an object rather than a lookup over an array. So `$count(a)` and `$count(m.(b))` still see a long stored array, while `$count(oo.a)` with `oo` an array of arrays raises `D2015`, as the lookup over the inner array builds a sequence. With `WithSequence`, the gjson fast paths of `EvalBytes`, `EvalMap` and `StreamEvaluator` keep their single gjson lookup, which never crosses an array; a path that crosses one, and `$keys`, whose result the limit bounds, fall back to the full evaluator, where the limit is enforced. Independently of `WithStack`, calls through partial applications, compositions, builtin function arguments, transforms and builtins passed as higher-order functions' callbacks nested more than 1,500 deep return `U1001`, since each one recurses on the Go stack (a call to a lambda whose body nests more than 32 levels deep spends one unit of the same budget per 3 levels beyond, so `WithStack` recursion with such bodies is capped too, and a call to a transform spends one unit plus one per 3 levels of its clauses). This bound leaves room on js/wasm hosts such as Node with an 8 MB stack (`go_js_wasm_exec`'s `--stack-size=8192`); smaller stacks, such as Node's default, can still overflow below it; on TinyGo's fixed-size stacks, deep chains can still trap. Arrays an expression shares at many levels, as a `$reduce` that nests one array in itself twice per step builds, can hold exponentially many paths; `WithTimeout` stops every walk over them, but two are bounded only by it: `*` over such arrays, and the copy of such a value passed to a custom function, which gives each occurrence of an object its own map unless `WithReadOnlyCustomFuncArgs` is set. Use guardrails when evaluating expressions from an untrusted source.
 
 ### Decimal Precision
 
@@ -361,21 +406,42 @@ gnata targets exact parity with the JSONata reference implementation ([jsonata-j
 
 | # | Area | gnata | jsonata-js | Notes |
 |---|------|-------|------------|-------|
-| 1 | **Large integer precision** | `"123456789012345678"` (exact) | `"123456789012345680"` (float64 rounding) | Go's `json.Number` preserves full precision; JS loses it beyond 2^53. Compare with relative tolerance ~1e-12. |
-| 2 | **Null placeholders in auto-mapping** | `["ext1", "ext2"]` | `[null, "ext1", "ext2"]` | jsonata-js inserts `null` for groups with no predicate match. gnata omits them per spec. Strip `null` entries when comparing. |
-| 3 | **Argument errors** | `D3006` for a missing argument | `T0410`, or `undefined` | gnata reports wrong argument counts and types consistently; codes for malformed calls can differ. |
-| 4 | **Timezones** | `$fromMillis(0, "[H01]:[m01]", "+05:30")` → `"05:30"` | `"00:05"`; `"NaN"` for `"Europe/London"` | gnata accepts IANA zone names and `±HH:MM` offsets and rejects malformed ones (`D3137`). `$toMillis` `[Z]` also parses `Z` and `±HHMM`. |
-| 5 | **`$base64decode`** | `D3137` for invalid input | `""` | Unpadded input decodes in both. |
-| 6 | **`$contains`, `$values`, `$flatten`** | array search, object values, flattening | `T0410` / unknown function | gnata-only extensions. |
-| 7 | **Fractional seconds `[f]`** | `[f01]` → `"12"`, `[f0001]` → `"1230"` for .123 s | `"123"`, `"0123"` | gnata follows XPath F&O: one digit per picture character, padded on the right. jsonata-js formats milliseconds as an integer. |
-| 8 | **Month names in `$toMillis`** | `"2018 April"` with `[MNn,3-3]` → April | January | jsonata-js only recognizes the exact truncated name and silently defaults any other word to January. |
-| 9 | **Uncaptured regex groups** | `""` in `groups` | `undefined` (`null` once serialized) | Go arrays cannot hold `undefined`; `""` behaves the same in string operations. |
-| 10 | **Date/time picture widths** | `D3010` when zero-padding widths total over 10,000 | builds the string, or crashes | Same limit as `$pad`; widths that cannot pad (names, words, `$toMillis`) are not limited. |
-| 11 | **Years 0–99 in `$toMillis`** | `$toMillis("18", "[Y01]")` → year 18 | year 1918 | JavaScript's `Date.UTC` maps years 0–99 to 1900–1999; gnata keeps the parsed year. |
-| 12 | **Regex match positions** | `$match("😀ab", /a/).index` → `1` | `2` | gnata counts code points, like `$length` and `$substring`; jsonata-js counts UTF-16 units. Applies to `index`, `start` and `end`. |
-| 13 | **Exponent mantissa width** | `$formatNumber(1000, "0.0e0")` → `"1.0e3"` | `"10.0e2"` | gnata keeps the mantissa within the picture's integer digits, also when rounding carries over (`9.95` → `"1.0e1"`, not `"10.0e0"`). |
-| 14 | **Negative offsets in `[Z]`** | `$fromMillis(0, "[Z0000]", "-0530")` → `"-0530"` | `"-0630"` | jsonata-js floors a negative `hhmm` offset into its hours, so half-hour zones west of UTC lose an hour. |
-| 15 | **Match object `next`** | `$replace("ababab", /b/, function($m){ $m.next() ? "X" : "Y" })` → `"aXaXaY"` | `"aXabaY"` | Only `$replace` callbacks get `next`, which returns the match after `$m`. jsonata-js advances the cursor `$replace` itself uses, skipping the returned match. `$match` and `~> /re/` results omit `next` so they hold no function values. |
+| 1 | **Large integer precision** | `f` over `{"f":123456789012345678}` → `123456789012345678`; `o` over `{"o":{"x":1.50}}` → `{"x":1.50}` | `123456789012345680`; `{"x":1.5}` | A number read from raw JSON (`EvalBytes`, `EvalMap`, a `StreamEvaluator`, `DecodeJSON`, `json.Decoder.UseNumber`) is a `json.Number`, which can keep its text when returned or passed on unchanged; JS reads it as a float64. `$string` and `&` lay it out as jsonata-js does (`"1.5"`), except an integer literal beyond 2^53 (row 36), and arithmetic and comparisons use float64 (`f = 123456789012345680` is `true`). Compare results with relative tolerance ~1e-12. |
+| 2 | **Null placeholders in auto-mapping** | `g.t[true]` over `{"g":[{"o":1},{"t":"ext1"},{"t":"ext2"}]}` → `["ext1","ext2"]` | `[null,"ext1","ext2"]` | jsonata-js filters each context's lookup on its own, so a context without `t` yields one undefined item, which a predicate true for it keeps and which serializes as `null`. gnata's sequences cannot hold undefined. A predicate on the value (`[$exists($)]`, `[$ != "x"]`) or a literal position (`[0]`) drops the item in both. Row 26 covers paths where no context has the field. |
+| 3 | **Argument errors in partial applications** | `$join(?, ",")(["a",1])` → `T0412`; `$uppercase(?)(1)` → `T0410` | `"a,1"`; an uncoded `TypeError` | jsonata-js calls a partially applied built-in without validating its arguments, so it computes with mistyped ones as JavaScript does or crashes; gnata's built-ins check them themselves there. Higher-order built-ins follow jsonata-js: they do not wrap a non-array argument, so `$map(?)(f)` and `$map(?, f)(5)` are undefined and `$map(?, f)("ab")` maps each character. Direct calls and built-ins passed as callbacks validate their arguments against the jsonata-js signature in both (`T0410`/`T0411`/`T0412`, blaming the same argument), except `$contains` (row 7). |
+| 4 | **Timezones** | `$fromMillis(0, "[H01]:[m01]", "+05:30")` → `"05:30"` | `"00:05"`; `"NaN"` for `"Europe/London"` | gnata accepts IANA zone names and `±HH:MM`, `±HHMM` and `HHMM` offsets and rejects any other (`D3137`), and `""` is UTC. jsonata-js reads the leading integer as `hhmm`, so `"+5"` and `"+05"` are five minutes, `"0"` and `"530"` are offsets, and a string without one, `""` included, formats as `"NaN"` fragments. `$toMillis` `[Z]` also parses `Z` and `±HHMM`, and rejects an offset over about 68 years (2³¹ seconds). |
+| 5 | **`$toMillis` offset separators** | `$toMillis("2018-04-01 10:00-02x00", "[Y]-[M]-[D] [H]:[m][Z01.01]")` → undefined | `1522576800000` | gnata matches a picture's offset separator literally, so it also reads `[Z01*01]`. jsonata-js pastes the separator into a regex unescaped: `.` matches any character, and `[Z01*01]` throws an uncoded regex error. It also drops an offset it cannot split at the separator (`-` with a negative offset, a letter whose case differs from the picture's). |
+| 6 | **`$base64decode`** | `D3137` for invalid input | `""` | Unpadded input decodes in both. |
+| 7 | **`$contains`, `$values`, `$flatten`** | array search, object values, flattening | `T0410` / unknown function | gnata-only extensions. `$contains` checks only its argument count against its jsonata-js signature and its argument types itself, so an array is accepted as its first argument. |
+| 8 | **Fractional seconds `[f]`** | `[f01]` → `"12"`, `[f0001]` → `"1230"` for .123 s | `"123"`, `"0123"` | gnata follows XPath F&O: one digit per picture character, padded on the right. jsonata-js formats milliseconds as an integer. |
+| 9 | **Month names in `$toMillis`** | `"2018 April"` with `[MNn,3-3]` → April | January | jsonata-js only recognizes the exact truncated name and silently defaults any other word to January. |
+| 10 | **Uncaptured regex groups** | `""` in `groups` | an undefined item (`null` once serialized) | gnata's arrays hold no undefined item, and a `null` would read as `"null"` in `&`. With `""`, `&` and `$replace`'s `$1` give what jsonata-js gives, but reading the item does not: `$exists` gives `true`, `$type` `"string"` and `$length` `0`, where jsonata-js gives `false` and undefined, and `$join` of the groups joins them where jsonata-js raises `T0412`. |
+| 11 | **Date/time picture widths** | `D3010` when zero-padding widths total over 10,000; `$fromMillis(0, "[Y,2-]")` → `"70"` | builds the string, or crashes; `"NaN"` | Same limit as `$pad`; widths that cannot pad (names, words, `$toMillis`) are not limited. A width is an optional `+` and decimal digits; jsonata-js's `parseInt` also reads a negative or `0x` width, which can turn its parse regex into literal text. A non-numeric year maximum is ignored, so `[Y,2-]` formats as `[Y,2]` and `[Y,*-x]` as `[Y]`, where jsonata-js's `parseInt` reads it as `NaN` and formats `"NaN"`. `$toMillis` follows jsonata-js: the year reads every digit. |
+| 12 | **Years 0–99 in `$toMillis`** | `$toMillis("18", "[Y01]")` → year 18 | year 1918 | JavaScript's `Date.UTC` maps years 0–99 to 1900–1999; gnata keeps the parsed year. |
+| 13 | **Regex match positions** | `$match("😀ab", /a/).index` → `1` | `2` | gnata counts code points, like `$length` and `$substring`; jsonata-js counts UTF-16 units. Applies to `index`, `start`, `end` and the offset a regex called as a function searches from. |
+| 14 | **Exponent mantissa width** | `$formatNumber(1000, "0.0e0")` → `"1.0e3"` | `"10.0e2"` | gnata keeps the mantissa within the picture's integer digits, also when rounding carries over (`9.95` → `"1.0e1"`, not `"10.0e0"`). |
+| 15 | **Negative offsets in `[Z]`** | `$fromMillis(0, "[Z0000]", "-0530")` → `"-0530"` | `"-0630"` | jsonata-js floors a negative `hhmm` offset into its hours, so a zone west of UTC with minutes loses an hour (`-0045` is `"-01:45"`), and a one- or two-digit picture writes the minutes negative too (`[Z01]` → `"-06:-30"`). Other offsets format the same in both. Its `$toMillis` adds the minutes of a negative offset, reading `-02:30` as `-01:30`. |
+| 16 | **Match object `next`** | `$replace("ababab", /b/, function($m){ $m.next() ? "X" : "Y" })` → `"aXaXaY"` | `"aXabaY"` | Only `$replace` callbacks get `next`, which returns the match after `$m`. jsonata-js advances the cursor `$replace` itself uses, skipping the returned match. `$match`, `~> /re/` and `/re/(s)` results omit `next` so they hold no function values. |
+| 17 | **`in` with arrays or objects** | `[5] in [[5]]` → `true` | `false` | jsonata-js compares with `===`, so only the same object matches. `=` became deep equality in 1.8, and the docs describe `in` as value inclusion. |
+| 18 | **Function identity through builtins** | `($f := function(){1}; $append($f, [])[0] = $f)` → `true` | `false` | Both compare functions by identity. jsonata-js wraps every function argument of a call in a fresh closure, so a builtin that returns its argument returns a different function; gnata wraps function arguments only in calls to lambdas, so a builtin returns the function itself. |
+| 19 | **Self-referencing transform update** | `$ ~> \|a\|{"self": $}\|` stores a copy of `a` | a circular object it cannot serialize | Results stay finite trees. This also covers a variable that the pattern or an earlier target's update bound to an ancestor. |
+| 20 | **Transform pattern reaching the input through `$$`** | `$ ~> \|$$.x\|{"z": 1}\|` leaves the input unchanged; reading `$$.x.z` afterwards sees no `z` | changes the input object in place | gnata never mutates decoded or caller-owned input. |
+| 21 | **Transform pattern reaching other objects the expression holds** | `($v := {"a":{}}; $ ~> \|$v.a\|{"z": 1}\|; $v)` leaves `$v` unchanged, as does a nested transform's pattern reaching the outer target through a variable | changes the object in place | A transform changes only its own clone. Maps from `DecodeJSON` are never frozen yet belong to the caller, so the evaluator cannot tell its own objects from the caller's. |
+| 22 | **`$distinct` of an array whose sequence mark gnata cannot see** | `$map([[5,5]], function($v){$type($distinct($v))})` → `"number"`; `($f := function(){a.b}; $distinct($f()))` → `[5]` | `"array"`; `5` | jsonata-js keeps a plain array a plain array and collapses a sequence, as gnata does for a variable a bind sets and a parameter bound to a call's argument. gnata counts a parameter that a built-in such as `$map`, `$filter`, `$reduce` or `$sort` binds as a sequence; a lambda's result, an object field holding a sequence (`$x.k` with `$x := {"k": a.b}`) and the context `$eval` takes as plain arrays; and a block last step that several contexts map over (`w.(k)`) or that ends in a variable (`q.($x := k; $x)`) as a sequence. |
+| 23 | **Integer-like object keys** | `{"2":1,"1":2,"b":3}` keeps insertion order | `{"1":2,"2":1,"b":3}` | JavaScript objects list integer-like keys first, in numeric order. Group results show it too: `g{k: v}` with keys inserted as `"b"`, `"10"`, `"2"` gives `{"b":1,"10":2,"2":3}`, against `{"2":3,"10":2,"b":1}`. |
+| 24 | **Subscripted `%` block outside a tuple step** | `x.((a)[%.c])` → `[{"b":1},{"b":2}]` | `[{"@":{"b":1},"!0":{…}}, …]` | jsonata-js leaks its internal tuple objects into the result; gnata returns the values. |
+| 25 | **Wildcard over a sequence passed to `$eval`** | `$eval("*", a.b)` → `[1,3]` | `[1,3,true]` | jsonata-js's wildcard reads its internal `sequence` flag as a field. |
+| 26 | **Filter over a field several contexts lack** | `w.a[true]` over `{"w":[[1,2],[3]]}` → `undefined`; `$count` → `0`, `$exists` → `false` | `[null,null]`; `2`, `true` | jsonata-js filters each context's missing field as one undefined item, which a truthy predicate or a computed position (`[[0]]`, not a literal `[0]`) keeps, so a mapped path collects undefined items that serialize as `null`. gnata's sequences cannot hold undefined. Over one context gnata follows jsonata-js: the predicate still runs, so `q[$error("x")]` raises `D3137`, and the next step takes the kept item as an undefined context, so `q[true].$count($)` is `0`. |
+| 27 | **Regex called on a function or a constructed object** | `/a/($string)` → `undefined`; `/o/({})` → a match at `1` | a match at `0`; a `TypeError` | Both match the string JavaScript converts the argument to, searching from the offset in the second argument. jsonata-js converts a function to its JavaScript source text, which gnata does not have, and fails on an object the expression builds, which has no prototype; gnata reads every object as `"[object Object]"`, as jsonata-js reads one from the input. |
+| 28 | **Regex values in Go** | `/a/` → `{"flags": "g", "pattern": "a"}` | the regex function | A regex is a function inside an expression. A custom function receives it as that map, and returning the same map returns the regex; any other map of that shape, built by the function or from input data, stays an object (see [Regex Arguments](#regex-arguments-breaking-change-in-v060)). A regex result is that map. Inside a result it encodes to that JSON, and `NormalizeValue` turns it into that map. |
+| 29 | **Partial `$string`, and function arguments in partial built-ins** | `$string(?)("x")`, `"x" ~> $string(?)` → `"x"`; `$replace(?, "b", function($m){"X"})("abc")` → `"aXc"` | `S0208`; `"a[object Object]c"` | jsonata-js builds partial applications of built-ins from their JavaScript parameter lists, and `$string`'s default parameter does not parse. gnata follows those lists otherwise, applying a built-in to the parameters it declares, without a context. jsonata-js also applies the built-in without the context its own calls provide, so `$match` and `$replace` cannot call a function argument, nor `$sort` a comparator the partial application binds: they fail, or `$replace` inserts the function as text. |
+| 30 | **Extra syntax** | `1..3`, `$count(1..3)`, `[1,]`, `{"a":1,}`, `$sum(1,)`, `function($x,){$x}`, `a^()`, `'it\'s'`, `2 ** 8` are accepted | `S0201`, `S0202`, `S0211` or `S0103` | Ranges work outside array constructors, lists allow a trailing comma, an empty sort keeps the order, `\'` escapes a quote, and `**` raises to a power. |
+| 31 | **Regex literals** | `/[)]/`, `/a]/`, `/a}/` and `/(a})/` read as written; an invalid pattern such as `/a{2,1}/` raises an error when used (`D3137` in `$match`, `D1002` when called) | `S0302`; an uncoded `SyntaxError` while parsing | jsonata-js closes a regex at the first unescaped `/` where one count of its brackets, of any kind and in classes too, is zero; gnata closes every regex it closes at the same `/`. Where that count finds none, gnata reads character classes, a `)` closing the innermost open `(` or `{`, and treats a stray `]`, or a `}` that closes no `{` (`/(a})/`), as a literal, as RE2 does. |
+| 32 | **Lambda signatures** | `S0402` for an unknown character, as in `function($a)<#n:n>{$a}` | ignores unknown characters | The same parser validates custom function signatures, where a typo should fail. |
+| 33 | **Nesting depth** | `S0218` past 10,000 levels; `U1001` past 1,500 nested calls through partial applications, compositions, function arguments, transforms and builtin callbacks (see Guardrails) | a `RangeError` stack overflow from about 2,000 levels | Each nested expression and each chained operator is a level, in `Compile` and `$eval` alike. The limits keep deep expressions away from Go's fatal stack limit. |
+| 34 | **`$toMillis` limits** | `$toMillis("275760-09-14", "[Y]-[M]-[D]")` → `null` | `NaN` | A result past a JavaScript Date's ±8.64e15 ms serializes as `null` in both, but in gnata it is `null` inside an expression too: `$type` gives `"null"` (jsonata-js: `"object"`), and `$fromMillis` raises T0410 where jsonata-js formats `"0NaN-NaN-…"`. gnata also bounds the backtracking that matches a picture to 256 parsed runes per input rune and picture part, and reads a match that needs more as undefined; jsonata-js's regex can run superlinear there. On 32-bit targets, a component above 2³¹−1 reads as `null`. |
+| 35 | **Day of year out of range** | `$toMillis("2018-366", "[Y]-[d]")` → `2019-01-01` | `2018-01-01` | jsonata-js turns `[d]` into a month and day through a `Date`, then rebuilds the date with the parsed year, so a day past the year's end wraps back into it; it also treats day 0 as no day at all, giving 1 January. gnata counts the days on from 1 January, so day 0 is 31 December of the year before. |
+| 36 | **Large integers in `$string` and `&`** | `$string(id)` over `{"id":12345678901234567890}` → `"12345678901234567890"` | `"12345678901234567000"` | An integer literal read from raw JSON (`EvalBytes`, `EvalMap`, a `StreamEvaluator`, `DecodeJSON`, `json.Decoder.UseNumber`) with no fraction or exponent and a magnitude above 2^53 keeps its digits when `$string` or `&` prints it, also inside an object or array (`$string(obj)` with `obj` holding the id), so large ids survive. Everything else prints as in jsonata-js: 2^53 itself, a fraction or exponent (`12345678901234567890.0`) and computed numbers print the float64, and a `float64` from Go-map input has already lost the digits. Arithmetic rounds (`$string(id + 0)` → `"12345678901234567000"`) and comparisons use float64, so ids that differ only in their last digits compare equal (`id = 12345678901234567891` is `true`) but print differently. |
 
 ## Regex Engine: RE2 vs JavaScript RegExp
 
@@ -410,7 +476,8 @@ gnata/
 │       ├── eval_binary.go       #   Binary ops, subscript, array filtering
 │       ├── eval_function.go     #   Function calls, lambdas, partial application
 │       ├── eval_chain.go        #   Path chaining, pipe, block, condition
-│       ├── eval_transform.go    #   Transform expressions, deep clone
+│       ├── eval_transform.go    #   Transform expressions
+│       ├── value_copy.go        #   Iterative copies for $clone, transforms and $string
 │       ├── eval_group.go        #   Group-by aggregation
 │       ├── eval_sort.go         #   Sort expressions
 │       └── ...                  #   helpers, regex, range, unary, etc.

@@ -36,7 +36,7 @@ Lexer → Parser → AST Processing → Fast-Path Analysis → Expression
 
 1. **Lexer** (`internal/lexer/`) — Tokenizes JSONata expression strings
 2. **Parser** (`internal/parser/`) — Pratt (top-down operator precedence) parser producing AST nodes
-3. **AST Processing** (`parser.ProcessAST`) — Normalizes and optimizes the AST
+3. **AST Processing** (`parser.ProcessAST`) — Normalizes and optimizes the AST, and resolves each `%` to the path step whose input it reads. `parser.ParseAndProcess` runs steps 2–3, rejects a `%` with no such step (S0217), and marks the wildcard and ancestor steps reading the root input; every entry point (`Compile`, `$eval`) must use it
 4. **Fast-Path Analysis** (`parser.AnalyzeFastPath`) — Classifies expressions into:
    - Pure-path fast path (e.g., `Account.Name`) — uses GJSON zero-copy
    - Comparison fast path (e.g., `a.b = "x"`) — zero allocations
@@ -122,6 +122,7 @@ gnata also builds with [TinyGo](https://tinygo.org) for `wasip1`, including `-sc
 - **Don't encode gnata values with `encoding/json`:** use `evaluator.AppendJSON`. `encoding/json`'s encoder reports errors by panicking and recovering internally, and `recover` is unavailable on TinyGo/WASM, so any encode error would abort the module. Decoding (`DecodeJSON`) does not use `encoding/json` on the hot path.
 - **Convert JSONata numbers to `int` with `evaluator.ToIntClamped`**, never a bare `int(f)`: `int` is 32 bits on TinyGo/WASM and an out-of-range float→int conversion is implementation-defined.
 - **Runtime panics trap instead of being recovered** on TinyGo/WASM. Hosts should treat a trap as a failed evaluation and re-instantiate the module.
+- **Stack depth:** the 1,500 nested-call limit for function values (`maxNestedCalls`) fits gc's native stacks and js/wasm in Node, which overflows at about 4,900 partial-application `$sort` comparators once an earlier chain in the same evaluation has grown the stack (12,500 on a fresh one); measure crash points after such a warm-up. TinyGo's stacks are fixed, so deep chains can overflow below it; tests that build chains near the limit are `//go:build !tinygo`.
 - **Stack depth:** deep JSONata recursion needs a sufficient `-stack-size`; an overflow traps rather than corrupting memory.
 - **JVM-hosted runtimes** (WASM compiled to JVM bytecode) cannot compile very large functions; at `-opt=2` LLVM inlines `evaluator.Eval` past that limit, so prefer `-opt=1` for those hosts.
 - **Running the test suite under TinyGo:** `GOEXPERIMENT=nojsonv2 tinygo test -c -target=wasip1 -stack-size=1MB -o gnata.test.wasm .` and run it with a WASI runtime with the package directory mounted as `/` (e.g. `wazero run -mount=.:/ -env=PWD=/ gnata.test.wasm -test.v`). TinyGo runs every subtest in its own fixed-size goroutine stack, so a full run needs plenty of memory; the two 10,000,000-element range cases are the heaviest.
