@@ -44,18 +44,29 @@ type Node struct {
 	Signature *Signature // parsed signature; nil if absent
 
 	// Metadata flags set by processAST
-	KeepArray          bool // step has [] suffix → force array output
-	KeepSingletonArray bool // path has at least one keepArray step
-	ConsArray          bool // step is an array constructor used as a path step
-	Thunk              bool // lambda is a TCO thunk
-	Tuple              bool // step participates in a tuple stream
+	KeepArray          bool   // step has [] suffix → force array output
+	KeepSingletonArray bool   // path has at least one keepArray step; on a subscript or sort, its Left chain does (see ChainKeepsArray)
+	ConsArray          bool   // step is an array constructor used as a path step
+	Thunk              bool   // call trampolined as a tail call, or ?: or ?? operator in a lambda's tail position
+	TailContext        bool   // call is a jsonata-js tail call, taking the entering call's context
+	Tuple              bool   // sort whose Left binds #$var, @$var or an ancestor; on a path, one wrapStep made
+	RootContext        bool   // step starting a path over the root input (see markRootContext)
+	PathStage          bool   // subscript applied as a stage of a path step (see markSubscriptStages)
+	IndexKeepArray     bool   // the step's first [] comes right after its #$var binding
+	KeptAfterIndex     bool   // a [] comes after the step's #$var binding (see wrapKeepsArray)
+	NoBinds            bool   // transform whose pattern, update and delete bind no variable
+	TupleResult        bool   // block or path a % reaches into, which yields its tuples (see seekParent)
+	indexLast          bool   // # bound after any @ on this node (parser only)
+	Depth              uint16 // type="transform" or "lambda": how deeply evaluating its clauses or body recurses, saturating
 
 	// Focus / index variable names (set by @ and # operators)
 	Focus string // variable name bound by @
 	Index string // variable name bound by #
 
-	// Ancestor slot (set by % operator)
-	Slot *Slot
+	// Slot is the ancestor a % reads (type="parent"); Ancestor is the slot a
+	// name or wildcard step binds to its input for a later % (see ancestry.go).
+	Slot     *Slot
+	Ancestor *Slot
 
 	// Stages: predicates and index bindings attached to a step
 	Stages []Stage
@@ -63,8 +74,10 @@ type Node struct {
 	// Group expression attached to a path or step
 	Group *GroupExpr
 
-	// SeekingParent: unresolved parent slots in this subtree
+	// SeekingParent holds the % slots this node passes to the expression
+	// around it (see ancestry.go).
 	SeekingParent []*Slot
+	base          *Node // a subscript's step (see StepBase)
 
 	// NextFunction: name of the next function (for T1005 error)
 	NextFunction string
@@ -88,19 +101,22 @@ type Stage struct {
 type GroupExpr struct {
 	Pairs [][2]*Node // [key-expr, value-expr] pairs
 	Pos   int
+	// OnPath is set for a group applied to something jsonata-js makes a
+	// path, which groups the whole path's result (see ProcessAST).
+	OnPath bool
 }
 
-// Slot represents an ancestor reference created by the % operator.
+// Slot is the ancestor a % operator reads, as in jsonata-js: the evaluator
+// binds Label, which no variable name can spell, to the input of the step
+// resolution picked.
 type Slot struct {
-	Label string // "!N" where N is the ancestry index
-	Level int    // always 1
-	Index int    // sequential index across all parent operators
+	Label string // "!N" for the expression's Nth %, or a label it shares
+	Level int    // steps still to climb; 0 once resolved
 }
 
-// Signature is the parsed type signature of a lambda or built-in function.
-// The full parsing logic lives in functions/signature.go; this type is shared.
+// Signature is a lambda's type signature, as parsed by ParseSig.
 type Signature struct {
-	Raw string // original signature string e.g. "<s-n?:s>"
+	Params []ParamSpec // the parsed parameters of a signature such as "<s-n?:s>"
 }
 
 // Node type string constants.

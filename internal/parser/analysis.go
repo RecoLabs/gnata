@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"strconv"
 	"strings"
 )
 
@@ -121,7 +120,6 @@ type (
 		RHSKind      rhsKind  // type of the right-hand literal
 		RHSString    string   // valid when RHSKind == RHSKindString
 		RHSNumber    float64  // valid when RHSKind == RHSKindNumber
-		RHSNumberStr string   // pre-formatted RHSNumber for fast integer comparison
 		RHSBool      bool     // valid when RHSKind == RHSKindBool
 	}
 
@@ -232,6 +230,49 @@ func (r *fastPathResult) DecimalSafe() {
 	}
 }
 
+// SequenceLimited drops the step walks that map field steps over arrays,
+// which WithSequence leaves to the full evaluator, where the guardrail is
+// enforced. A single gjson lookup never crosses an array, so it stays; a
+// path that does cross one, and $keys, whose result the guardrail bounds,
+// fall back to the evaluator.
+func (r *fastPathResult) SequenceLimited() {
+	r.PathSteps = nil
+	r.CmpFast = r.CmpFast.withoutWalk()
+	r.FuncFast = r.FuncFast.withoutWalk()
+	r.BoolFast = r.BoolFast.withoutWalk()
+}
+
+func (c *ComparisonFastPath) withoutWalk() *ComparisonFastPath {
+	if c == nil {
+		return nil
+	}
+	walkless := *c
+	walkless.LHSPathSteps = nil
+	return &walkless
+}
+
+func (f *FuncFastPath) withoutWalk() *FuncFastPath {
+	// $keys builds a sequence of the keys, which the builtin checks
+	// against the limit.
+	if f == nil || f.Kind == FuncFastKeys {
+		return nil
+	}
+	walkless := *f
+	walkless.PathSteps = nil
+	return &walkless
+}
+
+func (b *BoolFastPath) withoutWalk() *BoolFastPath {
+	if b == nil {
+		return nil
+	}
+	walkless := *b
+	walkless.Left, walkless.Right = b.Left.withoutWalk(), b.Right.withoutWalk()
+	walkless.PureSteps = nil
+	walkless.Cmp, walkless.Func = b.Cmp.withoutWalk(), b.Func.withoutWalk()
+	return &walkless
+}
+
 func (c *ComparisonFastPath) decimalSafe() bool {
 	return c == nil || c.RHSKind != RHSKindNumber
 }
@@ -268,7 +309,7 @@ func rawStepNames(node *Node) []string {
 // built-in function with a pure-path first argument. Returns nil when the
 // pattern does not match.
 func tryCollectFunc(node *Node) *FuncFastPath {
-	if node == nil || node.Type != NodeFunction {
+	if node == nil || node.Type != NodeFunction || node.KeepArray || node.Group != nil {
 		return nil
 	}
 	if node.Procedure == nil || node.Procedure.Type != NodeVariable {
@@ -281,7 +322,7 @@ func tryCollectFunc(node *Node) *FuncFastPath {
 		if len(node.Arguments) != 2 {
 			return nil
 		}
-		if node.Arguments[1] == nil || node.Arguments[1].Type != NodeString {
+		if node.Arguments[1] == nil || node.Arguments[1].Type != NodeString || node.Arguments[1].Group != nil {
 			return nil
 		}
 		paths, ok := collectPaths(node.Arguments[0])
@@ -318,14 +359,14 @@ func tryCollectFunc(node *Node) *FuncFastPath {
 // with a pure path on the left and a literal (string/number/bool/null) on the right.
 // Returns nil when the pattern does not match.
 func tryCollectComparison(node *Node) *ComparisonFastPath {
-	if node == nil || node.Type != NodeBinary {
+	if node == nil || node.Type != NodeBinary || node.Group != nil {
 		return nil
 	}
 	op := node.Value
 	if op != "=" && op != "!=" {
 		return nil
 	}
-	if node.Left == nil || node.Right == nil {
+	if node.Left == nil || node.Right == nil || node.Right.Group != nil {
 		return nil
 	}
 	lhsPaths, ok := collectPaths(node.Left)
@@ -346,7 +387,6 @@ func tryCollectComparison(node *Node) *ComparisonFastPath {
 		return &ComparisonFastPath{
 			LHSPath: lhsPath, LHSPathSteps: lhsSteps, Op: op,
 			RHSKind: RHSKindNumber, RHSNumber: node.Right.NumVal,
-			RHSNumberStr: strconv.FormatFloat(node.Right.NumVal, 'f', -1, 64),
 		}
 	case NodeValue:
 		switch node.Right.Value {
@@ -369,7 +409,7 @@ func collectPaths(node *Node) ([]string, bool) {
 	switch node.Type {
 	case NodeName:
 		// Simple field name — GJSON path is just the name.
-		if len(node.Stages) > 0 || node.Group != nil || node.Focus != "" {
+		if !isPlainName(node) {
 			return nil, false
 		}
 		escaped, ok := gjsonEscapeName(node.Value)
@@ -379,16 +419,14 @@ func collectPaths(node *Node) ([]string, bool) {
 		return []string{escaped}, true
 
 	case NodePath:
-		// All steps must be simple name nodes with no predicates/stages.
+		// All steps must be simple name nodes with no predicates/stages, and
+		// the path must not group its result.
+		if node.Group != nil {
+			return nil, false
+		}
 		parts := make([]string, 0, len(node.Steps))
 		for _, step := range node.Steps {
-			if step.Type != NodeName {
-				return nil, false
-			}
-			if len(step.Stages) > 0 || step.Group != nil || step.Focus != "" {
-				return nil, false
-			}
-			if step.KeepArray || step.ConsArray {
+			if !isPlainName(step) {
 				return nil, false
 			}
 			escaped, ok := gjsonEscapeName(step.Value)
@@ -415,6 +453,13 @@ func collectPaths(node *Node) ([]string, bool) {
 	}
 }
 
+// isPlainName reports whether node is a field name a gjson path can look up
+// as it is: one with no predicates, group, binding or [].
+func isPlainName(node *Node) bool {
+	return node.Type == NodeName && len(node.Stages) == 0 && node.Group == nil &&
+		node.Focus == "" && node.Index == "" && !node.KeepArray && !node.ConsArray
+}
+
 // gjsonEscapeName escapes a field name for use in a GJSON path.
 // GJSON uses dot as separator; names containing special chars must be escaped with backticks.
 // Returns ("", false) if the name cannot be safely represented in a GJSON path.
@@ -423,6 +468,11 @@ func gjsonEscapeName(name string) (string, bool) {
 	// (e.g., `@odata.count` is treated as modifier @odata). Field names starting
 	// with @ must be excluded from the fast path entirely.
 	if strings.HasPrefix(name, "@") {
+		return "", false
+	}
+	// gjson reads an all-digit path component as an index into an array,
+	// where JSONata looks up a field of that name in each item.
+	if name != "" && !strings.ContainsFunc(name, func(r rune) bool { return r < '0' || r > '9' }) {
 		return "", false
 	}
 	if strings.ContainsAny(name, ".*?|#[]!{}\\") || strings.Contains(name, " ") {

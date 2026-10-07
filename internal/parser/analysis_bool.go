@@ -23,7 +23,7 @@ type BoolFastPath struct {
 }
 
 func tryCollectBool(node *Node) *BoolFastPath {
-	if node == nil {
+	if node == nil || node.Group != nil {
 		return nil
 	}
 	switch {

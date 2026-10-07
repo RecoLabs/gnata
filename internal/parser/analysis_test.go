@@ -116,3 +116,61 @@ func TestDecimalSafeFastPath(t *testing.T) {
 		})
 	}
 }
+
+func TestSequenceLimited(t *testing.T) {
+	tests := []struct {
+		desc                                                  string
+		expr                                                  string
+		wantFastPath, wantCmpFast, wantFuncFast, wantBoolFast bool
+		wantBoolFuncs                                         int // function leaves the BoolFast keeps
+	}{
+		{desc: "path kept as a lookup", expr: `a.b`, wantFastPath: true},
+		{desc: "comparison kept as a lookup", expr: `a.b = "x"`, wantCmpFast: true},
+		{desc: "function kept as a lookup", expr: `$lowercase(a.b)`, wantFuncFast: true},
+		{desc: "$keys dropped", expr: `$keys(a.b)`},
+		{desc: "and of leaves kept as lookups", expr: `$exists(a.b) and c.d = "x"`, wantBoolFast: true, wantBoolFuncs: 1},
+		{desc: "$keys leaf of an and dropped", expr: `$keys(a) and $exists(b)`, wantBoolFast: true, wantBoolFuncs: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			fp := parser.AnalyzeFastPath(mustParse(t, tc.expr))
+			fp.SequenceLimited()
+			if fp.IsFastPath != tc.wantFastPath {
+				t.Errorf("IsFastPath = %v, want %v", fp.IsFastPath, tc.wantFastPath)
+			}
+			if got := fp.CmpFast != nil; got != tc.wantCmpFast {
+				t.Errorf("CmpFast kept = %v, want %v", got, tc.wantCmpFast)
+			}
+			if got := fp.FuncFast != nil; got != tc.wantFuncFast {
+				t.Errorf("FuncFast kept = %v, want %v", got, tc.wantFuncFast)
+			}
+			if got := fp.BoolFast != nil; got != tc.wantBoolFast {
+				t.Errorf("BoolFast kept = %v, want %v", got, tc.wantBoolFast)
+			}
+			if fp.PathSteps != nil || fp.CmpFast != nil && fp.CmpFast.LHSPathSteps != nil ||
+				fp.FuncFast != nil && fp.FuncFast.PathSteps != nil {
+				t.Errorf("a step walk is kept: %+v", fp)
+			}
+			if got := boolFuncLeaves(t, fp.BoolFast); got != tc.wantBoolFuncs {
+				t.Errorf("BoolFast keeps %d function leaves, want %d", got, tc.wantBoolFuncs)
+			}
+		})
+	}
+}
+
+// boolFuncLeaves counts the function leaves of b, failing the test on any
+// leaf that keeps a step walk.
+func boolFuncLeaves(t *testing.T, b *parser.BoolFastPath) int {
+	t.Helper()
+	if b == nil {
+		return 0
+	}
+	if b.PureSteps != nil || b.Cmp != nil && b.Cmp.LHSPathSteps != nil || b.Func != nil && b.Func.PathSteps != nil {
+		t.Errorf("a step walk is kept in %+v", b)
+	}
+	n := boolFuncLeaves(t, b.Left) + boolFuncLeaves(t, b.Right)
+	if b.Func != nil {
+		n++
+	}
+	return n
+}

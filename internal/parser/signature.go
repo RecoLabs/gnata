@@ -8,14 +8,16 @@ import (
 // ParamSpec describes one parameter's type constraint parsed from a function signature.
 type ParamSpec struct {
 	Types       []byte // accepted base types: b n s l a o f j x u
-	ContentType byte   // for 'a': element type constraint; 0 = any
+	ContentType byte   // for 'a': element type constraint, '(' for a choice; 0 = any
 	Optional    bool   // ? — param may be omitted
 	Variadic    bool   // + — repeats; must be the last spec
 	Context     bool   // - — inject focus (context value) when the argument is missing
+	Lazy        bool   // the regex quantifier is lazy: "+?", "??", or one made by '-'
+	AnyContext  bool   // '?' before '-': jsonata-js's check of the context value accepts any type
 }
 
 // ParseSig parses and validates a raw function-signature string (the content
-// between the outer < > brackets, as stored in Signature.Raw).
+// between the outer < > brackets).
 //
 // Error codes:
 //   - S0401 when a content-type specifier (<X>) is applied to a type other than
@@ -48,17 +50,26 @@ func ParseSig(raw string) ([]ParamSpec, error) {
 			}
 		}
 
+		// jsonata-js appends '?' to the parameter's regex for both '?' and
+		// '-', so a second one makes the quantifier lazy.
+		questions := 0
 		for i < len(s) && (s[i] == '?' || s[i] == '+' || s[i] == '-') {
 			switch s[i] {
 			case '?':
 				spec.Optional = true
+				questions++
 			case '+':
 				spec.Variadic = true
 			case '-':
 				spec.Context = true
+				// jsonata-js checks the context value with the parameter's
+				// regex so far, which a '?' already makes match anything.
+				spec.AnyContext = spec.Optional
+				questions++
 			}
 			i++
 		}
+		spec.Lazy = questions > 1 || spec.Variadic && questions > 0
 
 		specs = append(specs, spec)
 	}
@@ -103,6 +114,11 @@ func parseSigContentType(s string, i int, types []byte) (contentType byte, next 
 			i = skipBrackets(s, i)
 		}
 	} else {
+		if slices.Contains(types, 'a') && i < len(s) && s[i] == '(' {
+			// jsonata-js compares items with a choice's first character,
+			// '(', so no item matches it.
+			contentType = '('
+		}
 		i = skipBracketsKeepClose(s, i)
 	}
 

@@ -1,6 +1,7 @@
 package parser_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -66,9 +67,13 @@ func assertCleanParse(t *testing.T, src string) {
 
 func TestProcessASTIsIdempotent(t *testing.T) {
 	for _, src := range robustnessCorpus {
-		node := mustParse(t, src)
-		if _, err := parser.ProcessAST(node); err != nil {
+		once := mustParse(t, src)
+		twice, err := parser.ProcessAST(mustParse(t, src))
+		if err != nil {
 			t.Fatalf("second ProcessAST(%q): %v", src, err)
+		}
+		if !reflect.DeepEqual(once, twice) {
+			t.Fatalf("second ProcessAST(%q) changed the tree", src)
 		}
 	}
 	if node, err := parser.ProcessAST(nil); node != nil || err != nil {
