@@ -20,7 +20,7 @@ type pathCtx struct {
 // When any step binds a #$var, @$var or ancestor, it switches to tuple-aware
 // evaluation so the binding remains visible in subsequent steps.
 func evalPath(node *parser.Node, input any, env *Environment) (any, error) {
-	if pathHasTupleStep(node.Steps) {
+	if pathHasTupleStep(node.Steps()) {
 		return evalPathTuple(node, input, env)
 	}
 	return evalPathSimple(node, input, env)
@@ -47,9 +47,9 @@ func evalPathSimpleLast(node *parser.Node, input any, env *Environment) (result,
 		return nil, nil, err
 	}
 	if seq, ok := result.(*Sequence); ok {
-		result = CollapseAndKeep(seq, node.KeepSingletonArray)
+		result = CollapseAndKeep(seq, node.KeepSingletonArray())
 	}
-	if node.KeepSingletonArray {
+	if node.KeepSingletonArray() {
 		return keepSingletonArray(result), lastIn, nil
 	}
 	return result, lastIn, nil
@@ -63,7 +63,7 @@ func evalPathSimpleSteps(node *parser.Node, input any, env *Environment) (result
 	// keptMissing: the previous step kept an undefined base as its one item,
 	// which the next step takes as an undefined context, as in jsonata-js.
 	keptMissing := false
-	for i, step := range node.Steps {
+	for i, step := range node.Steps() {
 		if i > 0 && result == nil && !keptMissing {
 			return nil, nil, nil
 		}
@@ -81,43 +81,43 @@ func evalPathSimpleSteps(node *parser.Node, input any, env *Environment) (result
 		// step rather than a sequence to map over.
 		switch _, consItem := result.(ConsArray); {
 		case consItem:
-			result, err = evalConsArrayStep(step, result, env, node.KeepSingletonArray)
+			result, err = evalConsArrayStep(step, result, env, node.KeepSingletonArray())
 		case i > 0 && step.Type == parser.NodeVariable:
-			result, err = evalVariableStep(step, result, env, i == len(node.Steps)-1)
+			result, err = evalVariableStep(step, result, env, i == len(node.Steps())-1)
 		case i == 0 && startsRootPath(step, result, env):
 			env = unwrapRoot(env)
 			if result, err = evalStepOnce(step, result, env); err == nil {
-				err = checkRootStep(step, result, i == len(node.Steps)-1, env)
+				err = checkRootStep(step, result, i == len(node.Steps())-1, env)
 			}
 		case i == 0 && subscriptsName(step) && isContextArray(result, env):
 			// A predicated field maps over an array of contexts, as jsonata-js
 			// does when it evaluates it as a one-step path.
-			result, err = evalPathStep(step, result, env, true, node.KeepSingletonArray, i == len(node.Steps)-1)
-		case !prevWasMapper && isSubscript(step) && step.Group == nil && i < len(node.Steps)-1:
+			result, err = evalPathStep(step, result, env, true, node.KeepSingletonArray(), i == len(node.Steps())-1)
+		case !prevWasMapper && isSubscript(step) && step.Group() == nil && i < len(node.Steps())-1:
 			if result, keptMissing, err = subscriptStage(step, result, env); err == nil {
 				err = checkSequenceLength(result, env)
 			}
 			result = selectionContexts(step, result, i > 0)
 		default:
-			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray, i == len(node.Steps)-1)
+			result, err = evalPathStep(step, result, env, prevWasMapper, node.KeepSingletonArray(), i == len(node.Steps())-1)
 		}
 		if err != nil {
 			return nil, nil, err
 		}
 		result = spreadSortIndexStage(step, result)
-		if kept, ok := result.(KeptArray); ok && step.Type == parser.NodeFunction && step.KeepArray {
+		if kept, ok := result.(KeptArray); ok && step.Type == parser.NodeFunction && step.KeepArray() {
 			// A call's [] keeps its one-item sequence through later steps,
 			// so its lone array stays one context, as in jsonata-js.
 			result = []any(kept)
 		}
 		// A path's [] keeps the one item a last step kept, as a lone array a
 		// filter stage selected, which jsonata-js returns as [[1,2]].
-		if _, kept := result.(KeptArray); !kept || !node.KeepSingletonArray || i < len(node.Steps)-1 {
+		if _, kept := result.(KeptArray); !kept || !node.KeepSingletonArray() || i < len(node.Steps())-1 {
 			result = flattenKept(result)
 		}
 		// Mapping over a one-item array nests a constructed array for [];
 		// unnest it so later steps see it whole and it is wrapped once.
-		if prevWasMapper && node.KeepSingletonArray {
+		if prevWasMapper && node.KeepSingletonArray() {
 			result = unnestCons(result)
 		}
 		if _, consItem := result.(ConsArray); !consItem && prevWasMapper && isNothingFound(step, result) {
@@ -211,7 +211,7 @@ func isNothingFound(step *parser.Node, result any) bool {
 	if !ok || len(arr) != 0 {
 		return false
 	}
-	switch step.Type {
+	switch step.Type { //nolint:exhaustive // only step types that never yield nothing-found
 	case parser.NodeName, parser.NodeString, parser.NodeWildcard, parser.NodeVariable, parser.NodeBlock:
 		return false
 	}
@@ -270,7 +270,7 @@ func evalConsArrayStep(step *parser.Node, input any, env *Environment, keepSingl
 // context item, grouping its elements by key like ${...} does.
 func consArrayGroup(step *parser.Node, input any, env *Environment) (any, error) {
 	items, _ := AsArray(input)
-	return groupItems(objectPairs(step.LHS), items, env)
+	return groupItems(objectPairs(step.LHS()), items, env)
 }
 
 // evalPathTuple evaluates a path that binds #$var, @$var or an ancestor by
@@ -282,7 +282,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 		return nil, err
 	}
 
-	if grp := node.Group; grp != nil {
+	if grp := node.Group(); grp != nil {
 		// jsonata-js groups a path that emptied before its tuple stream
 		// started, or a stream sorted into raw tuples, as plain items.
 		switch {
@@ -304,7 +304,7 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 		appendToSequence(seq, ctx.value)
 	}
 	switch {
-	case !node.KeepSingletonArray || len(seq.Values) == 0:
+	case !node.KeepSingletonArray() || len(seq.Values) == 0:
 		return CollapseSequence(seq), nil
 	case len(seq.Values) > 1:
 		return CollapseToSlice(seq), nil
@@ -323,9 +323,9 @@ func evalPathTuple(node *parser.Node, input any, env *Environment) (any, error) 
 // step is a variable, or the input is the root array jsonata-js wraps as
 // one item (see markRootContext).
 func inputTuples(node *parser.Node, input any, env *Environment) []pathCtx {
-	first := parser.StepBase(node.Steps[0])
+	first := parser.StepBase(node.Steps()[0])
 	items, ok := AsArray(input)
-	if !ok || first.Type == parser.NodeVariable || first.RootContext && isRootInput(items, env) {
+	if !ok || first.Type == parser.NodeVariable || first.RootContext() && isRootInput(items, env) {
 		return []pathCtx{{value: input, env: env}}
 	}
 	ctxs := make([]pathCtx, len(items))
@@ -357,14 +357,14 @@ const (
 func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 	node *parser.Node, ctxs []pathCtx, env *Environment, state streamPos,
 ) (_ []pathCtx, rawContext tupleContext, started bool, _ error) {
-	tupleStart := firstBindingStep(node.Steps)
+	tupleStart := firstBindingStep(node.Steps())
 	if state == streamRunning {
 		tupleStart = -1
 	}
-	hasBindingStep := tupleStart < len(node.Steps) || state == streamPending
+	hasBindingStep := tupleStart < len(node.Steps()) || state == streamPending
 
 	started = state == streamRunning
-	for stepIdx, step := range node.Steps {
+	for stepIdx, step := range node.Steps() {
 		if err := env.Err(); err != nil {
 			return nil, nil, false, err
 		}
@@ -380,7 +380,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// variable with an @$var focus: jsonata-js keeps the wrapped array
 		// as the context there.
 		rootStep := stepIdx == 0 && len(ctxs) == 1 && startsRootPath(step, ctxs[0].value, ctxs[0].env)
-		if base := parser.StepBase(step); rootStep && (base.Type != parser.NodeVariable || base.Focus == "") {
+		if base := parser.StepBase(step); rootStep && (base.Type != parser.NodeVariable || base.Focus() == "") {
 			ctxs[0].env = unwrapRoot(ctxs[0].env)
 		}
 
@@ -399,14 +399,14 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 			case beforeStream || startsStream:
 				leftState = streamPending
 			}
-			raw := rawTupleContext(node.Steps[:stepIdx+1], env)
+			raw := rawTupleContext(node.Steps()[:stepIdx+1], env)
 			sorted, sortedRaw, sortStarted, err := evalTupleSort(sortStep, ctxs, env, leftState, raw)
 			if err != nil {
 				return nil, nil, false, err
 			}
 			if startsStream {
 				started = sortStarted
-				if !sortStep.Tuple {
+				if !sortStep.Tuple() {
 					bindSortIndex(sortStep, sorted)
 				}
 			}
@@ -427,7 +427,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		// A block a % reaches into yields its last expression's tuples,
 		// which carry the bindings made inside; predicates on the block
 		// then filter the whole stream.
-		if base, stages := splitTupleStages(step); base.Type == parser.NodeBlock && base.TupleResult {
+		if base, stages := splitTupleStages(step); base.Type == parser.NodeBlock && base.TupleResult() {
 			var err error
 			if ctxs, err = blockTuples(base, stages, ctxs); err != nil {
 				return nil, nil, false, err
@@ -440,7 +440,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 
 		if base, stages := splitTupleStages(step); (startsStream || inStream) && len(stages) > 0 {
 			var err error
-			if ctxs, err = evalTupleStages(base, stages, ctxs, stepIdx == 0, node.KeepSingletonArray); err != nil {
+			if ctxs, err = evalTupleStages(base, stages, ctxs, stepIdx == 0, node.KeepSingletonArray()); err != nil {
 				return nil, nil, false, err
 			}
 			if len(ctxs) == 0 {
@@ -450,7 +450,7 @@ func walkPathTuple( //nolint:gocyclo,funlen // dispatch
 		}
 
 		var err error
-		if ctxs, err = mapTupleStep(step, ctxs, stepIdx == 0, node.KeepSingletonArray, beforeStream && !rootStep); err != nil {
+		if ctxs, err = mapTupleStep(step, ctxs, stepIdx == 0, node.KeepSingletonArray(), beforeStream && !rootStep); err != nil {
 			return nil, nil, false, err
 		}
 		if len(ctxs) == 0 {
@@ -531,7 +531,7 @@ func evalTupleSort(
 	if needsNavigation {
 		left := step.Left
 		if parser.IsStepPath(left) {
-			left = left.Steps[0]
+			left = left.Steps()[0]
 		}
 		leftSort, leftStages = splitTupleStages(left)
 	}
@@ -543,7 +543,7 @@ func evalTupleSort(
 		if err != nil {
 			return nil, false, false, err
 		}
-		if !inStream && !leftSort.Tuple {
+		if !inStream && !leftSort.Tuple() {
 			bindSortIndex(leftSort, inner)
 		}
 		if innerRaw {
@@ -559,7 +559,7 @@ func evalTupleSort(
 		// sorted output; a plain Eval would discard the per-element environments.
 		var expanded []pathCtx
 		switch {
-		case step.Left.Type == parser.NodePath && len(step.Left.Steps) > 0:
+		case step.Left.Type == parser.NodePath && len(step.Left.Steps()) > 0:
 			var err error
 			if expanded, _, started, err = walkPathTuple(step.Left, ctxs, env, state); err != nil {
 				return nil, false, false, err
@@ -583,12 +583,12 @@ func evalTupleSort(
 	}
 	// A sort whose Left binds nothing starts any stream itself, which
 	// jsonata-js never reaches when that Left yields nothing.
-	if !inStream && !step.Tuple {
+	if !inStream && !step.Tuple() {
 		started = len(ctxs) > 0
 	}
-	rawResult = inputRaw || (inStream || step.Tuple) && len(ctxs) > 1
+	rawResult = inputRaw || (inStream || step.Tuple()) && len(ctxs) > 1
 
-	if len(step.Terms) == 0 {
+	if len(step.Terms()) == 0 {
 		return ctxs, rawResult, started, nil
 	}
 
@@ -600,7 +600,7 @@ func evalTupleSort(
 			aVal, aEnv = termContext(a)
 			bVal, bEnv = termContext(b)
 		}
-		return compareSortTerms(step.Terms, aVal, bVal, aEnv, bEnv)
+		return compareSortTerms(step.Terms(), aVal, bVal, aEnv, bEnv)
 	}); err != nil {
 		return nil, false, false, err
 	}
@@ -610,13 +610,13 @@ func evalTupleSort(
 // bindSortIndex binds a sort step's #$var to the sorted positions, for a sort
 // that starts the tuple stream.
 func bindSortIndex(step *parser.Node, sorted []pathCtx) {
-	if step.Index == "" {
+	if step.Index() == "" {
 		return
 	}
 	for k := range sorted {
 		sorted[k].env = NewChildEnvironment(sorted[k].env)
 		sorted[k].env.tuple = true
-		sorted[k].env.Bind(step.Index, float64(k))
+		sorted[k].env.Bind(step.Index(), float64(k))
 	}
 }
 
@@ -625,8 +625,8 @@ func bindSortIndex(step *parser.Node, sorted []pathCtx) {
 func newTupleEnv(step *parser.Node, input any, env *Environment) *Environment {
 	e := NewChildEnvironment(env)
 	e.tuple = true
-	if step.Ancestor != nil {
-		e.Bind(step.Ancestor.Label, input)
+	if step.Ancestor() != nil {
+		e.Bind(step.Ancestor().Label, input)
 	}
 	return e
 }
@@ -641,17 +641,17 @@ func newTupleEnv(step *parser.Node, input any, env *Environment) *Environment {
 // semantics: the variable captures each element, but subsequent path steps continue
 // navigating from the parent context.
 func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *Environment, nextCtxs *[]pathCtx) {
-	isJoin := step.Focus != ""
+	isJoin := step.Focus() != ""
 	// A join keeps its parent as the context, an undefined one included.
 	missing := isJoin && parentValue == nil
 
 	bindAt := func(j int, elem any) *Environment {
 		e := newTupleEnv(step, parentValue, parentEnv)
-		if step.Index != "" {
-			e.Bind(step.Index, float64(j))
+		if step.Index() != "" {
+			e.Bind(step.Index(), float64(j))
 		}
-		if step.Focus != "" {
-			e.Bind(step.Focus, elem)
+		if step.Focus() != "" {
+			e.Bind(step.Focus(), elem)
 		}
 		return e
 	}
@@ -664,7 +664,7 @@ func appendTupleResults(step *parser.Node, result, parentValue any, parentEnv *E
 	}
 
 	if seq, ok := result.(*Sequence); ok {
-		if result = CollapseAndKeep(seq, step.KeepArray && !step.IndexKeepArray); result == nil {
+		if result = CollapseAndKeep(seq, step.KeepArray() && !step.IndexKeepArray()); result == nil {
 			return
 		}
 	}
@@ -722,20 +722,20 @@ func appendBlockTuples(stream []pathCtx, block *parser.Node, ctx pathCtx) ([]pat
 // the grouped value instead, as does any expression a % passed over.
 func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx, result any, _ error) {
 	switch {
-	case node.Type == parser.NodeBlock && node.TupleResult && node.Group == nil:
-		last := len(node.Expressions) - 1
+	case node.Type == parser.NodeBlock && node.TupleResult() && node.Group() == nil:
+		last := len(node.Expressions()) - 1
 		blockEnv := env
 		if last > 0 {
 			blockEnv = NewChildEnvironment(env)
-			for _, expr := range node.Expressions[:last] {
+			for _, expr := range node.Expressions()[:last] {
 				if _, err := Eval(expr, val, blockEnv); err != nil {
 					return nil, nil, err
 				}
 			}
 		}
-		tuples, result, err := tupleResult(node.Expressions[last], val, blockEnv)
+		tuples, result, err := tupleResult(node.Expressions()[last], val, blockEnv)
 		if err != nil || tuples == nil {
-			return nil, settleRaw(result, node.KeepArray), err
+			return nil, settleRaw(result, node.KeepArray()), err
 		}
 		if blockEnv != env {
 			if err := rebaseTuples(tuples, blockEnv, env); err != nil {
@@ -743,7 +743,7 @@ func tupleResult(node *parser.Node, val any, env *Environment) (tuples []pathCtx
 			}
 		}
 		return tuples, nil, nil
-	case node.Type == parser.NodePath && node.TupleResult && node.Group == nil:
+	case node.Type == parser.NodePath && node.TupleResult() && node.Group() == nil:
 		tuples, _, _, err := walkPathTuple(node, inputTuples(node, val, env), env, streamOwn)
 		return tuples, nil, err
 	}
@@ -865,13 +865,13 @@ func pathStepValue( //nolint:gocyclo,funlen // dispatch
 ) (any, error) {
 	// A leading step's own group, as on (a){k: v} or *{k: v}, groups the
 	// step's result.
-	if step.Group != nil {
+	if step.Group() != nil {
 		return Eval(step, input, env)
 	}
 	// Steps that already handle array inputs natively (field lookup, wildcard,
 	// descendant, variable, sort) are delegated directly. The parser rejects
 	// number, boolean and null steps (S0213).
-	switch step.Type {
+	switch step.Type { //nolint:exhaustive // only step types that handle array inputs natively; the rest map over the input
 	case parser.NodeWildcard:
 		return evalPathStepWildcard(step, input, env)
 	case parser.NodeName:
@@ -1008,7 +1008,7 @@ func stepHasBinding(step *parser.Node) bool {
 		return true
 	}
 	for n := step; n != nil; n = n.Left {
-		if n.Index != "" || n.Focus != "" || n.Ancestor != nil || n.TupleResult {
+		if n.Index() != "" || n.Focus() != "" || n.Ancestor() != nil || n.TupleResult() {
 			return true
 		}
 		if n.Type != parser.NodeBinary || n.Value != "[" {
@@ -1024,7 +1024,7 @@ func sortLeftHasBinding(step *parser.Node) bool {
 	for step.Type == parser.NodeBinary && step.Value == "[" && step.Left != nil && step.Right != nil {
 		step = step.Left
 	}
-	return step.Type == parser.NodeSort && step.Tuple
+	return step.Type == parser.NodeSort && step.Tuple()
 }
 
 // splitTupleStages splits a step such as X[p1]#$i[p2] into its base step X
@@ -1032,7 +1032,7 @@ func sortLeftHasBinding(step *parser.Node) bool {
 func splitTupleStages(step *parser.Node) (*parser.Node, []tupleStage) {
 	var stages []tupleStage
 	for step.Type == parser.NodeBinary && step.Value == "[" && step.Left != nil && step.Right != nil {
-		stages = append(stages, tupleStage{predicate: step.Right, index: step.Index})
+		stages = append(stages, tupleStage{predicate: step.Right, index: step.Index()})
 		step = step.Left
 	}
 	slices.Reverse(stages)
@@ -1082,9 +1082,9 @@ func evalTupleContextStep(
 	switch _, cons := val.(ConsArray); {
 	case cons:
 		result, err = evalConsArrayStep(step, val, env, keepSingleton)
-	case step.Type == parser.NodeWildcard && step.Group == nil:
+	case step.Type == parser.NodeWildcard && step.Group() == nil:
 		result, err = evalWildcard(step, val, env)
-	case beforeStream && isSubscript(step) && step.Group == nil:
+	case beforeStream && isSubscript(step) && step.Group() == nil:
 		if result, missing, err = subscriptStage(step, val, env); err == nil {
 			err = checkSequenceLength(result, env)
 		}
@@ -1121,12 +1121,12 @@ func evalTupleContextStep(
 // sees the whole array, where a plain step maps over its items.
 func evalStepOnce(step *parser.Node, val any, env *Environment) (any, error) {
 	switch {
-	case step.Type == parser.NodeFunction && step.Group == nil:
+	case step.Type == parser.NodeFunction && step.Group() == nil:
 		return evalFunction(step, val, env)
-	case isSubscript(step) && step.Group == nil:
+	case isSubscript(step) && step.Group() == nil:
 		return evalSubscriptValue(step, val, env)
-	case step.Type == parser.NodeName && step.Group == nil:
-		if step.KeepArray {
+	case step.Type == parser.NodeName && step.Group() == nil:
+		if step.KeepArray() {
 			return keepStepResult(evalLookup(step, val, env))
 		}
 		return evalLookup(step, val, env)
@@ -1140,7 +1140,7 @@ func evalStepOnce(step *parser.Node, val any, env *Environment) (any, error) {
 // a leading array constructor sees it wrapped.
 func startsRootPath(step *parser.Node, input any, env *Environment) bool {
 	items, ok := input.([]any)
-	if !ok || !parser.StepBase(step).RootContext || !isRootInput(items, env) {
+	if !ok || !parser.StepBase(step).RootContext() || !isRootInput(items, env) {
 		return false
 	}
 	// A sort's Left holds the steps jsonata-js puts before it.
@@ -1148,7 +1148,7 @@ func startsRootPath(step *parser.Node, input any, env *Environment) bool {
 	for base := parser.StepBase(lead); base.Type == parser.NodeSort && base.Left != nil; base = parser.StepBase(lead) {
 		lead = base.Left
 		if lead.Type == parser.NodePath {
-			lead = lead.Steps[0]
+			lead = lead.Steps()[0]
 		}
 	}
 	switch base := parser.StepBase(lead); {
@@ -1204,23 +1204,23 @@ func bindingNames(nodes []*parser.Node, env *Environment) []string {
 			stopped = true
 			return
 		}
-		if n.Type != parser.NodeSort || n.Tuple {
+		if n.Type != parser.NodeSort || n.Tuple() {
 			walk(n.Left)
 		}
-		for _, step := range n.Steps {
+		for _, step := range n.Steps() {
 			walk(step)
 		}
 		// A block a % reaches into carries its last expression's bindings.
-		if n.Type == parser.NodeBlock && n.TupleResult {
-			walk(n.Expressions[len(n.Expressions)-1])
+		if n.Type == parser.NodeBlock && n.TupleResult() {
+			walk(n.Expressions()[len(n.Expressions())-1])
 		}
 		// jsonata-js adds a step's focus to the tuple, then its index and
 		// ancestor.
 		var ancestor string
-		if n.Ancestor != nil {
-			ancestor = n.Ancestor.Label
+		if n.Ancestor() != nil {
+			ancestor = n.Ancestor().Label
 		}
-		for _, name := range []string{n.Focus, n.Index, ancestor} {
+		for _, name := range []string{n.Focus(), n.Index(), ancestor} {
 			if name != "" && !slices.Contains(names, name) {
 				names = append(names, name)
 			}

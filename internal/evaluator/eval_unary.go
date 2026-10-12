@@ -10,7 +10,7 @@ import (
 func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 	switch node.Value {
 	case "-":
-		val, err := Eval(node.Expression, input, env)
+		val, err := Eval(node.Expression(), input, env)
 		if err != nil {
 			return nil, err
 		}
@@ -33,8 +33,8 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 
 	case "[":
 		// Array constructor.
-		result := make([]any, 0, len(node.Expressions))
-		for _, expr := range node.Expressions {
+		result := make([]any, 0, len(node.Expressions()))
+		for _, expr := range node.Expressions() {
 			val, err := Eval(expr, input, env)
 			if err != nil {
 				return nil, err
@@ -71,7 +71,7 @@ func evalUnary(node *parser.Node, input any, env *Environment) (any, error) {
 				result = append(result, val)
 			}
 		}
-		if node.ConsArray {
+		if node.ConsArray() {
 			return ConsArray(result), nil
 		}
 		return result, nil
@@ -93,14 +93,14 @@ func evalObjectConstructor(node *parser.Node, input any, env *Environment) (any,
 	}
 	if items, ok := AsArray(input); ok {
 		if !isRootInput(items, env) {
-			return groupItems(objectPairs(node.LHS), items, env)
+			return groupItems(objectPairs(node.LHS()), items, env)
 		}
 		env = unwrapRoot(env)
 	}
 	result := NewOrderedMap()
-	for i := 0; i+1 < len(node.LHS); i += 2 {
-		keyNode := node.LHS[i]
-		valNode := node.LHS[i+1]
+	for i := 0; i+1 < len(node.LHS()); i += 2 {
+		keyNode := node.LHS()[i]
+		valNode := node.LHS()[i+1]
 
 		keyVal, err := Eval(keyNode, input, env)
 		if err != nil {

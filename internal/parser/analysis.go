@@ -291,12 +291,12 @@ func (b *BoolFastPath) decimalSafe() bool {
 // single gjson dotted-path string, which callers doing their own per-step
 // traversal need in their original, un-escaped form.
 func rawStepNames(node *Node) []string {
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // only names and paths have step names
 	case NodeName:
 		return []string{node.Value}
 	case NodePath:
-		names := make([]string, len(node.Steps))
-		for i, step := range node.Steps {
+		names := make([]string, len(node.Steps()))
+		for i, step := range node.Steps() {
 			names[i] = step.Value
 		}
 		return names
@@ -309,31 +309,31 @@ func rawStepNames(node *Node) []string {
 // built-in function with a pure-path first argument. Returns nil when the
 // pattern does not match.
 func tryCollectFunc(node *Node) *FuncFastPath {
-	if node == nil || node.Type != NodeFunction || node.KeepArray || node.Group != nil {
+	if node == nil || node.Type != NodeFunction || node.KeepArray() || node.Group() != nil {
 		return nil
 	}
-	if node.Procedure == nil || node.Procedure.Type != NodeVariable {
+	if node.Procedure() == nil || node.Procedure().Type != NodeVariable {
 		return nil
 	}
-	name := node.Procedure.Value
+	name := node.Procedure().Value
 
 	// $contains(path, "literal") — two-argument special case.
 	if name == "contains" {
-		if len(node.Arguments) != 2 {
+		if len(node.Arguments()) != 2 {
 			return nil
 		}
-		if node.Arguments[1] == nil || node.Arguments[1].Type != NodeString || node.Arguments[1].Group != nil {
+		if node.Arguments()[1] == nil || node.Arguments()[1].Type != NodeString || node.Arguments()[1].Group() != nil {
 			return nil
 		}
-		paths, ok := collectPaths(node.Arguments[0])
+		paths, ok := collectPaths(node.Arguments()[0])
 		if !ok || len(paths) != 1 {
 			return nil
 		}
 		return &FuncFastPath{
 			Kind:      FuncFastContains,
 			Path:      paths[0],
-			PathSteps: rawStepNames(node.Arguments[0]),
-			StrArg:    node.Arguments[1].Value,
+			PathSteps: rawStepNames(node.Arguments()[0]),
+			StrArg:    node.Arguments()[1].Value,
 		}
 	}
 
@@ -341,17 +341,17 @@ func tryCollectFunc(node *Node) *FuncFastPath {
 	if !ok {
 		return nil
 	}
-	if len(node.Arguments) != 1 {
+	if len(node.Arguments()) != 1 {
 		return nil
 	}
-	paths, pathOK := collectPaths(node.Arguments[0])
+	paths, pathOK := collectPaths(node.Arguments()[0])
 	if !pathOK || len(paths) != 1 {
 		return nil
 	}
 	return &FuncFastPath{
 		Kind:      kind,
 		Path:      paths[0],
-		PathSteps: rawStepNames(node.Arguments[0]),
+		PathSteps: rawStepNames(node.Arguments()[0]),
 	}
 }
 
@@ -359,14 +359,14 @@ func tryCollectFunc(node *Node) *FuncFastPath {
 // with a pure path on the left and a literal (string/number/bool/null) on the right.
 // Returns nil when the pattern does not match.
 func tryCollectComparison(node *Node) *ComparisonFastPath {
-	if node == nil || node.Type != NodeBinary || node.Group != nil {
+	if node == nil || node.Type != NodeBinary || node.Group() != nil {
 		return nil
 	}
 	op := node.Value
 	if op != "=" && op != "!=" {
 		return nil
 	}
-	if node.Left == nil || node.Right == nil || node.Right.Group != nil {
+	if node.Left == nil || node.Right == nil || node.Right.Group() != nil {
 		return nil
 	}
 	lhsPaths, ok := collectPaths(node.Left)
@@ -377,7 +377,7 @@ func tryCollectComparison(node *Node) *ComparisonFastPath {
 
 	lhsSteps := rawStepNames(node.Left)
 
-	switch node.Right.Type {
+	switch node.Right.Type { //nolint:exhaustive // only literal right-hand sides have a comparison fast path
 	case NodeString:
 		return &ComparisonFastPath{
 			LHSPath: lhsPath, LHSPathSteps: lhsSteps, Op: op,
@@ -386,7 +386,7 @@ func tryCollectComparison(node *Node) *ComparisonFastPath {
 	case NodeNumber:
 		return &ComparisonFastPath{
 			LHSPath: lhsPath, LHSPathSteps: lhsSteps, Op: op,
-			RHSKind: RHSKindNumber, RHSNumber: node.Right.NumVal,
+			RHSKind: RHSKindNumber, RHSNumber: node.Right.NumVal(),
 		}
 	case NodeValue:
 		switch node.Right.Value {
@@ -406,7 +406,7 @@ func collectPaths(node *Node) ([]string, bool) {
 	if node == nil {
 		return nil, false
 	}
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // only path-shaped node types have GJSON paths; the rest return (nil, false)
 	case NodeName:
 		// Simple field name — GJSON path is just the name.
 		if !isPlainName(node) {
@@ -421,11 +421,11 @@ func collectPaths(node *Node) ([]string, bool) {
 	case NodePath:
 		// All steps must be simple name nodes with no predicates/stages, and
 		// the path must not group its result.
-		if node.Group != nil {
+		if node.Group() != nil {
 			return nil, false
 		}
-		parts := make([]string, 0, len(node.Steps))
-		for _, step := range node.Steps {
+		parts := make([]string, 0, len(node.Steps()))
+		for _, step := range node.Steps() {
 			if !isPlainName(step) {
 				return nil, false
 			}
@@ -456,8 +456,8 @@ func collectPaths(node *Node) ([]string, bool) {
 // isPlainName reports whether node is a field name a gjson path can look up
 // as it is: one with no predicates, group, binding or [].
 func isPlainName(node *Node) bool {
-	return node.Type == NodeName && len(node.Stages) == 0 && node.Group == nil &&
-		node.Focus == "" && node.Index == "" && !node.KeepArray && !node.ConsArray
+	return node.Type == NodeName && node.Group() == nil &&
+		node.Focus() == "" && node.Index() == "" && !node.KeepArray() && !node.ConsArray()
 }
 
 // gjsonEscapeName escapes a field name for use in a GJSON path.

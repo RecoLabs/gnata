@@ -13,13 +13,13 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 		return nil, nil
 	} else if err := env.Err(); err != nil {
 		return nil, err
-	} else if node.Group != nil {
+	} else if node.Group() != nil {
 		// If the node has a Group expression (A{key:val}), evaluate the base node
 		// first, then apply the group-by reduction.
 		return evalGroupBy(node, input, env)
 	}
 
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // a partial-application placeholder is only valid as a call argument and reaches the default error
 	case parser.NodeValue:
 		return evalValue(node)
 	case parser.NodeString:
@@ -29,7 +29,7 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodeVariable:
 		return evalVariable(node, input, env)
 	case parser.NodeName:
-		if node.KeepArray {
+		if node.KeepArray() {
 			return keepStepResult(evalBoundedName(node, input, env))
 		}
 		return evalBoundedName(node, input, env)
@@ -64,7 +64,7 @@ func Eval(node *parser.Node, input any, env *Environment) (any, error) {
 	case parser.NodeParent:
 		// The step the parser resolved % to binds its slot's label to its
 		// input; a % no step resolved, as in a lambda, is undefined.
-		val, _ := env.Lookup(node.Slot.Label)
+		val, _ := env.Lookup(node.Slot().Label)
 		return val, nil
 	default:
 		return nil, fmt.Errorf("unknown node type: %s", node.Type)

@@ -15,21 +15,21 @@ func markTailPosition(node *Node, jsTail bool) {
 	if node == nil {
 		return
 	}
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // only calls and the expressions that pass a tail position on
 	case NodeFunction:
 		// jsonata-js wraps a call with a predicate or a # binding in a
 		// path, which is not a tail call.
-		node.TailContext = jsTail && len(node.Stages) == 0 && node.Index == ""
+		node.SetTailContext(jsTail && node.Index() == "")
 		// A jsonata-js tail call drops a group on the call ($f(){k: v}), as
 		// trampolining does; any other call keeps it, so only one without a
 		// group is trampolined.
-		node.Thunk = node.TailContext || node.Group == nil
+		node.SetThunk(node.TailContext() || node.Group() == nil)
 	case NodeCondition:
-		markTailPosition(node.Then, jsTail)
-		markTailPosition(node.Else, jsTail)
+		markTailPosition(node.Then(), jsTail)
+		markTailPosition(node.Else(), jsTail)
 	case NodeBlock:
-		if len(node.Expressions) > 0 {
-			markTailPosition(node.Expressions[len(node.Expressions)-1], jsTail)
+		if len(node.Expressions()) > 0 {
+			markTailPosition(node.Expressions()[len(node.Expressions())-1], jsTail)
 		}
 	case NodeBind:
 		// jsonata-js does not optimize a bind, but trampolining its right
@@ -41,7 +41,7 @@ func markTailPosition(node *Node, jsTail bool) {
 		// returned uncollapsed, as a tail call is (see evalDefaultLeft), but
 		// gnata evaluates a once, as the condition, so only b is a tail call.
 		if node.Value == "?:" || node.Value == "??" {
-			node.Thunk = jsTail
+			node.SetThunk(jsTail)
 			markTailPosition(node.Right, jsTail)
 		}
 	case NodeLambda:

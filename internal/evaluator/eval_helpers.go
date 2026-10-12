@@ -380,13 +380,13 @@ func evalValue(node *parser.Node) (any, error) {
 
 func evalVariable(node *parser.Node, input any, env *Environment) (any, error) {
 	if node.Value == "" {
-		return settleRaw(input, node.KeepArray), nil
+		return settleRaw(input, node.KeepArray()), nil
 	}
 	val, found := env.Lookup(node.Value)
 	if !found {
 		return nil, nil
 	}
-	return settleRaw(val, node.KeepArray), nil
+	return settleRaw(val, node.KeepArray()), nil
 }
 
 // evalName's array-mapping semantics (flatten every level of an array
@@ -406,7 +406,7 @@ func evalName(node *parser.Node, input any, env *Environment) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return frame.collapse(node.KeepArray), nil
+	return frame.collapse(node.KeepArray()), nil
 }
 
 // evalBoundedName evaluates a field lookup outside a path step, which
@@ -473,7 +473,7 @@ func nameOverContexts(
 			if err != nil {
 				return nil, 0, err
 			}
-			val, isSeq = inner.collapse(node.KeepArray), len(inner.seq.Values) > 1
+			val, isSeq = inner.collapse(node.KeepArray()), len(inner.seq.Values) > 1
 		}
 		if val == nil {
 			continue
@@ -486,12 +486,12 @@ func nameOverContexts(
 		return arr, 0, nil
 	}
 	result = frame.collapse(false)
-	if _, isArr := result.([]any); isArr && !node.KeepArray && len(frame.seq.Values) == 1 {
+	if _, isArr := result.([]any); isArr && !node.KeepArray() && len(frame.seq.Values) == 1 {
 		// The step's flattened result holds one array, which the next step,
 		// or a sort or group of the path, takes as one context.
 		return &Sequence{Values: []any{result}}, 1, nil
 	}
-	if node.KeepArray && len(frame.seq.Values) == 1 {
+	if node.KeepArray() && len(frame.seq.Values) == 1 {
 		// The [] keeps the step's one-item sequence, which a later step or
 		// the path's [] reads as an array holding that item.
 		result = []any{result}
@@ -731,7 +731,7 @@ func evalWildcard(_ *parser.Node, input any, env *Environment) (any, error) {
 // path's first step sees the root array as one item, as jsonata-js wraps it.
 func evalPathStepWildcard(step *parser.Node, input any, env *Environment) (any, error) {
 	items, ok := input.([]any)
-	if ok && step.RootContext && isRootInput(items, env) {
+	if ok && step.RootContext() && isRootInput(items, env) {
 		return evalWildcard(step, input, env)
 	}
 	if !ok || len(items) == 1 {

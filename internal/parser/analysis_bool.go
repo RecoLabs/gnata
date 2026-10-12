@@ -23,12 +23,12 @@ type BoolFastPath struct {
 }
 
 func tryCollectBool(node *Node) *BoolFastPath {
-	if node == nil || node.Group != nil {
+	if node == nil || node.Group() != nil {
 		return nil
 	}
 	switch {
-	case node.Type == NodeBlock && len(node.Expressions) == 1:
-		return tryCollectBool(node.Expressions[0])
+	case node.Type == NodeBlock && len(node.Expressions()) == 1:
+		return tryCollectBool(node.Expressions()[0])
 	case node.Type == NodeBinary && (node.Value == "and" || node.Value == "or"):
 		left := tryCollectBoolOperand(node.Left)
 		if left == nil {
@@ -44,7 +44,7 @@ func tryCollectBool(node *Node) *BoolFastPath {
 		}
 		return &BoolFastPath{Op: op, Left: left, Right: right}
 	case isNotCall(node):
-		operand := tryCollectBoolOperand(node.Arguments[0])
+		operand := tryCollectBoolOperand(node.Arguments()[0])
 		if operand == nil {
 			return nil
 		}
@@ -70,6 +70,6 @@ func tryCollectBoolOperand(node *Node) *BoolFastPath {
 }
 
 func isNotCall(node *Node) bool {
-	return node.Type == NodeFunction && node.Procedure != nil && node.Procedure.Type == NodeVariable &&
-		node.Procedure.Value == "not" && len(node.Arguments) == 1
+	return node.Type == NodeFunction && node.Procedure() != nil && node.Procedure().Type == NodeVariable &&
+		node.Procedure().Value == "not" && len(node.Arguments()) == 1
 }

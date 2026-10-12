@@ -14,7 +14,7 @@ import (
 func evalNumber(node *parser.Node, env *Environment) any {
 	prec := env.DecimalPrecision()
 	if prec == 0 {
-		return node.NumVal
+		return node.NumVal()
 	}
 	if decimal.IsCanonical(node.Value, prec) {
 		return json.Number(node.Value)
@@ -22,7 +22,7 @@ func evalNumber(node *parser.Node, env *Environment) any {
 	if d, ok := decimal.Parse(node.Value, prec); ok {
 		return d.Value(prec)
 	}
-	return node.NumVal
+	return node.NumVal()
 }
 
 // DecimalCmp compares two numbers in decimal. ok is false when either is not a

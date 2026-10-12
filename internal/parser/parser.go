@@ -268,7 +268,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
-		return &Node{Type: NodeNumber, Value: tok.Value, NumVal: tok.NumVal, Pos: tok.Pos}, nil
+		return (&Node{Type: NodeNumber, Value: tok.Value, Pos: tok.Pos}).SetNumVal(tok.NumVal), nil
 
 	case lexer.TokenValue:
 		if err := p.advanceInfix(); err != nil {
@@ -297,7 +297,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		}
 		// Fold unary minus into number literal.
 		if sub.Type == NodeNumber {
-			sub.NumVal = -sub.NumVal
+			sub.SetNumVal(-sub.NumVal())
 			if v, ok := strings.CutPrefix(sub.Value, "-"); ok {
 				sub.Value = v
 			} else {
@@ -305,7 +305,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 			}
 			return sub, nil
 		}
-		return &Node{Type: NodeUnary, Value: "-", Expression: sub, Pos: tok.Pos}, nil
+		return (&Node{Type: NodeUnary, Value: "-", Pos: tok.Pos}).SetExpression(sub), nil
 
 	case lexer.TokenStar:
 		if err := p.advanceInfix(); err != nil {
@@ -325,7 +325,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		}
 		slot := &Slot{Label: "!" + strconv.Itoa(len(p.slots)), Level: 1}
 		p.slots = append(p.slots, slot)
-		return &Node{Type: NodeParent, Value: "%", Pos: tok.Pos, Slot: slot}, nil
+		return (&Node{Type: NodeParent, Value: "%", Pos: tok.Pos}).SetSlot(slot), nil
 
 	case lexer.TokenLBracket:
 		// Array constructor.
@@ -354,7 +354,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		if err := p.advanceInfix(); err != nil { // consume ]
 			return nil, err
 		}
-		return &Node{Type: NodeUnary, Value: "[", Expressions: exprs, Pos: pos}, nil
+		return (&Node{Type: NodeUnary, Value: "[", Pos: pos}).SetExpressions(exprs), nil
 
 	case lexer.TokenLBrace:
 		// Object constructor.
@@ -369,7 +369,7 @@ func (p *Parser) nud() (*Node, error) { //nolint:gocyclo,funlen // dispatch
 		if err := p.advanceInfix(); err != nil { // consume }
 			return nil, err
 		}
-		return &Node{Type: NodeUnary, Value: "{", LHS: pairs, Pos: pos}, nil
+		return (&Node{Type: NodeUnary, Value: "{", Pos: pos}).SetLHS(pairs), nil
 
 	case lexer.TokenLParen:
 		return p.parseParenOrBlock(tok.Pos)
@@ -418,7 +418,7 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 		return nil, err
 	}
 	for _, param := range params {
-		if param.Type != NodeVariable || param.Index != "" || param.Focus != "" || param.Group != nil {
+		if param.Type != NodeVariable || param.Index() != "" || param.Focus() != "" || param.Group() != nil {
 			return nil, parseError("S0208", param.Value, "expected $parameter name in lambda")
 		}
 	}
@@ -448,7 +448,7 @@ func (p *Parser) parseLambda(pos int) (*Node, error) {
 		return nil, err
 	}
 	p.functions = true
-	return &Node{Type: NodeLambda, Arguments: params, Body: body, Signature: sig, Pos: pos}, nil
+	return (&Node{Type: NodeLambda, Pos: pos}).SetArguments(params).SetBody(body).SetSignature(sig), nil
 }
 
 // parseSignatureString reads tokens until the matching >.
@@ -493,7 +493,7 @@ func (p *Parser) parseParenOrBlock(pos int) (*Node, error) {
 		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
-		return &Node{Type: NodeBlock, Expressions: nil, Pos: pos}, nil
+		return (&Node{Type: NodeBlock, Pos: pos}).SetExpressions(nil), nil
 	}
 	first, err := p.expression(0)
 	if err != nil {
@@ -505,7 +505,7 @@ func (p *Parser) parseParenOrBlock(pos int) (*Node, error) {
 		if err := p.advanceInfix(); err != nil {
 			return nil, err
 		}
-		return &Node{Type: NodeBlock, Expressions: []*Node{first}, Pos: pos}, nil
+		return (&Node{Type: NodeBlock, Pos: pos}).SetExpressions([]*Node{first}), nil
 	}
 	// Block: multiple semicolon-separated expressions.
 	exprs := []*Node{first}
@@ -525,7 +525,7 @@ func (p *Parser) parseParenOrBlock(pos int) (*Node, error) {
 	if err := p.consumeInfix(lexer.TokenRParen); err != nil {
 		return nil, err
 	}
-	return &Node{Type: NodeBlock, Expressions: exprs, Pos: pos}, nil
+	return (&Node{Type: NodeBlock, Pos: pos}).SetExpressions(exprs), nil
 }
 
 // parseObjectPairs parses key: value pairs separated by commas.
@@ -590,7 +590,7 @@ func (p *Parser) parseTransform(pos int) (*Node, error) {
 		return nil, err
 	}
 	p.functions = true
-	return &Node{Type: NodeTransform, Pattern: pattern, Update: update, Delete: del, Pos: pos}, nil
+	return (&Node{Type: NodeTransform, Pos: pos}).SetPattern(pattern).SetUpdate(update).SetDelete(del), nil
 }
 
 // led is the left denotation (infix handler).
@@ -629,7 +629,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 		if err != nil {
 			return nil, err
 		}
-		node := &Node{Type: NodeCondition, Condition: left, Then: then, Pos: tok.Pos}
+		node := (&Node{Type: NodeCondition, Pos: tok.Pos}).SetCondition(left).SetThen(then)
 		if p.token.Type == lexer.TokenColon {
 			if err := p.advance(); err != nil {
 				return nil, err
@@ -638,7 +638,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 			if err != nil {
 				return nil, err
 			}
-			node.Else = elseBranch
+			node.SetElse(elseBranch)
 		}
 		return node, nil
 
@@ -860,7 +860,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 		// Group expression: attach key-value pairs to left.
 		pos := tok.Pos
 		// S0210: A step can only have one group-by expression.
-		if left.Group != nil {
+		if left.Group() != nil {
 			p.deferError(parseError("S0210", "{", "each step can only have one grouping expression"))
 		}
 		if err := p.advance(); err != nil {
@@ -874,7 +874,7 @@ func (p *Parser) led(left *Node) (*Node, error) { //nolint:gocyclo,funlen // dis
 			return nil, err
 		}
 		group := &GroupExpr{Pairs: pairsToGroupPairs(pairs), Pos: pos, OnPath: isPathLike(left)}
-		left.Group = group
+		left.SetGroup(group)
 		return left, nil
 
 	case lexer.TokenCaret:
@@ -905,9 +905,9 @@ func (p *Parser) parseBinding(left *Node, focus bool) (*Node, error) {
 	if rhs.Type != NodeVariable {
 		return nil, parseError("S0214", op, "the right side of "+op+" must be a $variable")
 	}
-	left.indexLast = !focus
+	left.setIndexLast(!focus)
 	if !focus {
-		left.Index = rhs.Value
+		left.SetIndex(rhs.Value)
 		return left, nil
 	}
 	switch {
@@ -916,7 +916,7 @@ func (p *Parser) parseBinding(left *Node, focus bool) (*Node, error) {
 	case left.Type == NodeSort:
 		p.deferError(parseError("S0216", "@", "the @ operator cannot follow a sort expression"))
 	}
-	left.Focus = rhs.Value
+	left.SetFocus(rhs.Value)
 	return left, nil
 }
 
@@ -956,13 +956,7 @@ func (p *Parser) parseFunctionCall(callee *Node, pos int) (*Node, error) {
 	if partial {
 		nodeType = NodePartial
 	}
-	return &Node{
-		Type:      nodeType,
-		Value:     callee.Value,
-		Procedure: callee,
-		Arguments: args,
-		Pos:       pos,
-	}, nil
+	return (&Node{Type: nodeType, Value: callee.Value, Pos: pos}).SetProcedure(callee).SetArguments(args), nil
 }
 
 // parseArgument parses one call argument or lambda parameter. As in
@@ -989,24 +983,24 @@ func (p *Parser) parseSubscript(left *Node, pos int) (*Node, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		alreadyKept := left.KeepArray
-		left.KeepArray = true
+		alreadyKept := left.KeepArray()
+		left.SetKeepArray(true)
 		// jsonata-js gives the [] to the # it follows, past any predicates
 		// after it, or else to the chain's base.
 		bound := left
-		for !bound.indexLast && bound.Type == NodeBinary && bound.Value == "[" && bound.Left != nil {
+		for !bound.indexLast() && bound.Type == NodeBinary && bound.Value == "[" && bound.Left != nil {
 			bound = bound.Left
 		}
-		if bound.indexLast {
-			bound.KeptAfterIndex = true
-			bound.IndexKeepArray = bound.IndexKeepArray || !alreadyKept
+		if bound.indexLast() {
+			bound.SetKeptAfterIndex(true)
+			bound.SetIndexKeepArray(bound.IndexKeepArray() || !alreadyKept)
 		}
 		return left, nil
 	}
 	// S0209: A predicate cannot follow a step's group-by expression. A group
 	// on a path, as in a{k: v}[0], applies after all of it instead (see
 	// ProcessAST).
-	if left.Group != nil && !left.Group.OnPath {
+	if left.Group() != nil && !left.Group().OnPath {
 		p.deferError(parseError("S0209", "[", "a predicate cannot follow a grouping expression in a step"))
 	}
 	expr, err := p.expression(0)
@@ -1054,7 +1048,7 @@ func (p *Parser) parseSortExpr(left *Node, pos int) (*Node, error) {
 	if err := p.advance(); err != nil { // consume )
 		return nil, err
 	}
-	return &Node{Type: NodeSort, Left: left, Terms: terms, Pos: pos}, nil
+	return (&Node{Type: NodeSort, Left: left, Pos: pos}).SetTerms(terms), nil
 }
 
 // pairsToGroupPairs converts flat [k, v, k, v, ...] slice to [][2]*Node pairs.

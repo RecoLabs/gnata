@@ -8,25 +8,22 @@ import "math"
 // when it is called, so each counts as one level here.
 func markFunctionDepths(n *Node) int {
 	deepest := max(
-		deepestOf(n.Steps), deepestOf(n.Expressions), deepestOf(n.LHS), deepestOf(n.Arguments),
-		depthOf(n.Body), depthOf(n.Procedure), depthOf(n.Left), depthOf(n.Right),
-		depthOf(n.Expression), depthOf(n.Condition), depthOf(n.Then), depthOf(n.Else),
-		depthOf(n.Pattern), depthOf(n.Update), depthOf(n.Delete),
+		deepestOf(n.Steps()), deepestOf(n.Expressions()), deepestOf(n.LHS()), deepestOf(n.Arguments()),
+		depthOf(n.Body()), depthOf(n.Procedure()), depthOf(n.Left), depthOf(n.Right),
+		depthOf(n.Expression()), depthOf(n.Condition()), depthOf(n.Then()), depthOf(n.Else()),
+		depthOf(n.Pattern()), depthOf(n.Update()), depthOf(n.Delete()),
 	)
-	for _, term := range n.Terms {
+	for _, term := range n.Terms() {
 		deepest = max(deepest, depthOf(term.Expression))
 	}
-	for _, stage := range n.Stages {
-		deepest = max(deepest, depthOf(stage.Expression))
-	}
-	if n.Group != nil {
-		for _, pair := range n.Group.Pairs {
+	if n.Group() != nil {
+		for _, pair := range n.Group().Pairs {
 			deepest = max(deepest, depthOf(pair[0]), depthOf(pair[1]))
 		}
 	}
-	switch n.Type {
+	switch n.Type { //nolint:exhaustive // only transforms and lambdas record a depth
 	case NodeTransform, NodeLambda:
-		n.Depth = uint16(min(deepest, math.MaxUint16))
+		n.SetDepth(uint16(min(deepest, math.MaxUint16)))
 		return 1
 	}
 	return deepest + 1

@@ -39,25 +39,25 @@ func TestParser(t *testing.T) {
 		{"descendant", "**", "descendant", "**"},
 		{"array ctor", "[1,2,3]", "unary", "["},
 		{"obj ctor", `{"a": 1}`, "unary", "{"},
-		{"addition", "1+2", parser.NodeBinary, "+"},
-		{"subtraction", "5-3", parser.NodeBinary, "-"},
-		{"multiplication", "2*3", parser.NodeBinary, "*"},
-		{"division", "10/2", parser.NodeBinary, "/"},
-		{"modulo", "10%3", parser.NodeBinary, "%"},
-		{"concat", `"a"&"b"`, parser.NodeBinary, "&"},
-		{"comparison eq", `x = "y"`, parser.NodeBinary, "="},
-		{"comparison ne", "a != b", parser.NodeBinary, "!="},
-		{"comparison lt", "a < b", parser.NodeBinary, "<"},
-		{"comparison gt", "a > b", parser.NodeBinary, ">"},
-		{"comparison le", "a <= b", parser.NodeBinary, "<="},
-		{"comparison ge", "a >= b", parser.NodeBinary, ">="},
-		{"and", "a and b", parser.NodeBinary, "and"},
-		{"or", "a or b", parser.NodeBinary, "or"},
-		{"in", `"x" in arr`, parser.NodeBinary, "in"},
+		{"addition", "1+2", "binary", "+"},
+		{"subtraction", "5-3", "binary", "-"},
+		{"multiplication", "2*3", "binary", "*"},
+		{"division", "10/2", "binary", "/"},
+		{"modulo", "10%3", "binary", "%"},
+		{"concat", `"a"&"b"`, "binary", "&"},
+		{"comparison eq", `x = "y"`, "binary", "="},
+		{"comparison ne", "a != b", "binary", "!="},
+		{"comparison lt", "a < b", "binary", "<"},
+		{"comparison gt", "a > b", "binary", ">"},
+		{"comparison le", "a <= b", "binary", "<="},
+		{"comparison ge", "a >= b", "binary", ">="},
+		{"and", "a and b", "binary", "and"},
+		{"or", "a or b", "binary", "or"},
+		{"in", `"x" in arr`, "binary", "in"},
 		{"assign", "$x := 1", "bind", ""},
-		{"range", "1..10", parser.NodeBinary, ".."},
-		{"chain", "expr ~> $fn", parser.NodeBinary, "~>"},
-		{"coalesce", "a ?? b", parser.NodeBinary, "??"},
+		{"range", "1..10", "binary", ".."},
+		{"chain", "expr ~> $fn", "binary", "~>"},
+		{"coalesce", "a ?? b", "binary", "??"},
 		{"function call", "$sum(items)", "function", "sum"},
 		{"nested path", "a.b.c", "path", ""},
 		{"paren unwrap", "(42)", "block", ""},
@@ -69,7 +69,7 @@ func TestParser(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			node := mustParse(t, tt.src)
-			if node.Type != tt.wantType {
+			if node.Type.String() != tt.wantType {
 				t.Errorf("type: want %q, got %q", tt.wantType, node.Type)
 			}
 			if tt.wantValue != "" && node.Value != tt.wantValue {
@@ -81,15 +81,15 @@ func TestParser(t *testing.T) {
 
 func TestPathSteps(t *testing.T) {
 	node := mustParse(t, "a.b.c")
-	if node.Type != "path" {
+	if node.Type != parser.NodePath {
 		t.Fatalf("expected path, got %q", node.Type)
 	}
-	if len(node.Steps) != 3 {
-		t.Fatalf("expected 3 steps, got %d", len(node.Steps))
+	if len(node.Steps()) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(node.Steps()))
 	}
 	wantNames := []string{"a", "b", "c"}
-	for i, step := range node.Steps {
-		if step.Type != "name" {
+	for i, step := range node.Steps() {
+		if step.Type != parser.NodeName {
 			t.Errorf("step[%d]: expected name, got %q", i, step.Type)
 		}
 		if step.Value != wantNames[i] {
@@ -100,69 +100,69 @@ func TestPathSteps(t *testing.T) {
 
 func TestFunctionCall(t *testing.T) {
 	node := mustParse(t, "$sum(1, 2, 3)")
-	if node.Type != "function" {
+	if node.Type != parser.NodeFunction {
 		t.Fatalf("expected function, got %q", node.Type)
 	}
-	if node.Procedure == nil {
+	if node.Procedure() == nil {
 		t.Fatal("procedure is nil")
 	}
-	if node.Procedure.Value != "sum" {
-		t.Errorf("procedure value: want %q, got %q", "sum", node.Procedure.Value)
+	if node.Procedure().Value != "sum" {
+		t.Errorf("procedure value: want %q, got %q", "sum", node.Procedure().Value)
 	}
-	if len(node.Arguments) != 3 {
-		t.Errorf("expected 3 arguments, got %d", len(node.Arguments))
+	if len(node.Arguments()) != 3 {
+		t.Errorf("expected 3 arguments, got %d", len(node.Arguments()))
 	}
 }
 
 func TestLambda(t *testing.T) {
 	node := mustParse(t, "function($x, $y) { $x + $y }")
-	if node.Type != "lambda" {
+	if node.Type != parser.NodeLambda {
 		t.Fatalf("expected lambda, got %q", node.Type)
 	}
-	if len(node.Arguments) != 2 {
-		t.Fatalf("expected 2 parameters, got %d", len(node.Arguments))
+	if len(node.Arguments()) != 2 {
+		t.Fatalf("expected 2 parameters, got %d", len(node.Arguments()))
 	}
-	if node.Arguments[0].Value != "x" {
-		t.Errorf("param 0: want %q, got %q", "x", node.Arguments[0].Value)
+	if node.Arguments()[0].Value != "x" {
+		t.Errorf("param 0: want %q, got %q", "x", node.Arguments()[0].Value)
 	}
-	if node.Arguments[1].Value != "y" {
-		t.Errorf("param 1: want %q, got %q", "y", node.Arguments[1].Value)
+	if node.Arguments()[1].Value != "y" {
+		t.Errorf("param 1: want %q, got %q", "y", node.Arguments()[1].Value)
 	}
-	if node.Body == nil {
+	if node.Body() == nil {
 		t.Fatal("body is nil")
 	}
 	const expectedPlus = "+"
-	if node.Body.Type != parser.NodeBinary || node.Body.Value != expectedPlus {
-		t.Errorf("body: expected binary +, got type=%q value=%q", node.Body.Type, node.Body.Value)
+	if node.Body().Type != parser.NodeBinary || node.Body().Value != expectedPlus {
+		t.Errorf("body: expected binary +, got type=%q value=%q", node.Body().Type, node.Body().Value)
 	}
 }
 
 func TestConditional(t *testing.T) {
 	node := mustParse(t, "a ? b : c")
-	if node.Type != "condition" {
+	if node.Type != parser.NodeCondition {
 		t.Fatalf("expected condition, got %q", node.Type)
 	}
-	if node.Condition == nil || node.Then == nil || node.Else == nil {
+	if node.Condition() == nil || node.Then() == nil || node.Else() == nil {
 		t.Fatal("condition/then/else must not be nil")
 	}
-	if node.Condition.Value != "a" {
-		t.Errorf("condition: want a, got %q", node.Condition.Value)
+	if node.Condition().Value != "a" {
+		t.Errorf("condition: want a, got %q", node.Condition().Value)
 	}
-	if node.Then.Value != "b" {
-		t.Errorf("then: want b, got %q", node.Then.Value)
+	if node.Then().Value != "b" {
+		t.Errorf("then: want b, got %q", node.Then().Value)
 	}
-	if node.Else.Value != "c" {
-		t.Errorf("else: want c, got %q", node.Else.Value)
+	if node.Else().Value != "c" {
+		t.Errorf("else: want c, got %q", node.Else().Value)
 	}
 }
 
 func TestBlock(t *testing.T) {
 	node := mustParse(t, "($a := 1; $b := 2; $a + $b)")
-	if node.Type != "block" {
+	if node.Type != parser.NodeBlock {
 		t.Fatalf("expected block, got %q", node.Type)
 	}
-	if len(node.Expressions) != 3 {
-		t.Errorf("expected 3 block expressions, got %d", len(node.Expressions))
+	if len(node.Expressions()) != 3 {
+		t.Errorf("expected 3 block expressions, got %d", len(node.Expressions()))
 	}
 }
 
@@ -178,26 +178,26 @@ func TestArraySubscript(t *testing.T) {
 
 func TestKeepArray(t *testing.T) {
 	node := mustParse(t, "items[]")
-	if node.Type != "name" {
+	if node.Type != parser.NodeName {
 		t.Fatalf("expected name node with KeepArray, got %q", node.Type)
 	}
-	if !node.KeepArray {
+	if !node.KeepArray() {
 		t.Error("expected KeepArray=true")
 	}
 }
 
 func TestSortExpr(t *testing.T) {
 	node := mustParse(t, `items^(price, >discount)`)
-	if node.Type != "sort" {
+	if node.Type != parser.NodeSort {
 		t.Fatalf("expected sort, got %q", node.Type)
 	}
-	if len(node.Terms) != 2 {
-		t.Fatalf("expected 2 sort terms, got %d", len(node.Terms))
+	if len(node.Terms()) != 2 {
+		t.Fatalf("expected 2 sort terms, got %d", len(node.Terms()))
 	}
-	if node.Terms[0].Descending {
+	if node.Terms()[0].Descending {
 		t.Error("term[0] should be ascending")
 	}
-	if !node.Terms[1].Descending {
+	if !node.Terms()[1].Descending {
 		t.Error("term[1] should be descending")
 	}
 }
@@ -228,20 +228,20 @@ func TestAndOrPrecedence(t *testing.T) {
 
 func TestPartialApplication(t *testing.T) {
 	node := mustParse(t, "$add(?, 2)")
-	if node.Type != "partial" {
+	if node.Type != parser.NodePartial {
 		t.Fatalf("expected partial, got %q", node.Type)
 	}
-	if len(node.Arguments) != 2 {
-		t.Errorf("expected 2 arguments, got %d", len(node.Arguments))
+	if len(node.Arguments()) != 2 {
+		t.Errorf("expected 2 arguments, got %d", len(node.Arguments()))
 	}
-	if node.Arguments[0].Type != "operator" || node.Arguments[0].Value != "?" {
-		t.Errorf("first arg should be placeholder, got %q %q", node.Arguments[0].Type, node.Arguments[0].Value)
+	if node.Arguments()[0].Type != parser.NodePlaceholder || node.Arguments()[0].Value != "?" {
+		t.Errorf("first arg should be placeholder, got %q %q", node.Arguments()[0].Type, node.Arguments()[0].Value)
 	}
 }
 
 func TestRegex(t *testing.T) {
 	node := mustParse(t, "/[a-z]+/i")
-	if node.Type != "regex" {
+	if node.Type != parser.NodeRegex {
 		t.Fatalf("expected regex, got %q", node.Type)
 	}
 	// Value should contain pattern (and flags).
@@ -252,11 +252,11 @@ func TestRegex(t *testing.T) {
 
 func TestObjectConstructor(t *testing.T) {
 	node := mustParse(t, `{"a": 1, "b": 2}`)
-	if node.Type != "unary" || node.Value != "{" {
+	if node.Type != parser.NodeUnary || node.Value != "{" {
 		t.Fatalf("expected unary {, got %q %q", node.Type, node.Value)
 	}
 	// LHS has flat [k,v,k,v] pairs.
-	if len(node.LHS) != 4 {
-		t.Errorf("expected 4 LHS entries (2 pairs), got %d", len(node.LHS))
+	if len(node.LHS()) != 4 {
+		t.Errorf("expected 4 LHS entries (2 pairs), got %d", len(node.LHS()))
 	}
 }

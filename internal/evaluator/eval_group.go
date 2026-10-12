@@ -10,29 +10,29 @@ import (
 func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	// A path with #$var, @$var or ancestor bindings runs as a tuple stream,
 	// whose evalPathTuple applies the group with per-tuple environments.
-	if node.Type == parser.NodePath && pathHasTupleStep(node.Steps) {
+	if node.Type == parser.NodePath && pathHasTupleStep(node.Steps()) {
 		return evalPathTuple(node, input, env)
 	}
 
 	// Copy the node with Group cleared to evaluate the base expression without
 	// recursion and without mutating the shared AST (concurrent safety).
-	baseCopy := *node
-	baseCopy.Group = nil
+	baseCopy := node.Clone()
+	baseCopy.SetGroup(nil)
 	var base any
 	var err error
-	switch baseCopy.Type {
+	switch baseCopy.Type { //nolint:exhaustive // only node types with a sequence-returning evaluator; the rest use Eval
 	case parser.NodeFunction:
-		base, err = evalFunctionSequence(&baseCopy, input, env)
+		base, err = evalFunctionSequence(baseCopy, input, env)
 	case parser.NodeSort:
-		base, err = evalSortStep(&baseCopy, input, env)
+		base, err = evalSortStep(baseCopy, input, env)
 	case parser.NodePath:
-		if isSimplePath(&baseCopy) {
-			base, err = evalPathSequence(&baseCopy, input, env)
+		if isSimplePath(baseCopy) {
+			base, err = evalPathSequence(baseCopy, input, env)
 			break
 		}
-		base, err = Eval(&baseCopy, input, env)
+		base, err = Eval(baseCopy, input, env)
 	default:
-		base, err = Eval(&baseCopy, input, env)
+		base, err = Eval(baseCopy, input, env)
 	}
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 	// in jsonata-js.
 	if seq, ok := base.(*Sequence); ok && len(seq.Values) > 0 &&
 		(baseCopy.Type == parser.NodeFunction || baseCopy.Type == parser.NodeSort) {
-		return groupItems(groupPairs(node.Group.Pairs), seq.Values, env)
+		return groupItems(groupPairs(node.Group().Pairs), seq.Values, env)
 	}
 	if seq, ok := base.(*Sequence); ok {
 		base = CollapseSequence(seq)
@@ -59,7 +59,7 @@ func evalGroupBy(node *parser.Node, input any, env *Environment) (any, error) {
 		// A nil item of Go data is a JSON null, not an undefined context.
 		items = NullItems(items)
 	}
-	return groupItems(groupPairs(node.Group.Pairs), items, env)
+	return groupItems(groupPairs(node.Group().Pairs), items, env)
 }
 
 // groupPairs yields the key and value expressions of a parsed group.

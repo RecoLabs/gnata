@@ -21,8 +21,8 @@ func ProcessAST(node *Node) (*Node, error) {
 		return nil, nil
 	}
 	// collectPathSteps processes a path's groups, inner dots' included.
-	if node.Group != nil && (node.Type != NodeBinary || node.Value != ".") {
-		if err := processGroup(node.Group); err != nil {
+	if node.Group() != nil && (node.Type != NodeBinary || node.Value != ".") {
+		if err := processGroup(node.Group()); err != nil {
 			return nil, err
 		}
 	}
@@ -36,7 +36,7 @@ func ProcessAST(node *Node) (*Node, error) {
 // processNode is ProcessAST's pass for node's type, before the group and
 // wrapping steps every node shares.
 func processNode(node *Node) (*Node, error) {
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // leaf node types need no processing
 	case NodeBinary:
 		if node.Value == "." {
 			return processDotBinary(node)
@@ -93,11 +93,11 @@ func processGroup(group *GroupExpr) error {
 // takePathGroup removes and returns node's group if it groups a whole
 // path (see GroupExpr.OnPath).
 func takePathGroup(node *Node) *GroupExpr {
-	group := node.Group
+	group := node.Group()
 	if group == nil || !group.OnPath {
 		return nil
 	}
-	node.Group = nil
+	node.SetGroup(nil)
 	return group
 }
 
@@ -126,13 +126,7 @@ func processDotBinary(node *Node) (*Node, error) {
 		}
 	}
 
-	path := &Node{
-		Type:  NodePath,
-		Value: node.Value,
-		Steps: steps,
-		Pos:   node.Pos,
-		Group: group,
-	}
+	path := (&Node{Type: NodePath, Value: node.Value, Pos: node.Pos}).SetSteps(steps).SetGroup(group)
 	markUnaryArraySteps(steps)
 	markSubscriptStages(steps)
 	dropBoundKeepArray(steps)
@@ -144,7 +138,7 @@ func processDotBinary(node *Node) (*Node, error) {
 	// has KeepArray=true. This covers both A[].B and A[][filter].B patterns.
 	// A[][filter] and a[]^(b) keep the flag on a node along the step's Left chain.
 	if slices.ContainsFunc(steps, ChainKeepsArray) {
-		path.KeepSingletonArray = true
+		path.SetKeepSingletonArray(true)
 	}
 	return path, nil
 }
@@ -165,7 +159,7 @@ func collectPathSteps(node *Node, steps []*Node) ([]*Node, *GroupExpr, error) {
 		// splice its steps.
 		leaf, group := []*Node{processed}, takePathGroup(processed)
 		if processed.Type == NodePath {
-			leaf = processed.Steps
+			leaf = processed.Steps()
 		}
 		// A quoted step, or one with predicates, is a field name.
 		for _, step := range leaf {
@@ -187,11 +181,11 @@ func collectPathSteps(node *Node, steps []*Node) ([]*Node, *GroupExpr, error) {
 	if group, err = joinGroups(group, rightGroup); err != nil {
 		return nil, nil, err
 	}
-	if group, err = joinGroups(group, node.Group); err != nil {
+	if group, err = joinGroups(group, node.Group()); err != nil {
 		return nil, nil, err
 	}
-	if node.Group != nil {
-		if err := processGroup(node.Group); err != nil {
+	if node.Group() != nil {
+		if err := processGroup(node.Group()); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -200,14 +194,14 @@ func collectPathSteps(node *Node, steps []*Node) ([]*Node, *GroupExpr, error) {
 	// itself after a group, as in a.b{k: v}#$i. jsonata-js binds them on
 	// the path's last step, a #$var after its predicates.
 	last := steps[len(steps)-1]
-	if node.Index != "" {
-		last.Index = node.Index
+	if node.Index() != "" {
+		last.SetIndex(node.Index())
 	}
-	if node.Focus != "" {
+	if node.Focus() != "" {
 		if last.Type == NodeBinary && last.Value == "[" {
 			return nil, nil, parseError("S0215", "@", "the @ operator cannot follow a predicate expression")
 		}
-		last.Focus = node.Focus
+		last.SetFocus(node.Focus())
 	}
 	return steps, group, nil
 }
@@ -230,7 +224,7 @@ func processBinaryChildren(node *Node) (*Node, error) {
 		// jsonata-js passes no slots on from either side of ~>, so a % there
 		// stays unresolved.
 	default:
-		node.SeekingParent = concatSlots(node.Left, node.Right)
+		node.SetSeekingParent(concatSlots(node.Left, node.Right))
 	}
 	return node, nil
 }
@@ -244,66 +238,67 @@ func processSubscript(node *Node) (*Node, error) {
 	if path.Type != NodePath || IsStepPath(path) {
 		path = nil
 	} else {
-		last := len(path.Steps) - 1
-		node.Left = path.Steps[last]
-		path.Steps[last] = node
-		node.PathStage = last > 0
+		last := len(path.Steps()) - 1
+		node.Left = path.Steps()[last]
+		path.Steps()[last] = node
+		node.SetPathStage(last > 0)
 	}
-	node.KeepSingletonArray = ChainKeepsArray(node.Left)
-	node.base = StepBase(node.Left)
+	node.SetKeepSingletonArray(ChainKeepsArray(node.Left))
+	node.setBase(StepBase(node.Left))
 	if err := resolvePredicateAncestry(node); err != nil {
 		return nil, err
 	}
 	if path != nil {
-		if node.KeepArray {
-			path.KeepSingletonArray = true
+		if node.KeepArray() {
+			path.SetKeepSingletonArray(true)
 		}
 		return path, nil
 	}
-	group, err := joinGroups(node.Group, takePathGroup(node.Left))
-	node.Group = group
+	group, err := joinGroups(node.Group(), takePathGroup(node.Left))
+	node.SetGroup(group)
 	return node, err
 }
 
 // processUnaryChildren recursively processes a unary node.
 func processUnaryChildren(node *Node) (*Node, error) {
 	var err error
-	if node.Expression != nil {
-		node.Expression, err = ProcessAST(node.Expression)
+	if node.Expression() != nil {
+		newExpression, err := ProcessAST(node.Expression())
+		if err != nil {
+			return nil, err
+		}
+		node.SetExpression(newExpression)
+	}
+	for i, expr := range node.Expressions() {
+		node.Expressions()[i], err = ProcessAST(expr)
 		if err != nil {
 			return nil, err
 		}
 	}
-	for i, expr := range node.Expressions {
-		node.Expressions[i], err = ProcessAST(expr)
+	for i, n := range node.LHS() {
+		node.LHS()[i], err = ProcessAST(n)
 		if err != nil {
 			return nil, err
 		}
 	}
-	for i, n := range node.LHS {
-		node.LHS[i], err = ProcessAST(n)
-		if err != nil {
-			return nil, err
-		}
-	}
-	node.SeekingParent = concatSlots(append(append([]*Node{node.Expression}, node.Expressions...), node.LHS...)...)
+	node.SetSeekingParent(concatSlots(append(append([]*Node{node.Expression()}, node.Expressions()...), node.LHS()...)...))
 	return node, nil
 }
 
 // processBlockChildren recursively processes a block node.
 func processBlockChildren(node *Node) (*Node, error) {
 	var err error
-	for i, expr := range node.Expressions {
-		node.Expressions[i], err = ProcessAST(expr)
+	for i, expr := range node.Expressions() {
+		node.Expressions()[i], err = ProcessAST(expr)
 		if err != nil {
 			return nil, err
 		}
-		part := node.Expressions[i]
-		if part.ConsArray || (part.Type == NodePath && len(part.Steps) > 0 && part.Steps[0].ConsArray) {
-			node.ConsArray = true
+		part := node.Expressions()[i]
+		if part.ConsArray() || (part.Type == NodePath && len(part.Steps()) > 0 && part.Steps()[0].ConsArray()) {
+			node.SetConsArray(true)
 		}
 	}
-	node.SeekingParent = concatSlots(node.Expressions...)
+	node.SetSeekingParent(concatSlots(node.Expressions()...))
 	return node, nil
 }
 
@@ -317,7 +312,7 @@ func processBlockChildren(node *Node) (*Node, error) {
 func markUnaryArraySteps(steps []*Node) {
 	for i, step := range steps {
 		if (i > 0 || len(steps) == 1) && isUnaryArrayCtor(step) {
-			step.ConsArray = true
+			step.SetConsArray(true)
 		}
 	}
 }
@@ -330,7 +325,7 @@ func markUnaryArraySteps(steps []*Node) {
 func markSubscriptStages(steps []*Node) {
 	for _, step := range steps[min(1, len(steps)):] {
 		for n := step; n != nil && n.Type == NodeBinary && n.Value == "["; n = n.Left {
-			n.PathStage = true
+			n.SetPathStage(true)
 		}
 	}
 }
@@ -340,15 +335,15 @@ func markSubscriptStages(steps []*Node) {
 func dropBoundKeepArray(steps []*Node) {
 	for _, step := range steps[min(1, len(steps)):] {
 		for n := step; n != nil; n = n.Left {
-			if n.IndexKeepArray {
+			if n.IndexKeepArray() {
 				var chain []*Node
 				for m := step; m != n; m = m.Left {
-					m.KeepArray = false
+					m.SetKeepArray(false)
 					chain = append(chain, m)
 				}
-				n.KeepArray = false
+				n.SetKeepArray(false)
 				for _, m := range slices.Backward(chain) {
-					m.KeepSingletonArray = ChainKeepsArray(m.Left)
+					m.SetKeepSingletonArray(ChainKeepsArray(m.Left))
 				}
 				break
 			}
@@ -366,49 +361,54 @@ func isUnaryArrayCtor(n *Node) bool {
 // processFunctionChildren recursively processes a function/partial node.
 func processFunctionChildren(node *Node) (*Node, error) {
 	var err error
-	node.Procedure, err = ProcessAST(node.Procedure)
+	newProcedure, err := ProcessAST(node.Procedure())
 	if err != nil {
 		return nil, err
 	}
-	for i, arg := range node.Arguments {
-		node.Arguments[i], err = ProcessAST(arg)
+	node.SetProcedure(newProcedure)
+	for i, arg := range node.Arguments() {
+		node.Arguments()[i], err = ProcessAST(arg)
 		if err != nil {
 			return nil, err
 		}
 	}
-	node.SeekingParent = concatSlots(node.Arguments...)
+	node.SetSeekingParent(concatSlots(node.Arguments()...))
 	return node, nil
 }
 
 // processLambdaChildren recursively processes a lambda node.
 func processLambdaChildren(node *Node) (*Node, error) {
 	var err error
-	node.Body, err = ProcessAST(node.Body)
+	newBody, err := ProcessAST(node.Body())
 	if err != nil {
 		return nil, err
 	}
-	markTailCalls(node.Body)
+	node.SetBody(newBody)
+	markTailCalls(node.Body())
 	return node, nil
 }
 
 // processConditionChildren recursively processes a condition node.
 func processConditionChildren(node *Node) (*Node, error) {
 	var err error
-	node.Condition, err = ProcessAST(node.Condition)
+	newCondition, err := ProcessAST(node.Condition())
 	if err != nil {
 		return nil, err
 	}
-	node.Then, err = ProcessAST(node.Then)
+	node.SetCondition(newCondition)
+	newThen, err := ProcessAST(node.Then())
 	if err != nil {
 		return nil, err
 	}
-	if node.Else != nil {
-		node.Else, err = ProcessAST(node.Else)
+	node.SetThen(newThen)
+	if node.Else() != nil {
+		newElse, err := ProcessAST(node.Else())
 		if err != nil {
 			return nil, err
 		}
+		node.SetElse(newElse)
 	}
-	node.SeekingParent = concatSlots(node.Condition, node.Then, node.Else)
+	node.SetSeekingParent(concatSlots(node.Condition(), node.Then(), node.Else()))
 	return node, nil
 }
 
@@ -423,28 +423,31 @@ func processBindChildren(node *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	node.SeekingParent = exprSlots(node.Right)
+	node.SetSeekingParent(exprSlots(node.Right))
 	return node, nil
 }
 
 // processTransformChildren recursively processes a transform node.
 func processTransformChildren(node *Node) (*Node, error) {
 	var err error
-	node.Pattern, err = ProcessAST(node.Pattern)
+	newPattern, err := ProcessAST(node.Pattern())
 	if err != nil {
 		return nil, err
 	}
-	node.Update, err = ProcessAST(node.Update)
+	node.SetPattern(newPattern)
+	newUpdate, err := ProcessAST(node.Update())
 	if err != nil {
 		return nil, err
 	}
-	if node.Delete != nil {
-		node.Delete, err = ProcessAST(node.Delete)
+	node.SetUpdate(newUpdate)
+	if node.Delete() != nil {
+		newDelete, err := ProcessAST(node.Delete())
 		if err != nil {
 			return nil, err
 		}
+		node.SetDelete(newDelete)
 	}
-	node.NoBinds = !containsBind(node.Pattern) && !containsBind(node.Update) && !containsBind(node.Delete)
+	node.SetNoBinds(!containsBind(node.Pattern()) && !containsBind(node.Update()) && !containsBind(node.Delete()))
 	return node, nil
 }
 
@@ -457,21 +460,20 @@ func containsBind(node *Node) bool {
 		return true
 	}
 	if slices.ContainsFunc([]*Node{
-		node.Left, node.Right, node.Expression, node.Condition, node.Then, node.Else,
-		node.Procedure, node.Body, node.Pattern, node.Update, node.Delete,
+		node.Left, node.Right, node.Expression(), node.Condition(), node.Then(), node.Else(),
+		node.Procedure(), node.Body(), node.Pattern(), node.Update(), node.Delete(),
 	}, containsBind) {
 		return true
 	}
-	for _, children := range [][]*Node{node.Steps, node.Expressions, node.LHS, node.Arguments} {
+	for _, children := range [][]*Node{node.Steps(), node.Expressions(), node.LHS(), node.Arguments()} {
 		if slices.ContainsFunc(children, containsBind) {
 			return true
 		}
 	}
-	if slices.ContainsFunc(node.Terms, func(t SortTerm) bool { return containsBind(t.Expression) }) ||
-		slices.ContainsFunc(node.Stages, func(st Stage) bool { return containsBind(st.Expression) }) {
+	if slices.ContainsFunc(node.Terms(), func(t SortTerm) bool { return containsBind(t.Expression) }) {
 		return true
 	}
-	return node.Group != nil && slices.ContainsFunc(node.Group.Pairs, func(p [2]*Node) bool {
+	return node.Group() != nil && slices.ContainsFunc(node.Group().Pairs, func(p [2]*Node) bool {
 		return containsBind(p[0]) || containsBind(p[1])
 	})
 }
@@ -483,26 +485,27 @@ func processSortChildren(node *Node) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i, term := range node.Terms {
-		node.Terms[i].Expression, err = ProcessAST(term.Expression)
+	for i, term := range node.Terms() {
+		node.Terms()[i].Expression, err = ProcessAST(term.Expression)
 		if err != nil {
 			return nil, err
 		}
 	}
-	node.KeepSingletonArray = ChainKeepsArray(node.Left)
+	node.SetKeepSingletonArray(ChainKeepsArray(node.Left))
 	if err := resolveSortAncestry(node); err != nil {
 		return nil, err
 	}
 	// A group on a path-like Left groups the sorted result, as in jsonata-js
 	// the sort joins the path that carries it: a{k: v}^(c) sorts first.
-	node.Group, err = joinGroups(node.Group, takePathGroup(node.Left))
+	newGroup, err := joinGroups(node.Group(), takePathGroup(node.Left))
+	node.SetGroup(newGroup)
 	return node, err
 }
 
 // processPathChildren recursively processes an existing path node.
 func processPathChildren(node *Node) (*Node, error) {
-	steps := make([]*Node, 0, len(node.Steps))
-	for _, step := range node.Steps {
+	steps := make([]*Node, 0, len(node.Steps()))
+	for _, step := range node.Steps() {
 		processed, err := ProcessAST(step)
 		if err != nil {
 			return nil, err
@@ -510,16 +513,16 @@ func processPathChildren(node *Node) (*Node, error) {
 		// Splice a wrapped step's steps, as collectPathSteps did when it
 		// built the path, so processing a path again leaves it unchanged.
 		if IsStepPath(processed) {
-			steps = append(steps, processed.Steps...)
+			steps = append(steps, processed.Steps()...)
 		} else {
 			steps = append(steps, processed)
 		}
 	}
-	node.Steps = steps
+	node.SetSteps(steps)
 	if slices.ContainsFunc(steps, ChainKeepsArray) {
-		node.KeepSingletonArray = true
+		node.SetKeepSingletonArray(true)
 	}
-	markUnaryArraySteps(node.Steps)
+	markUnaryArraySteps(node.Steps())
 	return node, nil
 }
 
@@ -556,16 +559,16 @@ func markRootContext(node *Node, root bool) {
 	if node == nil {
 		return
 	}
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // only node types that can start a path over the root input
 	case NodePath:
-		if len(node.Steps) > 0 {
-			first := node.Steps[0]
+		if len(node.Steps()) > 0 {
+			first := node.Steps()[0]
 			if root {
-				StepBase(first).RootContext = true
+				StepBase(first).SetRootContext(true)
 			}
 			switch {
 			case first.Type == NodeWildcard:
-				first.RootContext = true
+				first.SetRootContext(true)
 			case isUnaryArrayCtor(StepBase(first)):
 				// jsonata-js evaluates a leading array constructor once
 				// against the wrapped input.
@@ -578,17 +581,17 @@ func markRootContext(node *Node, root bool) {
 			}
 		}
 	case NodeBlock:
-		for _, expr := range node.Expressions {
+		for _, expr := range node.Expressions() {
 			markRootContext(expr, root)
 		}
 	case NodeUnary:
-		markRootContext(node.Expression, root)
-		for _, expr := range node.Expressions {
+		markRootContext(node.Expression(), root)
+		for _, expr := range node.Expressions() {
 			markRootContext(expr, root)
 		}
 		// An object constructor evaluates its pairs against each item of
 		// its input, so even at the top they see the root array unwrapped.
-		for _, expr := range node.LHS {
+		for _, expr := range node.LHS() {
 			markRootContext(expr, root && node.Value != "{")
 		}
 	case NodeBinary, NodeApply:
@@ -597,26 +600,26 @@ func markRootContext(node *Node, root bool) {
 			markRootContext(node.Right, root)
 		}
 	case NodeCondition:
-		markRootContext(node.Condition, root)
-		markRootContext(node.Then, root)
-		markRootContext(node.Else, root)
+		markRootContext(node.Condition(), root)
+		markRootContext(node.Then(), root)
+		markRootContext(node.Else(), root)
 	case NodeBind:
 		markRootContext(node.Right, root)
 	case NodeFunction, NodePartial:
-		markRootContext(node.Procedure, root)
-		for _, arg := range node.Arguments {
+		markRootContext(node.Procedure(), root)
+		for _, arg := range node.Arguments() {
 			markRootContext(arg, root)
 		}
 	case NodeLambda:
 		// A lambda body runs against the input where the lambda is defined.
-		markRootContext(node.Body, root)
+		markRootContext(node.Body(), root)
 	case NodeSort:
 		// jsonata-js makes the sort a path, so a Left that is not a path, a
 		// sort or a leading array constructor is its first step.
 		left := node.Left
 		if base := StepBase(left); left.Type != NodePath && base.Type != NodeSort && !isUnaryArrayCtor(base) {
 			if root {
-				base.RootContext = true
+				base.SetRootContext(true)
 			}
 			markRootContext(left, false)
 			return
@@ -637,16 +640,16 @@ func wrapBoundStep(node *Node) *Node {
 	switch {
 	case node.Type == NodePath:
 		return node
-	case node.Type == NodeSort && node.Tuple:
+	case node.Type == NodeSort && node.Tuple():
 		return wrapStep(node, pathSlots(node))
 	case node.Type == NodeBinary && node.Value == "[" && IsStepPath(node.Left):
-		seeking := node.Left.SeekingParent
-		node.Left = node.Left.Steps[0]
+		seeking := node.Left.SeekingParent()
+		node.Left = node.Left.Steps()[0]
 		return wrapStep(node, seeking)
 	case node.Type == NodeBinary && node.Value == "[" && len(predicateSlots(node.Right)) > 0 &&
-		StepBase(node).Type == NodeName && StepBase(node).Ancestor != nil:
+		StepBase(node).Type == NodeName && StepBase(node).Ancestor() != nil:
 		return wrapStep(node, pathSlots(node))
-	case node.Index != "" || node.Type == NodeName && node.Focus != "":
+	case node.Index() != "" || node.Type == NodeName && node.Focus() != "":
 		return wrapStep(node, pathSlots(node))
 	}
 	return node
@@ -656,10 +659,12 @@ func wrapBoundStep(node *Node) *Node {
 // step it evaluates as a tuple stream a path, with the slots seeking past
 // it. A group on the path moves to it.
 func wrapStep(step *Node, seeking []*Slot) *Node {
-	return &Node{
-		Type: NodePath, Steps: []*Node{step}, Pos: step.Pos, Tuple: true, Group: takePathGroup(step),
-		KeepSingletonArray: wrapKeepsArray(step), SeekingParent: seeking,
-	}
+	return (&Node{Type: NodePath, Pos: step.Pos}).
+		SetSteps([]*Node{step}).
+		SetTuple(true).
+		SetGroup(takePathGroup(step)).
+		SetKeepSingletonArray(wrapKeepsArray(step)).
+		SetSeekingParent(seeking)
 }
 
 // wrapKeepsArray reports whether a [] in step's chain keeps the result of
@@ -675,7 +680,7 @@ func wrapKeepsArray(step *Node) bool {
 		return true
 	}
 	for n := step; n != nil; n = n.Left {
-		if n.KeptAfterIndex {
+		if n.KeptAfterIndex() {
 			return true
 		}
 		if n.Type != NodeBinary || n.Value != "[" {
@@ -687,7 +692,7 @@ func wrapKeepsArray(step *Node) bool {
 
 // IsStepPath reports whether node is a path wrapStep made.
 func IsStepPath(node *Node) bool {
-	return node != nil && node.Type == NodePath && node.Tuple && len(node.Steps) == 1
+	return node != nil && node.Type == NodePath && node.Tuple() && len(node.Steps()) == 1
 }
 
 // ChainKeepsArray reports whether node or a node along its Left chain has a
@@ -695,7 +700,7 @@ func IsStepPath(node *Node) bool {
 // subscript's or sort's Left chain in its KeepSingletonArray, so a long
 // chain such as a[0][0]... is not rescanned at every link.
 func ChainKeepsArray(node *Node) bool {
-	return node != nil && (node.KeepArray || node.KeepSingletonArray)
+	return node != nil && (node.KeepArray() || node.KeepSingletonArray())
 }
 
 // hasBinding reports whether node or any node in its Left, Right or Steps
@@ -706,11 +711,11 @@ func hasBinding(node *Node) bool {
 	if node == nil {
 		return false
 	}
-	if node.Index != "" || node.Focus != "" || node.Tuple || node.Ancestor != nil || node.TupleResult {
+	if node.Index() != "" || node.Focus() != "" || node.Tuple() || node.Ancestor() != nil || node.TupleResult() {
 		return true
 	}
 	if node.Type == NodeSort {
 		return false
 	}
-	return hasBinding(node.Left) || hasBinding(node.Right) || slices.ContainsFunc(node.Steps, hasBinding)
+	return hasBinding(node.Left) || hasBinding(node.Right) || slices.ContainsFunc(node.Steps(), hasBinding)
 }

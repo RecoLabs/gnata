@@ -177,7 +177,7 @@ func evalBinary(node *parser.Node, input any, env *Environment) (any, error) { /
 // tail position jsonata-js returns a call there uncollapsed, as it does a
 // tail call (see markTailPosition).
 func evalDefaultLeft(node *parser.Node, input any, env *Environment) (left, result any, err error) {
-	if node.Thunk && node.Left.Type == parser.NodeFunction {
+	if node.Thunk() && node.Left.Type == parser.NodeFunction {
 		result, err = evalFunctionSequence(node.Left, input, env)
 		return CollapseAndKeep(result, false), result, err
 	}
@@ -219,7 +219,7 @@ func subscriptBase(node *parser.Node) *parser.Node {
 	for isSubscript(node) {
 		node = node.Left
 	}
-	if node == nil || node.Group != nil {
+	if node == nil || node.Group() != nil {
 		return nil
 	}
 	return node
@@ -233,7 +233,7 @@ func subscriptBase(node *parser.Node) *parser.Node {
 // collapses as the expression returns it. On any later step of a path, as
 // in $.(n)[p], a subscript is a stage whatever its base.
 func filtersStep(node *parser.Node) bool {
-	if !isSubscript(node) || node.Group != nil {
+	if !isSubscript(node) || node.Group() != nil {
 		return false
 	}
 	base := subscriptBase(node)
@@ -265,12 +265,12 @@ func evalSubscriptStage(node *parser.Node, input any, env *Environment) (any, er
 func subscriptStage(node *parser.Node, input any, env *Environment) (result any, keptMissing bool, _ error) {
 	// keepArray: [] applies to this subscript or to a node in its left chain,
 	// as through a sort step.
-	keepArray := node.KeepArray || parser.ChainKeepsArray(node.Left)
+	keepArray := node.KeepArray() || parser.ChainKeepsArray(node.Left)
 	// A subscripted block a % reaches into, outside a path's tuple stream,
 	// is filtered as its tuples, seeing their bindings, as in jsonata-js;
 	// the result is the kept tuples' values, where jsonata-js leaks the
 	// tuples themselves unless a path step merges them.
-	if base := parser.StepBase(node); base.Type == parser.NodeBlock && base.TupleResult {
+	if base := parser.StepBase(node); base.Type == parser.NodeBlock && base.TupleResult() {
 		_, stages := splitTupleStages(node)
 		stream, err := blockTuples(base, stages, []pathCtx{{value: input, env: env}})
 		if err != nil {
@@ -417,10 +417,10 @@ func contextFree(predicate *parser.Node) bool {
 	if predicate == nil {
 		return true
 	}
-	if predicate.Group != nil || predicate.Focus != "" || predicate.Index != "" {
+	if predicate.Group() != nil || predicate.Focus() != "" || predicate.Index() != "" {
 		return false
 	}
-	switch predicate.Type {
+	switch predicate.Type { //nolint:exhaustive // only literal and variable predicates are constant
 	case parser.NodeNumber, parser.NodeString, parser.NodeValue:
 		return true
 	case parser.NodeVariable:
@@ -428,14 +428,14 @@ func contextFree(predicate *parser.Node) bool {
 	case parser.NodeBinary:
 		return contextFree(predicate.Left) && contextFree(predicate.Right)
 	case parser.NodeCondition:
-		return contextFree(predicate.Condition) && contextFree(predicate.Then) &&
-			contextFree(predicate.Else)
+		return contextFree(predicate.Condition()) && contextFree(predicate.Then()) &&
+			contextFree(predicate.Else())
 	case parser.NodeUnary:
 		switch predicate.Value {
 		case "-":
-			return contextFree(predicate.Expression)
+			return contextFree(predicate.Expression())
 		case "[":
-			return !slices.ContainsFunc(predicate.Expressions, func(e *parser.Node) bool { return !contextFree(e) })
+			return !slices.ContainsFunc(predicate.Expressions(), func(e *parser.Node) bool { return !contextFree(e) })
 		}
 	}
 	return false
@@ -448,7 +448,7 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (items []
 	var left any
 	missing = true
 	switch {
-	case node.Left.Type == parser.NodeFunction && node.PathStage:
+	case node.Left.Type == parser.NodeFunction && node.PathStage():
 		// A [] keeps the call's one-item sequence before its stages run.
 		if left, err = evalFunctionSequence(node.Left, input, env); err == nil {
 			left = CollapseAndKeep(left, parser.ChainKeepsArray(node))
@@ -457,9 +457,9 @@ func evalSubscriptLeft(node *parser.Node, input any, env *Environment) (items []
 		left, err = evalFunctionSequence(node.Left, input, env)
 	case isSubscript(node.Left):
 		left, missing, err = subscriptStage(node.Left, input, env)
-	case node.Left.Type == parser.NodeSort && node.Left.Group == nil:
+	case node.Left.Type == parser.NodeSort && node.Left.Group() == nil:
 		left, err = evalSortStep(node.Left, input, env)
-	case node.Left.Type == parser.NodeName && !node.Left.KeepArray && node.Left.Group == nil:
+	case node.Left.Type == parser.NodeName && !node.Left.KeepArray() && node.Left.Group() == nil:
 		// The field is looked up in the subscript's one context, an array
 		// context included, as jsonata-js evaluates a predicated step.
 		left, err = evalLookup(node.Left, input, env)

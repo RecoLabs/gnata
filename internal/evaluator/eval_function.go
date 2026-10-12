@@ -13,19 +13,19 @@ func evalFunction(node *parser.Node, input any, env *Environment) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return CollapseAndKeep(result, node.KeepArray), nil
+	return CollapseAndKeep(result, node.KeepArray()), nil
 }
 
 // evalFunctionSequence calls the function node without collapsing a
 // *Sequence result, so a predicate on the call ($filter(...)[0]) sees the
 // sequence's items, matching jsonata-js.
 func evalFunctionSequence(node *parser.Node, input any, env *Environment) (any, error) {
-	fn, err := evalCallee(node.Procedure, input, env)
+	fn, err := evalCallee(node.Procedure(), input, env)
 	if err != nil {
 		return nil, err
 	}
 
-	args := make([]any, 0, len(node.Arguments))
+	args := make([]any, 0, len(node.Arguments()))
 	var shape argShape
 	// plain marks the arguments a lambda binds as plain arrays (see
 	// plainArgs).
@@ -34,7 +34,7 @@ func evalFunctionSequence(node *parser.Node, input any, env *Environment) (any, 
 	// as the call does here, so that it binds the marked parameters.
 	target, wrapped := wrappedLambda(fn)
 	lambdaCall := wrapped || isLambda(fn)
-	for i, argNode := range node.Arguments {
+	for i, argNode := range node.Arguments() {
 		if argNode.Type == parser.NodePlaceholder {
 			args = append(args, nil)
 			continue
@@ -65,14 +65,14 @@ func evalFunctionSequence(node *parser.Node, input any, env *Environment) (any, 
 	// jsonata-js runs a tail call from the trampoline of the call that
 	// entered the lambda, so it takes that call's context.
 	callFocus := input
-	if node.TailContext {
+	if node.TailContext() {
 		callFocus = env.callCounter().applyFocus
 	}
 
 	// jsonata-js applies a function argument with a null context, except in
 	// a tail call, whose arguments its trampoline passes as they are. Named
 	// builtins already apply function arguments with a null context.
-	if !node.TailContext && reachesLambda(fn) {
+	if !node.TailContext() && reachesLambda(fn) {
 		for i, arg := range args {
 			args[i] = wrapFunctionArg(arg, env)
 		}
@@ -82,14 +82,14 @@ func evalFunctionSequence(node *parser.Node, input any, env *Environment) (any, 
 	// lambda body, return a TailCall sentinel instead of recursing, which
 	// invokeFunction applies (see TailCall). A jsonata-js tail call to a
 	// built-in is one too, so its result is returned uncollapsed.
-	if node.Thunk {
+	if node.Thunk() {
 		if wrapped {
 			return &TailCall{Fn: target, Args: args, Focus: Null, Plain: plain}, nil
 		}
 		if lambdaCall {
 			return &TailCall{Fn: fn, Args: args, Focus: callFocus, Plain: plain}, nil
 		}
-		if node.TailContext {
+		if node.TailContext() {
 			if len(args) > 0 {
 				plain = plain.with(0, args[0], shape)
 			}
@@ -195,11 +195,11 @@ func multiItemArray(v any) bool {
 
 // evalShapedArg evaluates a call's first argument and its shape.
 func evalShapedArg(node *parser.Node, input any, env *Environment) (any, argShape, error) {
-	if node.Group != nil || node.KeepArray && !keepsShape(node) {
+	if node.Group() != nil || node.KeepArray() && !keepsShape(node) {
 		v, err := Eval(node, input, env)
 		return v, argShape{}, err
 	}
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // only node types whose result shape differs from a plain Eval
 	case parser.NodeFunction:
 		raw, err := evalFunctionSequence(node, input, env)
 		_, seq := raw.(*Sequence)
@@ -236,12 +236,12 @@ func evalShapedArg(node *parser.Node, input any, env *Environment) (any, argShap
 		v, err := Eval(node, input, env)
 		return v, argShape{last: node, lastIn: input}, err
 	case parser.NodePath:
-		if pathHasTupleStep(node.Steps) {
+		if pathHasTupleStep(node.Steps()) {
 			v, err := Eval(node, input, env)
 			return v, argShape{}, err
 		}
 		v, lastIn, err := evalPathSimpleLast(node, input, env)
-		return v, argShape{last: node.Steps[len(node.Steps)-1], lastIn: lastIn}, err
+		return v, argShape{last: node.Steps()[len(node.Steps())-1], lastIn: lastIn}, err
 	case parser.NodeBlock:
 		return evalShapedBlock(node, input, env)
 	}
@@ -253,7 +253,7 @@ func evalShapedArg(node *parser.Node, input any, env *Environment) (any, argShap
 // jsonata-js's [] makes only a constructed array, the value of an array
 // constructor step, a sequence.
 func keepsShape(node *parser.Node) bool {
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // only node types whose [] keeps a constructed array
 	case parser.NodeName, parser.NodeUnary, parser.NodeVariable:
 		return true
 	case parser.NodeBinary:
@@ -264,17 +264,17 @@ func keepsShape(node *parser.Node) bool {
 
 // evalShapedBlock is evalBlock, taking the shape of its last expression.
 func evalShapedBlock(node *parser.Node, input any, env *Environment) (any, argShape, error) {
-	if len(node.Expressions) == 0 {
+	if len(node.Expressions()) == 0 {
 		return nil, argShape{}, nil
 	}
 	childEnv := NewChildEnvironment(env)
-	last := len(node.Expressions) - 1
-	for _, expr := range node.Expressions[:last] {
+	last := len(node.Expressions()) - 1
+	for _, expr := range node.Expressions()[:last] {
 		if _, err := Eval(expr, input, childEnv); err != nil {
 			return nil, argShape{}, err
 		}
 	}
-	v, shape, err := evalShapedArg(node.Expressions[last], input, childEnv)
+	v, shape, err := evalShapedArg(node.Expressions()[last], input, childEnv)
 	return settleRaw(v, false), shape, err
 }
 
@@ -299,7 +299,7 @@ func evalShapedBind(node *parser.Node, input any, env *Environment) (any, argSha
 // evalShapedCondition is evalCondition, taking the shape of the branch it
 // evaluates.
 func evalShapedCondition(node *parser.Node, input any, env *Environment) (any, argShape, error) {
-	cond, err := Eval(node.Condition, input, env)
+	cond, err := Eval(node.Condition(), input, env)
 	if err != nil {
 		return nil, argShape{}, err
 	}
@@ -307,9 +307,9 @@ func evalShapedCondition(node *parser.Node, input any, env *Environment) (any, a
 	if err != nil {
 		return nil, argShape{}, err
 	}
-	branch := node.Then
+	branch := node.Then()
 	if !truthy {
-		branch = node.Else
+		branch = node.Else()
 	}
 	if branch == nil {
 		return nil, argShape{}, nil
@@ -321,7 +321,7 @@ func evalShapedCondition(node *parser.Node, input any, env *Environment) (any, a
 // evalShapedDefault is the ?: or ?? operator, taking the shape of the side
 // it returns.
 func evalShapedDefault(node *parser.Node, input any, env *Environment) (any, argShape, error) {
-	if node.Thunk {
+	if node.Thunk() {
 		v, err := Eval(node, input, env)
 		return v, argShape{}, err
 	}
@@ -397,7 +397,7 @@ func lastStepSequence(step *parser.Node, in any) bool {
 		item, oneItem = items[0], true
 	}
 	switch {
-	case step.Index != "" || step.Focus != "":
+	case step.Index() != "" || step.Focus() != "":
 		return true
 	case step.Type == parser.NodeBinary && step.Value == "[":
 		return step.Right.Type != parser.NodeNumber || mapped && len(items) > 1
@@ -405,13 +405,13 @@ func lastStepSequence(step *parser.Node, in any) bool {
 		return false
 	case plainArrayStep(step):
 		// [] makes a constructor step's array, not a block's, a sequence.
-		return step.KeepArray && step.Type == parser.NodeUnary || mapped && len(items) != 1
+		return step.KeepArray() && step.Type == parser.NodeUnary || mapped && len(items) != 1
 	case step.Type == parser.NodeVariable && step.Value == "":
 		return !oneItem || !IsArray(item)
 	case step.Type == parser.NodeWildcard:
 		return !oneItem || !holdsArrayValue(item)
-	case step.Type == parser.NodeBlock && len(step.Expressions) > 0:
-		last := step.Expressions[len(step.Expressions)-1]
+	case step.Type == parser.NodeBlock && len(step.Expressions()) > 0:
+		last := step.Expressions()[len(step.Expressions())-1]
 		if !oneItem {
 			return true
 		} else if last.Type == parser.NodeVariable && last.Value == "" {
@@ -453,29 +453,29 @@ func holdsArrayValue(v any) bool {
 // plainArrayStep reports whether step builds one plain array per context
 // item: an array constructor, or a block ending in one.
 func plainArrayStep(step *parser.Node) bool {
-	for step.Type == parser.NodeBlock && len(step.Expressions) > 0 {
-		step = step.Expressions[len(step.Expressions)-1]
+	for step.Type == parser.NodeBlock && len(step.Expressions()) > 0 {
+		step = step.Expressions()[len(step.Expressions())-1]
 	}
 	return step.Type == parser.NodeUnary && step.Value == "["
 }
 
 func evalLambda(node *parser.Node, input any, env *Environment) (any, error) {
-	params := make([]string, 0, len(node.Arguments))
-	for _, arg := range node.Arguments {
+	params := make([]string, 0, len(node.Arguments()))
+	for _, arg := range node.Arguments() {
 		params = append(params, arg.Value)
 	}
 	var signature *Signature
-	if node.Signature != nil {
-		signature = compileSignature(node.Signature.Params)
+	if node.Signature() != nil {
+		signature = compileSignature(node.Signature().Params)
 	}
 	return &Lambda{
 		Params:        params,
-		Body:          node.Body,
+		Body:          node.Body(),
 		Closure:       env,
-		Thunk:         node.Thunk,
+		Thunk:         node.Thunk(),
 		Signature:     signature,
 		CapturedFocus: input,
-		DeepBody:      bodyCost(node.Depth),
+		DeepBody:      bodyCost(node.Depth()),
 	}, nil
 }
 
@@ -509,15 +509,15 @@ func evalBody(f *Lambda, env *Environment, counter *callCounter) (any, error) {
 }
 
 func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
-	fn, err := Eval(node.Procedure, input, env)
+	fn, err := Eval(node.Procedure(), input, env)
 	if err != nil {
 		return nil, err
 	}
 	// For NodeName procedures (without $), distinguish T1007 vs T1008:
 	// - if the name is in env (it's a function reference without $), → T1007
 	// - if completely unknown → T1008
-	if fn == nil && node.Procedure != nil && node.Procedure.Type == parser.NodeName {
-		if envFn, found := env.Lookup(node.Procedure.Value); found && envFn != nil {
+	if fn == nil && node.Procedure() != nil && node.Procedure().Type == parser.NodeName {
+		if envFn, found := env.Lookup(node.Procedure().Value); found && envFn != nil {
 			return nil, &JSONataError{Code: "T1007", Message: "attempted to partially apply a function referenced without $"}
 		}
 	}
@@ -528,10 +528,10 @@ func evalPartial(node *parser.Node, input any, env *Environment) (any, error) {
 		return nil, &JSONataError{Code: "T1008", Message: fmt.Sprintf("cannot partially apply a non-function: %T", fn)}
 	}
 
-	boundArgs := make([]any, len(node.Arguments))
-	isPlaceholder := make([]bool, len(node.Arguments))
+	boundArgs := make([]any, len(node.Arguments()))
+	isPlaceholder := make([]bool, len(node.Arguments()))
 	placeholders := 0
-	for i, argNode := range node.Arguments {
+	for i, argNode := range node.Arguments() {
 		if argNode.Type == parser.NodePlaceholder {
 			isPlaceholder[i] = true
 			placeholders++

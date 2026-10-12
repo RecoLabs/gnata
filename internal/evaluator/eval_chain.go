@@ -19,13 +19,13 @@ func evalChain(right *parser.Node, piped any, pipedShape argShape, input any, en
 			return evalChain(right.Right, r1, shape, input, env)
 		}
 	}
-	if right.Type == parser.NodeFunction && right.Procedure != nil {
-		fn, err := Eval(right.Procedure, input, env)
+	if right.Type == parser.NodeFunction && right.Procedure() != nil {
+		fn, err := Eval(right.Procedure(), input, env)
 		if err != nil {
 			return nil, argShape{}, err
 		}
-		args := append(make([]any, 0, 1+len(right.Arguments)), piped)
-		for _, argNode := range right.Arguments {
+		args := append(make([]any, 0, 1+len(right.Arguments())), piped)
+		for _, argNode := range right.Arguments() {
 			if argNode.Type == parser.NodePlaceholder {
 				args = append(args, nil)
 				continue
@@ -43,7 +43,7 @@ func evalChain(right *parser.Node, piped any, pipedShape argShape, input any, en
 				args[i+1] = wrapFunctionArg(arg, env)
 			}
 		}
-		return callShaped(fn, args, pipedShape, input, env, right.KeepArray)
+		return callShaped(fn, args, pipedShape, input, env, right.KeepArray())
 	}
 	// Right is a function reference or other expression.
 	fn, err := Eval(right, input, env)
@@ -92,18 +92,18 @@ func evalChain(right *parser.Node, piped any, pipedShape argShape, input any, en
 func evalBlock(node *parser.Node, input any, env *Environment) (any, error) {
 	childEnv := NewChildEnvironment(env)
 	var last any
-	for _, expr := range node.Expressions {
+	for _, expr := range node.Expressions() {
 		val, err := Eval(expr, input, childEnv)
 		if err != nil {
 			return nil, err
 		}
 		last = val
 	}
-	return settleRaw(last, node.KeepArray), nil
+	return settleRaw(last, node.KeepArray()), nil
 }
 
 func evalCondition(node *parser.Node, input any, env *Environment) (any, error) {
-	cond, err := Eval(node.Condition, input, env)
+	cond, err := Eval(node.Condition(), input, env)
 	if err != nil {
 		return nil, err
 	}
@@ -111,11 +111,11 @@ func evalCondition(node *parser.Node, input any, env *Environment) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	branch := node.Then
+	branch := node.Then()
 	if !truthy {
-		branch = node.Else
+		branch = node.Else()
 	}
-	return evalSettled(branch, input, env, node.KeepArray)
+	return evalSettled(branch, input, env, node.KeepArray())
 }
 
 func evalBind(node *parser.Node, input any, env *Environment) (any, error) {

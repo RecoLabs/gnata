@@ -49,7 +49,7 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 		return nil, err
 	}
 
-	if len(node.Terms) == 0 {
+	if len(node.Terms()) == 0 {
 		if !wasArray && len(arr) == 1 {
 			return arr[0], nil
 		}
@@ -65,7 +65,7 @@ func evalSort(node *parser.Node, input any, env *Environment) (any, error) {
 		if err := env.Err(); err != nil {
 			return 0, err
 		}
-		return compareSortTerms(node.Terms, a, b, env, env)
+		return compareSortTerms(node.Terms(), a, b, env, env)
 	}); err != nil {
 		return nil, err
 	}
@@ -111,14 +111,14 @@ func evalSortInput(node *parser.Node, input any, env *Environment) (any, error) 
 // endsInFilter reports whether path is a simple path whose last step is a
 // subscript the path returns uncollapsed.
 func endsInFilter(path *parser.Node) bool {
-	return isSimplePath(path) && isSubscript(path.Steps[len(path.Steps)-1])
+	return isSimplePath(path) && isSubscript(path.Steps()[len(path.Steps())-1])
 }
 
 // isSimplePath reports whether node is a path with no group, [] or tuple
 // step, which evalPathSimpleSteps evaluates.
 func isSimplePath(node *parser.Node) bool {
-	return node.Type == parser.NodePath && node.Group == nil && !node.KeepSingletonArray &&
-		len(node.Steps) > 0 && !pathHasTupleStep(node.Steps)
+	return node.Type == parser.NodePath && node.Group() == nil && !node.KeepSingletonArray() &&
+		len(node.Steps()) > 0 && !pathHasTupleStep(node.Steps())
 }
 
 // evalPathSequence evaluates a simple path that a sort or group applies

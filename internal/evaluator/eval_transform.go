@@ -328,7 +328,7 @@ func evalTransform(node *parser.Node, _ any, env *Environment) (any, error) {
 		// Each call evaluates the clauses on the Go stack. Unlike a lambda's
 		// body, they get no free depth: transforms can call each other with
 		// no lambda call between, so the call depth does not bound them.
-		return env.callCounter().callNested(1+int(node.Depth)/levelsPerNestedCall, func() (any, error) {
+		return env.callCounter().callNested(1+int(node.Depth())/levelsPerNestedCall, func() (any, error) {
 			return applyTransform(node, doc, env)
 		})
 	}), nil
@@ -352,7 +352,7 @@ func applyTransform(node *parser.Node, input any, env *Environment) (any, error)
 	}
 	c := &transformClone{
 		env: env, id: newCloneID(), leadsIn: make(map[any]bool),
-		ownedLeaf: node.NoBinds,
+		ownedLeaf: node.NoBinds(),
 	}
 	// jsonata-js copies the input with whatever $clone is bound to. The
 	// clauses below modify the copy, so a rebound $clone is given, and its
@@ -376,7 +376,7 @@ func applyTransform(node *parser.Node, input any, env *Environment) (any, error)
 		}
 	}
 
-	matched, err := Eval(node.Pattern, cloned, env)
+	matched, err := Eval(node.Pattern(), cloned, env)
 	if err != nil {
 		return nil, err
 	}
@@ -417,14 +417,14 @@ func applyTransform(node *parser.Node, input any, env *Environment) (any, error)
 // validateTransformClauses evaluates update/delete clauses for type-checking only,
 // without mutating the target. Used when the pattern matches a non-object value.
 func validateTransformClauses(node *parser.Node, target any, env *Environment) error {
-	if node.Update != nil {
-		if updateVal, err := Eval(node.Update, target, env); err != nil {
+	if node.Update() != nil {
+		if updateVal, err := Eval(node.Update(), target, env); err != nil {
 			return err
 		} else if updateVal != nil && !IsNull(updateVal) && !IsMap(updateVal) {
 			return &errTransformUpdate
 		}
 	}
-	if node.Delete != nil {
+	if node.Delete() != nil {
 		_, err := deleteKeys(node, target, env)
 		return err
 	}
@@ -432,8 +432,8 @@ func validateTransformClauses(node *parser.Node, target any, env *Environment) e
 }
 
 func (c *transformClone) applyTarget(node *parser.Node, target *OrderedMap) error {
-	if node.Update != nil {
-		if updateVal, err := Eval(node.Update, target, c.env); err != nil {
+	if node.Update() != nil {
+		if updateVal, err := Eval(node.Update(), target, c.env); err != nil {
 			return err
 		} else if updateVal != nil && !IsNull(updateVal) {
 			if !IsMap(updateVal) {
@@ -448,7 +448,7 @@ func (c *transformClone) applyTarget(node *parser.Node, target *OrderedMap) erro
 			})
 		}
 	}
-	if node.Delete != nil {
+	if node.Delete() != nil {
 		keys, err := deleteKeys(node, target, c.env)
 		if err != nil {
 			return err
@@ -463,7 +463,7 @@ func (c *transformClone) applyTarget(node *parser.Node, target *OrderedMap) erro
 // deleteKeys evaluates a transform's delete clause, which must be a string
 // or an array of strings, as in jsonata-js.
 func deleteKeys(node *parser.Node, target any, env *Environment) ([]string, error) {
-	deleteVal, err := Eval(node.Delete, target, env)
+	deleteVal, err := Eval(node.Delete(), target, env)
 	if err != nil {
 		return nil, err
 	}

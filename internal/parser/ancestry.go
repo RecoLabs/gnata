@@ -42,12 +42,12 @@ func nameSharedLabels(slots []*Slot) {
 
 // errNoParent is jsonata-js's S0217 for a % whose step cannot be derived.
 func errNoParent(node *Node) error {
-	return parseError("S0217", node.Type, "the object representing the 'parent' cannot be derived from this expression")
+	return parseError("S0217", node.Type.String(), "the object representing the 'parent' cannot be derived from this expression")
 }
 
 // seekParent climbs slot through node, a step or a block's last expression.
 func seekParent(node *Node, slot *Slot) error {
-	switch node.Type {
+	switch node.Type { //nolint:exhaustive // only steps and blocks can carry a %; other node types cannot be climbed
 	case NodeBinary:
 		if node.Value == "[" {
 			return seekParent(node.Left, slot)
@@ -55,34 +55,34 @@ func seekParent(node *Node, slot *Slot) error {
 	case NodeName, NodeWildcard:
 		slot.Level--
 		if slot.Level == 0 {
-			if node.Ancestor != nil {
-				slot.Label = node.Ancestor.Label
+			if node.Ancestor() != nil {
+				slot.Label = node.Ancestor().Label
 			}
-			node.Ancestor = slot
+			node.SetAncestor(slot)
 		}
 		return nil
 	case NodeParent:
 		slot.Level++
 		return nil
 	case NodeBlock:
-		if len(node.Expressions) == 0 {
+		if len(node.Expressions()) == 0 {
 			return nil
 		}
-		node.TupleResult = true
-		last := len(node.Expressions) - 1
-		if err := seekParent(node.Expressions[last], slot); err != nil {
+		node.SetTupleResult(true)
+		last := len(node.Expressions()) - 1
+		if err := seekParent(node.Expressions()[last], slot); err != nil {
 			return err
 		}
 		// jsonata-js makes a name or #$var step a path, which yields its
 		// tuples; any other step yields its value.
-		if expr := node.Expressions[last]; expr.Type != NodePath && isPathLike(expr) {
-			node.Expressions[last] = wrapStep(expr, pathSlots(expr))
-			node.Expressions[last].TupleResult = true
+		if expr := node.Expressions()[last]; expr.Type != NodePath && isPathLike(expr) {
+			node.Expressions()[last] = wrapStep(expr, pathSlots(expr))
+			node.Expressions()[last].SetTupleResult(true)
 		}
 		return nil
 	case NodePath:
-		node.TupleResult = true
-		for _, v := range slices.Backward(node.Steps) {
+		node.SetTupleResult(true)
+		for _, v := range slices.Backward(node.Steps()) {
 			if err := seekParent(v, slot); err != nil {
 				return err
 			}
@@ -101,20 +101,20 @@ func seekParent(node *Node, slot *Slot) error {
 // passes its own slots on: jsonata-js drops those of any other first step.
 func resolvePathAncestry(path *Node) error {
 	var seeking []*Slot
-	switch first := StepBase(path.Steps[0]); first.Type {
+	switch first := StepBase(path.Steps()[0]); first.Type { //nolint:exhaustive // only a leading % or sort passes its own slots on
 	case NodeParent:
-		seeking = []*Slot{first.Slot}
+		seeking = []*Slot{first.Slot()}
 	case NodeSort:
-		seeking = slices.Clone(first.SeekingParent)
+		seeking = slices.Clone(first.SeekingParent())
 	}
-	for i := 1; i < len(path.Steps); i++ {
-		base := StepBase(path.Steps[i])
+	for i := 1; i < len(path.Steps()); i++ {
+		base := StepBase(path.Steps()[i])
 		var err error
-		if seeking, err = climbSteps(path.Steps[:i], ownSlots(base), seeking); err != nil {
+		if seeking, err = climbSteps(path.Steps()[:i], ownSlots(base), seeking); err != nil {
 			return err
 		}
 	}
-	path.SeekingParent = seeking
+	path.SetSeekingParent(seeking)
 	return nil
 }
 
@@ -130,7 +130,7 @@ func climbSteps(steps []*Node, slots, seeking []*Slot) ([]*Slot, error) {
 			}
 			step := steps[i]
 			i--
-			for i >= 0 && StepBase(step).Focus != "" && StepBase(steps[i]).Focus != "" {
+			for i >= 0 && StepBase(step).Focus() != "" && StepBase(steps[i]).Focus() != "" {
 				step = steps[i]
 				i--
 			}
@@ -162,7 +162,7 @@ func resolvePredicateAncestry(subscript *Node) error {
 		}
 	}
 	if base.Type != NodeSort {
-		base.SeekingParent = append(base.SeekingParent, slots...)
+		base.SetSeekingParent(append(base.SeekingParent(), slots...))
 	}
 	return nil
 }
@@ -173,17 +173,17 @@ func resolvePredicateAncestry(subscript *Node) error {
 func resolveSortAncestry(sort *Node) error {
 	steps := []*Node{sort.Left}
 	if sort.Left.Type == NodePath {
-		steps = sort.Left.Steps
+		steps = sort.Left.Steps()
 	}
 	seeking := slices.Clone(pathSlots(sort.Left))
-	for _, term := range sort.Terms {
+	for _, term := range sort.Terms() {
 		var err error
 		if seeking, err = climbSteps(steps, exprSlots(term.Expression), seeking); err != nil {
 			return err
 		}
 	}
-	sort.SeekingParent = seeking
-	sort.Tuple = hasBinding(sort.Left)
+	sort.SetSeekingParent(seeking)
+	sort.SetTuple(hasBinding(sort.Left))
 	return nil
 }
 
@@ -193,10 +193,10 @@ func resolveSortAncestry(sort *Node) error {
 func StepBase(node *Node) *Node {
 	for {
 		switch {
-		case node.base != nil:
-			return node.base
-		case node.Type == NodePath && len(node.Steps) > 0:
-			node = node.Steps[len(node.Steps)-1]
+		case node.base() != nil:
+			return node.base()
+		case node.Type == NodePath && len(node.Steps()) > 0:
+			node = node.Steps()[len(node.Steps())-1]
 		case node.Type == NodeBinary && node.Value == "[" && node.Left != nil:
 			node = node.Left
 		default:
@@ -209,9 +209,9 @@ func StepBase(node *Node) *Node {
 // passed up to it, and a %'s own.
 func ownSlots(step *Node) []*Slot {
 	if step.Type == NodeParent {
-		return append(slices.Clip(step.SeekingParent), step.Slot)
+		return append(slices.Clip(step.SeekingParent()), step.Slot())
 	}
-	return step.SeekingParent
+	return step.SeekingParent()
 }
 
 // exprSlots returns the slots node passes to the expression around it.
@@ -232,7 +232,7 @@ func exprSlots(node *Node) []*Slot {
 // jsonata-js leaves a bare % predicate, as in a[%], unresolved.
 func predicateSlots(node *Node) []*Slot {
 	if node.Type == NodeParent {
-		return node.SeekingParent
+		return node.SeekingParent()
 	}
 	return exprSlots(node)
 }
@@ -242,7 +242,7 @@ func predicateSlots(node *Node) []*Slot {
 func isPathLike(node *Node) bool {
 	for {
 		switch {
-		case node.Type == NodePath || node.Type == NodeSort || node.Type == NodeName || node.Index != "" ||
+		case node.Type == NodePath || node.Type == NodeSort || node.Type == NodeName || node.Index() != "" ||
 			node.Type == NodeBinary && node.Value == ".":
 			return true
 		case node.Type == NodeBinary && node.Value == "[" && node.Left != nil:
@@ -260,7 +260,7 @@ func pathSlots(node *Node) []*Slot {
 		node = node.Left
 	}
 	if node.Type == NodePath || node.Type == NodeSort {
-		return node.SeekingParent
+		return node.SeekingParent()
 	}
 	return nil
 }
