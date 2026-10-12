@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/recolabs/gnata"
+	"github.com/recolabs/gnata/internal/evaluator"
 )
 
 func TestStreamEvaluator_Options(t *testing.T) {
@@ -162,6 +163,14 @@ func TestRequiredPaths(t *testing.T) {
 	}
 	if paths := expr.RequiredPaths(); len(paths) != 0 {
 		t.Fatalf("RequiredPaths of non-fast-path expression = %v, want none", paths)
+	}
+}
+
+func TestConsArrayIsExported(t *testing.T) {
+	var v any = evaluator.ConsArray{1.0, 2.0}
+	cons, ok := v.(gnata.ConsArray)
+	if !ok || len(cons) != 2 {
+		t.Fatalf("an evaluator ConsArray does not match gnata.ConsArray: %T", v)
 	}
 }
 

@@ -722,6 +722,10 @@ var Null = evaluator.Null
 
 type OrderedMap = evaluator.OrderedMap
 
+// ConsArray is an array built by an array constructor used as a path step,
+// as in a.[b, c]. Treat it like []any when consuming evaluation results.
+type ConsArray = evaluator.ConsArray
+
 func NewOrderedMap() *OrderedMap {
 	return evaluator.NewOrderedMap()
 }
