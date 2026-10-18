@@ -696,9 +696,80 @@ func (e *Expression) IsComparisonFastPath() bool {
 	return e.cmpFast != nil
 }
 
-// RequiredPaths returns the GJSON paths this expression needs (fast-path only).
+// RequiredPaths returns the GJSON paths this expression needs, for fast-path
+// expressions only. ReferencedPaths covers any expression, as raw field names.
 func (e *Expression) RequiredPaths() []string {
 	return e.paths
+}
+
+// ReferencedPaths returns the input fields the expression reads, for any
+// expression, as raw field names from the root of the input (RequiredPaths
+// instead returns GJSON-escaped paths, for fast-path expressions only). Each
+// distinct path appears once, in the order first seen.
+//
+// A path inside a predicate, sort term, group or transform resolves against
+// the step it applies to: a[b = 1].c reads [a b] and [a c], and
+// items^(price).name reads [items price] and [items name]. A focus binding
+// keeps the step's input, so a.b@$x.c reads [a b] and [a c]. % steps back to
+// the parent: a.b.%.c reads [a b] and [a c]. $ and $$ are the current and root
+// input, as is a variable bound to a path once with := as a block statement.
+// A lambda body reads the input it is defined in, except a tail call, which
+// reads the context of the lambda's caller.
+//
+// A path ends where the expression reads the whole value there rather than
+// named fields of it: a wildcard, a descendant, a function given it, a step
+// that isn't a field name (such as a.{"k": 1}), or a transform copying it.
+// a.*.c reads [a]. A call that may fill a missing argument from its context
+// reads the context, decided by the builtin's signature; any other function,
+// such as a custom one, is given the context, so it reads it.
+//
+// complete is true when evaluating the expression against its input pruned
+// to these paths gives the same result. It is false when the expression may
+// also read input it doesn't name: the whole input (*, **.a, $keys($), or a
+// call given the root as its context, such as $string()), a variable it
+// doesn't bind or binds more than once or conditionally, a lambda parameter,
+// $eval, a % above the recorded paths, or more paths than the size cap
+// keeps, or a % in an expression with a focus binding. Calls are checked
+// against the builtins; when the expression is evaluated with a
+// CustomEnvironment that replaces a builtin, use ReferencedPathsIn. A
+// variable passed at evaluation (EvalWithVars) under a builtin's name
+// replaces it too and isn't accounted for, so don't pass one. This is a
+// static analysis, not a security boundary.
+func (e *Expression) ReferencedPaths() (paths [][]string, complete bool) {
+	return parser.ReferencedPaths(e.ast, readsContextIn(builtinEnv))
+}
+
+// ReferencedPathsIn is ReferencedPaths for evaluation with env, whose
+// custom functions are given their context; a nil env is the builtins, as
+// in EvalWithCustomEnvironmentAndVars. Custom functions passed some other
+// way (EvalWithCustomFuncs, a stream's WithCustomFunctions) aren't known
+// here, so build a CustomEnvironment with them for a sound answer.
+func (e *Expression) ReferencedPathsIn(env *CustomEnvironment) (paths [][]string, complete bool) {
+	if env == nil {
+		return e.ReferencedPaths()
+	}
+	return parser.ReferencedPaths(e.ast, readsContextIn(env.env))
+}
+
+// readsContextIn reports whether a call to the function name in env may read
+// its context: a builtin whose signature may inject it for arguments of
+// argTypes, or any other function, which is given it.
+func readsContextIn(env *evaluator.Environment) parser.ReadsContext {
+	return func(name string, argTypes []byte) bool {
+		fn, ok := env.Lookup(name)
+		builtin, isSigned := fn.(*evaluator.SignedBuiltin)
+		switch {
+		case !ok || !isSigned || builtin.Name != name:
+			return true
+		case builtin.Signature == nil:
+			return len(argTypes) == 0
+		}
+		symbols := make([]uint8, len(argTypes))
+		for i, t := range argTypes {
+			symbols[i] = evaluator.ArgSymbols(t)
+		}
+		return builtin.Signature.MayInject(symbols)
+	}
 }
 
 // DeepEqual reports whether two JSONata values are structurally equal.
