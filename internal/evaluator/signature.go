@@ -247,11 +247,15 @@ func (s *Signature) injectMatched(args []any, focus any) ([]any, error) {
 // arguments as parameters also needs no context: each parameter takes one,
 // or args do not match.
 func (s *Signature) fillsInOrder(args []any, plain bool) bool {
-	if s.variadic || len(args) > len(s.params) {
-		return !s.variadic && !plain
+	if !plain {
+		if s.variadic || len(args) >= len(s.params) {
+			return !s.variadic
+		}
+		var symbolsBuf [smallMatch]uint8
+		return s.fillsInOrderSymbols(argSymbols(args, symbolsBuf[:]))
 	}
-	if len(args) == len(s.params) && !plain {
-		return true
+	if s.variadic || len(args) > len(s.params) {
+		return false
 	}
 	for i, arg := range args {
 		if !s.params[i].takesAsIs(arg, plain) {
@@ -487,7 +491,12 @@ func (s *Signature) match(args []any, counts []int) ([]int, bool) {
 		return counts, true
 	}
 	var symbolsBuf [smallMatch]uint8
-	symbols := argSymbols(args, symbolsBuf[:])
+	return s.matchSymbols(argSymbols(args, symbolsBuf[:]), counts)
+}
+
+// matchSymbols is match for arguments with the given symbol bits, one per
+// argument.
+func (s *Signature) matchSymbols(symbols []uint8, counts []int) ([]int, bool) {
 	if !s.variadic {
 		return s.matchFixed(symbols, counts)
 	}

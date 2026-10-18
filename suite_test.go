@@ -174,8 +174,10 @@ func runTestCase(t *testing.T, tc *testCase) {
 		t.Fatalf("unexpected compile error: %v", err)
 		return
 	}
-
 	result, err := expr.EvalWithVars(context.Background(), inputData, tc.Bindings)
+	if err == nil {
+		checkReferencedPaths(t, tc.Expr, expr, inputData, tc.Bindings, result)
+	}
 	if tc.Code != "" || tc.Error != nil {
 		if err == nil {
 			t.Fatalf("expected error %s, got result %v", tc.Code, result)

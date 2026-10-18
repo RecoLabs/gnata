@@ -419,3 +419,226 @@ func TestTransformNeverBuildsCycles(t *testing.T) {
 		})
 	}
 }
+
+// referencedPathsInput is the input TestReferencedPaths prunes to each
+// expression's paths, to check that its result doesn't change.
+var referencedPathsInput = func() any {
+	input, err := gnata.DecodeJSON(json.RawMessage(`{
+		"a": [{"b": 1, "c": 2, "k": "x", "v": 3}, {"b": 2, "c": "q", "x": 1}],
+		"b": "hello", "c": {"d": 1, "secret": "s"}, "d": 5, "s": "str", "n": 2,
+		"items": [{"price": 2, "name": "p"}, {"price": 1, "name": "q"}],
+		"x": {"y": [1, 2], "z": [{"w": 2, "n": 1}, {"w": 1}], "n": 3, "w": 1, "secret": "S"}, "y": {"q": 1},
+		"status": "active", "name": "N", "secret": "S",
+		"Account": {"Order": [{"Price": 2}, {"Price": 3}]},
+		"arr": [{"n": 1}, {"n": 2}], "obj": {"p": 1, "q": -1}
+	}`))
+	if err != nil {
+		panic(err)
+	}
+	return input
+}()
+
+type referencedPathsCase struct {
+	expr string
+	want [][]string
+	// partial is the expected !complete.
+	partial bool
+}
+
+func referencedPathsCases() []referencedPathsCase {
+	return []referencedPathsCase{
+		{expr: `a`, want: [][]string{{"a"}}},
+		{expr: `a.b.c = "x"`, want: [][]string{{"a", "b", "c"}}},
+		{expr: `"a.b"`, want: nil},
+		{expr: "`first name`.value", want: [][]string{{"first name", "value"}}},
+		{expr: "`a\x00b` = 1 and a.b = 2", want: [][]string{{"a\x00b"}, {"a", "b"}}},
+		{expr: `$exists(a) and a.b != ""`, want: [][]string{{"a"}, {"a", "b"}}},
+		{expr: `$contains(a.b, "x") or $lowercase(c) = "y"`, want: [][]string{{"a", "b"}, {"c"}}},
+		{expr: `a[b = 1].c`, want: [][]string{{"a", "b"}, {"a", "c"}}},
+		{expr: `a[0].b`, want: [][]string{{"a", "b"}}},
+		{expr: `(a)[b = 1].x`, want: [][]string{{"a", "b"}, {"a", "x"}}},
+		{expr: `a.(b + c)`, want: [][]string{{"a"}, {"a", "b"}, {"a", "c"}}},
+		{expr: `a.*.c`, want: [][]string{{"a"}}},
+		{expr: `a.**.b`, want: [][]string{{"a"}}},
+		{expr: `a.b ? c : d.e`, want: [][]string{{"a", "b"}, {"c"}, {"d", "e"}}},
+		{expr: `a.b.%.c`, want: [][]string{{"a", "b"}, {"a", "c"}}},
+		{expr: `a.b[%.c = 1]`, want: [][]string{{"a", "b"}, {"a", "c"}}},
+		{expr: `{"k": a.b, "n": [c, d]}`, want: [][]string{{"a", "b"}, {"c"}, {"d"}}},
+		{expr: `a.b = 1 and a.b = 2`, want: [][]string{{"a", "b"}}},
+
+		{expr: `$$.a.b`, want: [][]string{{"a", "b"}}},
+		{expr: `$.a`, want: [][]string{{"a"}}},
+		{expr: `$[status = "active"].name`, want: [][]string{{"status"}, {"name"}}},
+		{expr: `$$[status = "active"].name`, want: [][]string{{"status"}, {"name"}}},
+		{expr: `a.$$.b`, want: [][]string{{"a"}, {"b"}}},
+		{expr: `a.$.b`, want: [][]string{{"a", "b"}}},
+		{expr: `($x := $; $x.secret)`, want: [][]string{{"secret"}}},
+		{expr: `($x := a.b; $x.c)`, want: [][]string{{"a", "b", "c"}}},
+		{expr: `$x.b`, partial: true},
+
+		{expr: `$map([1, 2], function($v){ b })`, want: [][]string{{"b"}}},
+		{expr: `($f := function(){ c }; $f())`, want: [][]string{{"c"}}},
+		{expr: `$map(a, function($v){ $v.b })`, want: [][]string{{"a"}}, partial: true},
+		{expr: `$map(a, function($v){ $$.c })`, want: [][]string{{"a"}, {"c"}}},
+
+		{expr: `*`, partial: true},
+		{expr: `**.Price`, partial: true},
+		{expr: `$`, partial: true},
+		{expr: `$lookup($, "c")`, partial: true},
+		{expr: `$keys($)`, partial: true},
+		{expr: `$string()`, partial: true},
+		{expr: `$exists($now())`},
+		{expr: `a.$string()`, want: [][]string{{"a"}}},
+		{expr: `a.$substring(0, 2)`, want: [][]string{{"a"}}},
+		{expr: `$substring(a, 0, 2)`, want: [][]string{{"a"}}},
+		{expr: `$myCustom(a)`, want: [][]string{{"a"}}, partial: true},
+		{expr: `a ~> $string()`, want: [][]string{{"a"}}},
+
+		{expr: `a ~> |b|{"c": d}|`, want: [][]string{{"a"}, {"a", "b"}, {"a", "b", "d"}}},
+		{expr: `a ~> |b|{"c": d}| ~> $string()`, want: [][]string{{"a"}, {"a", "b"}, {"a", "b", "d"}}},
+		{
+			expr:    `$ ~> |Account.Order|{"Total": Price * 2}|`,
+			want:    [][]string{{"Account", "Order"}, {"Account", "Order", "Price"}},
+			partial: true,
+		},
+		{expr: `( $t := |b|{"c": d}|; a ~> $t )`, want: [][]string{{"a"}}},
+
+		{expr: `a^(b, >c)`, want: [][]string{{"a", "b"}, {"a", "c"}, {"a"}}},
+		{expr: `items^(price).name`, want: [][]string{{"items", "price"}, {"items", "name"}}},
+		{expr: `a{b: $sum(c)}`, want: [][]string{{"a", "b"}, {"a", "c"}, {"a"}}},
+		{expr: `a[b = 1]{k: v}`, want: [][]string{{"a", "b"}, {"a", "k"}, {"a", "v"}, {"a"}}},
+
+		{expr: `x.y@$p.z.w`, want: [][]string{{"x", "y"}, {"x", "z", "w"}}},
+		{expr: `x.y@$p.$p.n`, want: [][]string{{"x", "y"}, {"x"}, {"x", "y", "n"}}},
+		{expr: `x.y@$p.z^(w)`, want: [][]string{{"x", "y"}, {"x", "z", "w"}, {"x", "z"}}},
+		{expr: `x.y@$p.z{k: v}`, want: [][]string{{"x", "y"}, {"x", "z", "k"}, {"x", "z", "v"}, {"x", "z"}}},
+		{expr: `x.y@$p.z ~> |q|{"r": s}|`, want: [][]string{{"x", "y"}, {"x", "z"}, {"x", "z", "q"}, {"x", "z", "q", "s"}}},
+		{expr: `a#$i[$i < 2].b`, want: [][]string{{"a", "b"}}},
+		{expr: `a@$p[$p.x = 1].b`, want: [][]string{{"a"}, {"a", "x"}, {"b"}}},
+		{expr: `$string(a)`, want: [][]string{{"a"}}},
+		{expr: `$substring(0, 2)`, partial: true},
+
+		{expr: `a.{"k": 1}`, want: [][]string{{"a"}}},
+		{expr: `a.[1]`, want: [][]string{{"a"}}},
+		{expr: `a.$string("x")`, want: [][]string{{"a"}}},
+		{expr: `($f := function(){ 1 }; a.$f())`, want: [][]string{{"a"}}},
+		{expr: `$x := c`, want: [][]string{{"c"}}},
+		{expr: `$string($x := s)`, want: [][]string{{"s"}}},
+		{expr: `{"k": $x := a}`, want: [][]string{{"a"}}},
+		{expr: `($x := a; $f := function(){ $x }; $x := c; $f())`, partial: true},
+		{expr: `($p := c; x.y@$p.z; $p.d)`, want: [][]string{{"x", "y"}, {"x", "z"}}, partial: true},
+		{expr: `(d ? $x := a : 1; $x.b)`, want: [][]string{{"d"}, {"a"}}, partial: true},
+		{expr: `x.y@$p.z.$p`, want: [][]string{{"x", "y"}, {"x", "z"}}},
+		{expr: `b.$eval("$$.secret")`, want: [][]string{{"b"}}, partial: true},
+		{expr: `b.$substring($$.n, 1)`, want: [][]string{{"b"}, {"n"}}},
+		{expr: `obj.$sift(function($v){ $v > 0 })`, want: [][]string{{"obj"}}, partial: true},
+		{expr: `obj.$sift(function(){ true })`, want: [][]string{{"obj"}}},
+		{expr: "b.$split(/l/, 1)", want: [][]string{{"b"}}},
+		{expr: `arr@$p.%.n`, want: [][]string{{"arr"}}, partial: true},
+		{expr: `a.*.%.%.b`, want: [][]string{{"a"}}, partial: true},
+		{expr: `x.z.%@$t.%.secret`, want: [][]string{{"x", "z"}, {"x"}, {"x", "secret"}}, partial: true},
+		{expr: `x.z.w.%@$t.%.secret`, want: [][]string{{"x", "z", "w"}, {"x", "z"}, {"x", "z", "secret"}}, partial: true},
+		{expr: `c.($f := function(){ $string() }; $f())`, want: [][]string{{"c"}}},
+		{expr: `c.($f := function(){ $string() }; obj.$f())`, want: [][]string{{"c"}, {"c", "obj"}}},
+		{expr: `"secret" ~> $lookup()`, partial: true},
+		{expr: `c.("secret" ~> $lookup())`, want: [][]string{{"c"}}},
+		{expr: strings.Repeat("a.", 400) + "b", want: [][]string{append(slices.Repeat([]string{"a"}, 400), "b")}},
+	}
+}
+
+// referencedPathsCallerContextCases call a lambda that reads its caller's
+// context in ways other than by its bound name.
+func referencedPathsCallerContextCases() []referencedPathsCase {
+	return []referencedPathsCase{
+		{expr: `y.($f := function(){ $lookup("secret") }; $g := [$f]; $$.x[$g[0]() = "S"].w)`, want: [][]string{{"y"}, {"x"}, {"x", "w"}}},
+		{expr: `y.($h := function(){ λ(){ $lookup("secret") } }; $$.x[$h()() = "S"].w)`, want: [][]string{{"y"}, {"x"}, {"x", "w"}}},
+		{expr: `y.($f := function(){ (function(){ $lookup("secret") })() }; $$.x[$f() = "S"].w)`, want: [][]string{{"y"}, {"x"}, {"x", "w"}}},
+		{
+			expr: `y.($a := function(){ $sum() }; $sum := function(){ $lookup("secret") }; $$.x[$a() = "S"].w)`,
+			want: [][]string{{"y"}, {"x"}, {"x", "w"}},
+		},
+	}
+}
+
+func TestReferencedPaths(t *testing.T) {
+	testCases := append(referencedPathsCases(), referencedPathsCallerContextCases()...)
+	for _, tC := range testCases {
+		t.Run(tC.expr, func(t *testing.T) {
+			expr, err := gnata.Compile(tC.expr)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			got, complete := expr.ReferencedPaths()
+			if !reflect.DeepEqual(got, tC.want) || complete == tC.partial {
+				t.Fatalf("ReferencedPaths = %v, %v; want %v, %v", got, complete, tC.want, !tC.partial)
+			}
+			if want, err := expr.Eval(context.Background(), referencedPathsInput); err == nil {
+				checkReferencedPaths(t, tC.expr, expr, referencedPathsInput, nil, want)
+			}
+		})
+	}
+}
+
+func TestReferencedPaths_SharesPrefixes(t *testing.T) {
+	src := strings.Repeat("a.", 4000) + "(" + strings.Repeat("b;", 2000) + "b)"
+	expr, err := gnata.Compile(src)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	paths, complete := expr.ReferencedPaths()
+	if !complete || len(paths) != 2 {
+		t.Fatalf("ReferencedPaths = %d paths, %v; want the prefix and the prefix with b, complete", len(paths), complete)
+	}
+}
+
+func TestReferencedPaths_CapsSize(t *testing.T) {
+	fields := make([]string, 70000)
+	for i := range fields {
+		fields[i] = fmt.Sprintf("f%d", i)
+	}
+	testCases := []struct {
+		desc string
+		src  string
+	}{
+		{desc: "more distinct fields than the path cap", src: "[" + strings.Join(fields, ",") + "]"},
+		{desc: "more field names than the element cap", src: strings.Repeat("a.(", 3000) + "b" + strings.Repeat(")", 3000)},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			expr, err := gnata.Compile(tC.src)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			paths, complete := expr.ReferencedPaths()
+			if complete {
+				t.Fatal("complete = true for an expression past the size cap")
+			}
+			names := 0
+			for _, path := range paths {
+				names += len(path)
+			}
+			if names > 1<<16 {
+				t.Fatalf("kept %d field names, want at most %d", names, 1<<16)
+			}
+		})
+	}
+}
+
+func TestReferencedPathsIn_CustomFunctionReplacingBuiltin(t *testing.T) {
+	expr, err := gnata.Compile(`$uppercase("x")`)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if _, complete := expr.ReferencedPaths(); !complete {
+		t.Fatal("the builtin $uppercase of a literal reads no input, want complete")
+	}
+	env := gnata.NewCustomEnvironment(map[string]gnata.CustomFunc{
+		"uppercase": func(_ []any, focus any) (any, error) { return focus, nil },
+	})
+	if _, complete := expr.ReferencedPathsIn(env); complete {
+		t.Fatal("a custom $uppercase is given the whole input, want incomplete")
+	}
+	if _, complete := expr.ReferencedPathsIn(nil); !complete {
+		t.Fatal("a nil environment is the builtins, want complete")
+	}
+}
