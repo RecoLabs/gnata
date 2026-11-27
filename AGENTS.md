@@ -49,7 +49,7 @@ Lexer → Parser → AST Processing → Fast-Path Analysis → Expression
 
 ### StreamEvaluator (stream.go)
 
-Batch-evaluates multiple expressions against events. Schema-keyed `GroupPlan` caching classifies expressions into fast-path vs full-eval at plan-build time. Lock-free reads via `atomic.Pointer` snapshot; writes serialized by `sync.Mutex`. Fast-path expressions use `gjson.GetBytes` for zero-copy field extraction.
+Batch-evaluates multiple expressions against events. Schema-keyed `GroupPlan` caching classifies expressions into fast-path vs full-eval at plan-build time. Lock-free reads via `atomic.Pointer` snapshot; writes serialized by `sync.Mutex`. Fast-path expressions use `gjson.GetBytes` for zero-copy field extraction. For map input (`EvalMap`), full evaluation decodes only the top-level keys the batch's expressions read, from `ReferencedPaths` (`map_prune.go`); when one is not `complete`, the whole map is decoded. Pruning must never change a result: `TestEvalMapPrunedParity` checks it across the conformance suite.
 
 ### Evaluator Dispatch (internal/evaluator/)
 

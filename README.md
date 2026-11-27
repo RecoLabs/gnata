@@ -168,7 +168,7 @@ Hot Path (millions/day, lock-free)
 - **Schema-keyed caching** — the `GroupPlan` (merged paths, expression groupings, selective unmarshal targets) is computed once per schema key and reused immutably.
 - **Lock-free reads** — `BoundedCache` publishes an `atomic.Pointer` snapshot on every write; reads scan the snapshot without acquiring a lock. Writes are serialised by a mutex.
 - **Selective unmarshal** — full-path expressions unmarshal only the subtrees they need (e.g., just the `items` array from a 10KB event), not the entire document.
-- **Pre-decoded map input** — `EvalMap` accepts `map[string]json.RawMessage` directly, skipping full-document serialization when the caller already has individually-encoded fields. Fast paths resolve top-level keys via O(1) map lookup.
+- **Pre-decoded map input** — `EvalMap` accepts `map[string]json.RawMessage` directly, skipping full-document serialization when the caller already has individually-encoded fields. Fast paths resolve top-level keys via O(1) map lookup, and full evaluation decodes only the keys the expressions read (from `ReferencedPaths`), so a large value no expression reads is never decoded. An expression that may read keys it doesn't name (`$keys($)`, `*`, `$string()`, a custom function) gets every key decoded.
 - **Pre-parsed Go values** — `EvalPreparsed` accepts `map[string]any`, `[]any`, or any other decoded value the AST evaluator already handles, skipping JSON decoding. GJSON fast paths are not used (they need raw bytes).
 - **Dynamic mutation** — `Replace`, `Remove`, and `Reset` methods allow modifying registered expressions at runtime with automatic cache invalidation.
 - **Observability** — implement `MetricsHook` to receive per-evaluation callbacks for cache hits/misses, eval latency, fast-path usage, and errors.
@@ -466,6 +466,7 @@ gnata/
 ├── gnata.go                     # Public API: Compile, Eval, EvalBytes, EvalBytesWithVars, EvalMap, EvalWithVars, CustomEnvironment, OrderedMap, JSONNull
 ├── stream.go                    # StreamEvaluator, GroupPlan, EvalMany, EvalManyWithVars, EvalMap, EvalPreparsed, MetricsHook
 ├── bounded_cache.go             # Lock-free FIFO ring-buffer plan cache
+├── map_prune.go                 # EvalMap decodes only the top-level keys expressions read
 ├── deep_equal.go                # JSONata-compatible deep equality
 ├── internal/
 │   ├── decimal/                 # Decimal floating point for WithDecimalPrecision

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/recolabs/gnata/functions"
@@ -44,6 +45,9 @@ type Expression struct {
 	// options holds the settings passed to Compile; nil when Compile was called
 	// without options (default, unlimited float64 behavior).
 	options *compileOptions
+	// rootKeys caches rootKeysIn, the top-level input keys the expression
+	// reads, so a map input can be decoded pruned to them.
+	rootKeys atomic.Pointer[rootKeySet]
 }
 
 // compileOptions holds the settings configured via Option: the resource
@@ -379,6 +383,8 @@ func (e *Expression) EvalBytes(ctx context.Context, data json.RawMessage) (resul
 // EvalMap evaluates the expression against a map of field names to raw JSON values.
 // This enables O(1) top-level key lookup with gjson fast paths for nested access,
 // making it ideal for pre-destructured data (e.g. database columns, form fields).
+// Full evaluation decodes only the keys the expression reads (see
+// ReferencedPaths), or every key when it may read keys it doesn't name.
 func (e *Expression) EvalMap(ctx context.Context, data map[string]json.RawMessage) (result any, err error) {
 	defer recoverEvalPanic(&err)
 	if res, handled, fastErr := e.tryFastPathBytes(nil, data); handled || fastErr != nil {
@@ -387,7 +393,7 @@ func (e *Expression) EvalMap(ctx context.Context, data map[string]json.RawMessag
 	if res, handled, fastErr := e.tryFuncFastBytes(nil, data); handled || fastErr != nil {
 		return res, fastErr
 	}
-	v, err := evaluator.DecodeRawMap(data)
+	v, err := decodeMapFor(data, []*Expression{e}, []int{0}, nil)
 	if err != nil {
 		return nil, err
 	}
