@@ -1,8 +1,10 @@
 package gnata_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fromMillisCases format 2018-04-01T13:45:30.123Z, a Sunday in ISO week 13.
@@ -152,6 +154,13 @@ func TestFromMillisPictures(t *testing.T) {
 
 // toMillisCases parse into epoch milliseconds; 1514764800000 is 2018-01-01T00:00Z
 // and 1522540800000 is 2018-04-01T00:00Z.
+// firstOfThisMonthMillis is midnight UTC on the 1st of the current month, in
+// milliseconds: what $toMillis gives for a picture that sets only the day.
+func firstOfThisMonthMillis() string {
+	now := time.Now().UTC()
+	return strconv.FormatInt(time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).UnixMilli(), 10)
+}
+
 var toMillisCases = []exprCase{
 	{expr: `$toMillis("[2018]", "[[[Y]]]")`, want: `1514764800000`},
 	{expr: `$toMillis("2018", "[][Y]")`, code: "D3132"},
@@ -217,7 +226,8 @@ var toMillisCases = []exprCase{
 	{expr: `$toMillis("2018 IVIII", "[Y] [MI][DI]")`, want: `1527811200000`},
 	{expr: `$toMillis("AX` + strings.Repeat("M", 66) + `", "[MA]X[YI]")`, want: `2020591612800000`},
 	// A picture far longer than any real one matches without deep recursion.
-	{expr: `$toMillis("` + strings.Repeat("1-", 50_000) + `", "` + strings.Repeat("[D]-", 50_000) + `")`, want: `1790812800000`},
+	// It sets only the day, so the year and month are the current ones.
+	{expr: `$toMillis("` + strings.Repeat("1-", 50_000) + `", "` + strings.Repeat("[D]-", 50_000) + `")`, want: firstOfThisMonthMillis()},
 	// Word numbers read a bounded window, so this stays linear.
 	{expr: `$toMillis("` + strings.Repeat("one ", 4000) + `x", "` + strings.Repeat("[Fw] ", 2000) + `y")`, want: undefined},
 	// Exhausts the step budget (README known difference #34).
