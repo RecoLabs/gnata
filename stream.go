@@ -256,6 +256,11 @@ func (se *StreamEvaluator) EvalManyWithVars(
 // EvalMap evaluates the specified expressions against a map of raw JSON values.
 //   - data: map of field names to raw JSON-encoded values (decoded individually).
 //     An empty map is the empty object {}; a nil map means no input, so $ is undefined.
+//     Full evaluation decodes only the keys the batch's expressions read (see
+//     Expression.ReferencedPaths), or every key when one may read keys it doesn't name.
+//     A value under a key no expression in the batch reads is never decoded, so a
+//     malformed one there doesn't make the call fail; whether one does can depend on
+//     what the other expressions in the batch read.
 //   - schemaKey: external key identifying the event schema. On first encounter, builds
 //     and caches a GroupPlan. Subsequent calls are lock-free. Pass "" to disable caching.
 //   - exprIndices: which compiled expressions to evaluate.
@@ -322,7 +327,10 @@ func (se *StreamEvaluator) evalInternal(
 	}
 
 	results = make([]any, len(exprIndices))
-	batch := evalBatch{se: se, plan: plan, data: data, mapData: mapData, parsed: preparsed, parseAttempted: preparsed != nil, vars: vars}
+	batch := evalBatch{
+		se: se, plan: plan, data: data, mapData: mapData, parsed: preparsed, parseAttempted: preparsed != nil, vars: vars,
+		expressions: expressions, exprIndices: exprIndices,
+	}
 	for i, idx := range exprIndices {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -355,6 +363,10 @@ type evalBatch struct {
 	parsedErr      error
 	parseAttempted bool
 	vars           map[string]any
+	// expressions and exprIndices are the batch's, so a map input is decoded
+	// once, pruned to the keys the batch reads.
+	expressions []*Expression
+	exprIndices []int
 }
 
 // evalSingleExpr evaluates one expression, trying fast paths first (pure path,
@@ -441,7 +453,7 @@ func (b *evalBatch) fullEval(ctx context.Context, idx int, expr *Expression, sta
 	if !b.parseAttempted {
 		b.parseAttempted = true
 		if b.mapData != nil {
-			b.parsed, b.parsedErr = evaluator.DecodeRawMap(b.mapData)
+			b.parsed, b.parsedErr = b.decodeMapData()
 		} else if len(b.data) > 0 {
 			b.parsed, b.parsedErr = evaluator.DecodeInput(b.data)
 		}
@@ -567,4 +579,12 @@ func usesShadowedFunction(b *parser.BoolFastPath, shadowed map[string]struct{}) 
 		return true
 	}
 	return usesShadowedFunction(b.Left, shadowed) || usesShadowedFunction(b.Right, shadowed)
+}
+
+// decodeMapData decodes the map input pruned to the keys the batch's
+// expressions read. Only EvalMap passes a map, and it passes no variables:
+// a variable can replace a builtin the key analysis assumed, so a map entry
+// point that took variables would have to decode the whole map.
+func (b *evalBatch) decodeMapData() (*evaluator.OrderedMap, error) {
+	return decodeMapFor(b.mapData, b.expressions, b.exprIndices, b.se.customEnv)
 }

@@ -44,6 +44,19 @@ var (
 	datasets   = map[string]any{}
 )
 
+// rawInput returns a case's input as JSON: its dataset's file, or its data.
+func rawInput(t *testing.T, tc *testCase) json.RawMessage {
+	t.Helper()
+	if tc.Dataset == nil {
+		return tc.RawData
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "datasets", *tc.Dataset+".json"))
+	if err != nil {
+		t.Fatalf("dataset %s: %v", *tc.Dataset, err)
+	}
+	return raw
+}
+
 func loadDataset(name string) (any, error) {
 	path := filepath.Join("testdata", "datasets", name+".json")
 	data, err := os.ReadFile(path)
@@ -178,6 +191,7 @@ func runTestCase(t *testing.T, tc *testCase) {
 	if err == nil {
 		checkReferencedPaths(t, tc.Expr, expr, inputData, tc.Bindings, result)
 	}
+	checkEvalMapPruned(t, tc.Expr, expr, rawInput(t, tc), tc.Bindings)
 	if tc.Code != "" || tc.Error != nil {
 		if err == nil {
 			t.Fatalf("expected error %s, got result %v", tc.Code, result)
